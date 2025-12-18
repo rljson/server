@@ -5,23 +5,21 @@
 // found in the LICENSE file in the root of this package.
 
 import { exampleEditActionColumnSelection, staticExample } from '@rljson/db';
-import { IoMem, IoMultiIo, IoPeer, Socket } from '@rljson/io';
+import { IoMem } from '@rljson/io';
 import {
-  createEditHistoryTableCfg,
-  createEditTableCfg,
-  createMultiEditTableCfg,
-  Edit,
-  Route,
+  createEditHistoryTableCfg, createEditTableCfg, createMultiEditTableCfg, Edit, Route
 } from '@rljson/rljson';
 
 import { createServer } from 'node:http';
 import { AddressInfo } from 'node:net';
-import { Socket as ServerSocket, Server as SocketIoServer } from 'socket.io';
-import { Socket as ClientSocket, io as SocketIoClient } from 'socket.io-client';
+import { Server as SocketIoServer, Socket as ServerSocket } from 'socket.io';
+import { io as SocketIoClient, Socket as ClientSocket } from 'socket.io-client';
 import { afterAll, beforeAll, describe, expect, it, Mock, vi } from 'vitest';
 
 import { Client } from '../src/client';
 import { Server } from '../src/server';
+import { SocketIoBridge } from '../src/socket-io-bridge';
+
 
 describe('Server', () => {
   let socketIoServer: SocketIoServer;
@@ -152,18 +150,24 @@ describe('Server', () => {
 
   describe('Server instance', () => {
     const route = Route.fromFlat('test.route');
-    const server = new Server(route);
+    let server: Server;
 
-    beforeAll(() => {});
+    beforeAll(async () => {
+      const io = new IoMem();
+      await io.init();
+      await io.isReady();
+
+      server = new Server(route, io);
+    });
     afterAll(() => {});
 
     it('Broadcasts packages', async () => {
       const callback = vi.fn();
       for (const serverSocket of serverSockets) {
-        server.addSocket(serverSocket as unknown as Socket);
+        await server.addSocket(new SocketIoBridge(serverSocket));
       }
 
-      expect((server as any)._sockets.length).toBe(clientCount);
+      expect((server as any)._clients.size).toBe(clientCount);
 
       // Listen on clients, should only be called on
       // clientSockets[1] and clientSockets[2]
@@ -197,43 +201,41 @@ describe('Server', () => {
   });
 
   describe('Client instances', () => {
-    const cakeKey = 'carCake';
+    const cakeKey = 'testCake';
     const route = Route.fromFlat(`${cakeKey}EditHistory`);
 
     let a: Client;
     let b: Client;
     let c: Client;
+    let clients: Client[] = [];
 
     let server: Server;
 
     beforeAll(async () => {
       // Create clients
-      a = new Client(cakeKey, clientSockets[0] as unknown as Socket);
-      b = new Client(cakeKey, clientSockets[1] as unknown as Socket);
-      c = new Client(cakeKey, clientSockets[2] as unknown as Socket);
+      a = new Client(route, cakeKey, new SocketIoBridge(clientSockets[0]));
+      b = new Client(route, cakeKey, new SocketIoBridge(clientSockets[1]));
+      c = new Client(route, cakeKey, new SocketIoBridge(clientSockets[2]));
+      clients = [a, b, c];
 
-      const ioMem = new IoMem();
-      await ioMem.init();
-      await ioMem.isReady();
-
-      const ioMultiIo: IoMultiIo = {
-        io: ioMem,
-        dump: false,
-        read: true,
-        write: true,
-        priority: 1,
-      };
-
-      await a.addIoMultiIo(ioMultiIo);
-      await b.addIoMultiIo(ioMultiIo);
-      await c.addIoMultiIo(ioMultiIo);
+      // Create EditHistory Table
+      const editHistoryTableCfg = createEditHistoryTableCfg(cakeKey);
+      for (const client of clients) {
+        await client.init();
+        await client.createTables({
+          withoutInsertHistory: [editHistoryTableCfg],
+        });
+      }
 
       // Create server
-      server = new Server(route);
+      const serverIo = new IoMem();
+      await serverIo.init();
+      await serverIo.isReady();
+      server = new Server(route, serverIo);
 
       // Add server sockets to server
       for (const serverSocket of serverSockets) {
-        server.addSocket(serverSocket as unknown as Socket);
+        server.addSocket(new SocketIoBridge(serverSocket));
       }
     });
     afterAll(() => {});
@@ -250,9 +252,7 @@ describe('Server', () => {
       const callbackC = vi.fn();
 
       a.connector!.listen((msg: string) => callbackA(msg));
-
       b.connector!.listen((msg: string) => callbackB(msg));
-
       c.connector!.listen((msg: string) => callbackC(msg));
 
       a.connector!.send('testMessage');
@@ -287,9 +287,9 @@ describe('Server', () => {
 
     beforeAll(async () => {
       // Client setup
-      a = new Client(cakeKey, clientSockets[0] as unknown as Socket);
-      b = new Client(cakeKey, clientSockets[1] as unknown as Socket);
-      c = new Client(cakeKey, clientSockets[2] as unknown as Socket);
+      a = new Client(route, cakeKey, new SocketIoBridge(clientSockets[0]));
+      b = new Client(route, cakeKey, new SocketIoBridge(clientSockets[1]));
+      c = new Client(route, cakeKey, new SocketIoBridge(clientSockets[2]));
 
       clients = [a, b, c];
 
@@ -308,57 +308,21 @@ describe('Server', () => {
       const exampleData = staticExample();
 
       for (const client of clients) {
-        const ioMem = new IoMem();
-        await ioMem.init();
-        await ioMem.isReady();
-
-        const ioMultiIo: IoMultiIo = {
-          io: ioMem,
-          dump: true,
-          read: true,
-          write: true,
-          priority: 1,
-        };
-
-        await client.addIoMultiIo(ioMultiIo);
+        await client.init();
         await client.createTables(tableCfgs);
         await client.import(exampleData);
       }
 
-      // Crossover Sockets to Remote SocketIos
-      for (const client of clients) {
-        const ioPeers = [];
-        for (const otherClient of clients) {
-          if (client.id !== otherClient.id) {
-            const ioPeer: IoPeer = new IoPeer(otherClient.socket);
-            await ioPeer.init();
-            await ioPeer.isReady();
-
-            ioPeers.push(ioPeer);
-          }
-        }
-
-        // Create IoMultiIo from IoPeers
-        const ioMultiIos: IoMultiIo[] = ioPeers.map((ioPeer) => ({
-          io: ioPeer,
-          dump: true,
-          read: true,
-          write: false,
-          priority: 2,
-        }));
-
-        // Add IoMultiIo to client
-        for (const peerIoMultiIo of ioMultiIos) {
-          //await client.addIoMultiIo(peerIoMultiIo);
-        }
-      }
-
       // Create server
-      server = new Server(route);
+      const serverIo = new IoMem();
+      await serverIo.init();
+      await serverIo.isReady();
+
+      server = new Server(route, serverIo);
 
       // Add server sockets to server
       for (const serverSocket of serverSockets) {
-        server.addSocket(serverSocket as unknown as Socket);
+        await server.addSocket(new SocketIoBridge(serverSocket));
       }
     });
     afterAll(() => {});
@@ -370,6 +334,28 @@ describe('Server', () => {
     });
 
     it('Should sync created EditHistories to connected clients', async () => {
+      // Setup listeners before creating EditHistory
+      const bReceivedEditHistoryRef = vi.fn();
+      const cReceivedEditHistoryRef = vi.fn();
+
+      b.connector!.listen((editHistoryRef: string) =>
+        bReceivedEditHistoryRef(editHistoryRef),
+      );
+      c.connector!.listen((editHistoryRef: string) =>
+        cReceivedEditHistoryRef(editHistoryRef),
+      );
+
+      // Setup head change listeners
+      const bUpdatedHead = vi.fn();
+      const cUpdatedHead = vi.fn();
+
+      b.mem?.listenToHeadChanges((editHistoryRef: string) =>
+        bUpdatedHead(editHistoryRef),
+      );
+      c.mem?.listenToHeadChanges((editHistoryRef: string) =>
+        cUpdatedHead(editHistoryRef),
+      );
+
       const edit: Edit = {
         name: 'Select brand, type, serviceIntervals, isElectric, height, width, length, engine, repairedByWorkshop from CarExample',
         action: exampleEditActionColumnSelection(),
@@ -379,14 +365,23 @@ describe('Server', () => {
       expect(a.mem).toBeDefined();
 
       await a.mem!.edit(edit, cakeRef as string);
-
-      expect(a.mem!.join).toBeDefined();
-      expect(a.mem!.join.columnCount).toBe(9);
-      expect(a.mem!.join.rows).toBeDefined();
-      expect(a.mem!.join.rows.length).toBe(8);
-
-      const aRows = [...a.mem!.join.rows];
+      const aRows = [...a.mem!.join!.rows];
       expect(aRows.length).toBe(8);
+
+      await vi.waitUntil(() => {
+        return (
+          bReceivedEditHistoryRef.mock.calls.length >= 1 &&
+          cReceivedEditHistoryRef.mock.calls.length >= 1
+        );
+      }, 2000);
+
+      await vi.waitUntil(() => {
+        return (
+          bUpdatedHead.mock.calls.length >= 1 &&
+          cUpdatedHead.mock.calls.length >= 1
+        );
+      }, 10000);
+      debugger;
     }, 50000);
   });
 });

@@ -5,91 +5,132 @@
 // found in the LICENSE file in the root of this package.
 
 import { Connector, Db, MultiEditManager } from '@rljson/db';
-import { Io, IoMulti, IoMultiIo, Socket } from '@rljson/io';
+import { Io, IoMem, IoMulti, IoMultiIo, IoPeer, IoPeerBridge, Socket } from '@rljson/io';
 import { Rljson, Route, TableCfg } from '@rljson/rljson';
+
 
 export class Client {
   private _id = Math.random().toString(36).substring(2, 15);
 
-  private _db?: Db;
+  private _ioLocalDb?: Db;
+  private _ioLocal?: Io;
+
+  private _ioMultiDb?: Db;
+  private _ioMultiIos: IoMultiIo[] = [];
+  private _ioMulti?: IoMulti;
+
   private _connector?: Connector;
   private _mem?: MultiEditManager;
-  private _ios: IoMultiIo[] = [];
-  private _io?: Io;
-  private _editRoute: Route;
 
-  constructor(private _cakeKey: string, private _socket: Socket) {
-    this._editRoute = Route.fromFlat(`/${this._cakeKey}EditHistory`);
-  }
+  private _editRefsReceived: string[] = [];
 
-  async addIoMultiIo(ioMultiIo: IoMultiIo) {
-    //Add IoMultiIo
-    this._ios.push(ioMultiIo);
+  // ...........................................................................
+  /**
+   * Creates a Client instance
+   * @param _route - Route for edits
+   * @param _cakeKey - Cake key for MultiEditManager
+   * @param _socketToServer - Socket to connect to server
+   */
+  constructor(
+    private _route: Route,
+    private _cakeKey: string,
+    private _socketToServer: Socket,
+  ) {}
 
-    //Close existing IoMulti, closes all underlying Ios
-    if (this._io && this._io.isOpen) {
-      await this._io.close();
-    }
+  async init() {
+    //Init ioLocalDb
+    this._ioLocal = new IoMem();
+    await this._ioLocal.init();
+    await this._ioLocal.isReady();
 
-    //Open/Re-Open all underlying Ios
-    for (const io of this._ios.map((iomio) => iomio.io)) {
-      if (io.isOpen === false) {
-        await io.init();
-        await io.isReady();
-      }
-    }
+    //Init ioLocalDb to manage local storage in convenient way
+    this._ioLocalDb = new Db(this._ioLocal);
+
+    //Add LocalIo to MultiIo
+    this._ioMultiIos.push({
+      io: this._ioLocal,
+      dump: true,
+      read: true,
+      write: true,
+      priority: 1,
+    });
+
+    //Create IoPeerBridge: Endpoint letting the Server to pull data from Client (Upload)
+    const ioPeerBridge = new IoPeerBridge(this._ioLocal, this._socketToServer);
+    ioPeerBridge.start();
+
+    //Create IoPeer: Pull data from Server (Download)
+    const ioPeer = new IoPeer(this._socketToServer);
+    await ioPeer.init();
+    await ioPeer.isReady();
+
+    this._ioMultiIos.push({
+      io: ioPeer,
+      dump: true,
+      read: true,
+      write: false,
+      priority: 2,
+    });
 
     //Create IoMulti
-    this._io = new IoMulti(this._ios);
-    await this._io.init();
-    await this._io.isReady();
+    this._ioMulti = new IoMulti(this._ioMultiIos);
+    await this._ioMulti.init();
+    await this._ioMulti.isReady();
 
-    //Connect Db to new IoMulti
-    if (this._db) this._db = this._db.clone(this._io);
-    else this._db = new Db(this._io);
+    //Create IoMultiDb
+    this._ioMultiDb = new Db(this._ioMulti);
 
-    //Connector init
-    this._connector = new Connector(this._db, this._editRoute, this._socket);
+    //Connector
+    //Receiver: Edits from Server and applies them to IoMultiDb
+    //Sender: Edits made in IoLocalDb to Server
+    this._connector = new Connector(
+      this._ioMultiDb,
+      this._route,
+      this._socketToServer,
+    );
 
-    //MultiEditManager init
-    this._mem = new MultiEditManager(this._cakeKey, this._db);
+    //MultiEditManager
+    //Convenience to manage MultiEdits
+    this._mem = new MultiEditManager(this._cakeKey, this._ioMultiDb);
     this._mem.init();
 
-    //Connect Connector and MultiEditManager
+    //Wire up Connector to MultiEditManager
+    //When Connector receives new EditHistoryRef, inform MultiEditManager
     this._connector.listen(async (editHistoryRef: string) => {
+      this._editRefsReceived.push(editHistoryRef);
       await this._mem!.editHistoryRef(editHistoryRef);
     });
 
-    return this._io;
+    return this._ioMulti;
   }
 
   async createTables(cfgs: {
     withInsertHistory?: TableCfg[];
     withoutInsertHistory?: TableCfg[];
   }) {
-    if (!this._db) throw new Error('Db not initialized');
+    if (!this._ioLocalDb) throw new Error('Local Db not initialized');
 
     //Create Tables for TableCfgs without InsertHistory
     for (const tableCfg of cfgs.withoutInsertHistory || []) {
-      await this._db.core.createTable(tableCfg);
+      await this._ioLocalDb.core.createTable(tableCfg);
     }
 
     //Create Tables for TableCfgs with InsertHistory
     for (const tableCfg of cfgs.withInsertHistory || []) {
-      await this._db.core.createTableWithInsertHistory(tableCfg);
+      await this._ioLocalDb.core.createTableWithInsertHistory(tableCfg);
     }
   }
 
   async import(data: Rljson) {
-    if (!this._db) throw new Error('Db not initialized');
+    if (!this._ioLocalDb) throw new Error('Local Db not initialized');
 
-    await this._db.core.import(data);
+    await this._ioLocalDb.core.import(data);
   }
 
   async tearDown() {
     //Close Io
-    if (this._io && this._io.isOpen) {
-      this._io.close();
+    if (this._ioMulti && this._ioMulti.isOpen) {
+      this._ioMulti.close();
     }
 
     if (this._connector) {
@@ -106,7 +147,7 @@ export class Client {
   }
 
   get db() {
-    return this._db;
+    return this._ioMultiDb;
   }
 
   get connector() {
@@ -118,10 +159,10 @@ export class Client {
   }
 
   get io() {
-    return this._io;
+    return this._ioMulti;
   }
 
   get socket() {
-    return this._socket;
+    return this._socketToServer;
   }
 }

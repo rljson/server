@@ -6,11 +6,24 @@
 
 /// <reference types="vitest" />
 
+import { resolve } from 'path';
 import { defineConfig } from 'vite';
+
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   return {
+    resolve: {
+      alias: {
+        '@rljson/db': resolve(__dirname, '../rljson-db/src/index.ts'),
+        '@rljson/io': resolve(__dirname, '../rljson-io/src/index.ts'),
+      },
+    },
+    server: {
+      fs: {
+        allow: ['..'],
+      },
+    },
     test: {
       globals: true,
       environment: 'node',
