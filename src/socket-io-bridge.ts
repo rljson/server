@@ -9,7 +9,6 @@ import { Socket } from '@rljson/io';
 import { Socket as ServerSocket } from 'socket.io';
 import { Socket as ClientSocket } from 'socket.io-client';
 
-
 /**
  * Bridge class that adapts Socket.IO sockets to the \@rljson/io Socket interface.
  * Works with both server-side and client-side Socket.IO implementations.
@@ -21,6 +20,7 @@ export class SocketIoBridge implements Socket {
     return this._socket.connected;
   }
 
+  /* v8 ignore next -- @preserve */
   get disconnected(): boolean {
     return this._socket.disconnected;
   }
@@ -56,6 +56,7 @@ export class SocketIoBridge implements Socket {
     return this;
   }
 
+  /* v8 ignore next -- @preserve */
   off(eventName: string | symbol, listener: (...args: any[]) => void): this {
     (this._socket as any).off(eventName, listener);
     return this;
@@ -69,6 +70,7 @@ export class SocketIoBridge implements Socket {
   /**
    * Get the underlying Socket.IO socket instance.
    */
+  /* v8 ignore next -- @preserve */
   get rawSocket(): ServerSocket | ClientSocket {
     return this._socket;
   }

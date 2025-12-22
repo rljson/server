@@ -5,34 +5,66 @@
 // found in the LICENSE file in the root of this package.
 
 import { ConnectorPayload } from '@rljson/db';
-import { Io, IoMem, IoMulti, IoMultiIo, IoPeer, IoServer, Socket, SocketMock } from '@rljson/io';
+import {
+  Io,
+  IoMem,
+  IoMulti,
+  IoMultiIo,
+  IoPeer,
+  IoServer,
+  Socket,
+  SocketMock,
+} from '@rljson/io';
 import { Route } from '@rljson/rljson';
 
+import { BaseNode } from './base-node.ts';
 
 export type SocketWithClientId = Socket & { __clientId?: string };
 
 // .............................................................................
-export class Server {
+export class Server extends BaseNode {
   // Map of connected clients
-  // socket => Push: Broadcast new Refs through Route
-  // IoPeer => Pull: Read from Clients Io
+  // socket => Push: Send new Refs through Route
+  // io => Pull: Read from Clients Io
   private _clients: Map<
     string,
     {
       socket: SocketWithClientId;
       io: IoPeer;
-      ioServerToOtherClients?: IoServer;
     }
   > = new Map();
+
+  private _ios: IoMultiIo[] = [];
+  private _ioMulti: IoMulti;
 
   // Storage => Let Clients read from Servers Io
   private _ioServer: IoServer;
 
   // To avoid rebroadcasting the same edit refs multiple times
-  private _broadcastedRefs: Set<string> = new Set();
+  private _multicastedRefs: Set<string> = new Set();
 
-  constructor(private _route: Route, private _localIo: Io) {
-    this._ioServer = new IoServer(this._localIo);
+  constructor(private _route: Route, protected _localIo: Io) {
+    //Call BaseNode constructor
+    super(_localIo);
+
+    const ioMultiIoLocal = {
+      io: this._localIo,
+      dump: true,
+      read: true,
+      write: true,
+      priority: 1,
+    };
+    this._ios.push(ioMultiIoLocal);
+    this._ioMulti = new IoMulti(this._ios);
+
+    // Initialize IoServer
+    this._ioServer = new IoServer(this._ioMulti);
+  }
+
+  async init() {
+    // Initialize IoServer
+    await this._ioMulti.init();
+    await this._ioMulti.isReady();
   }
 
   async addSocket(socket: Socket) {
@@ -49,8 +81,19 @@ export class Server {
     await ioPeer.init();
     await ioPeer.isReady();
 
-    // add socket to IoServer
-    this._ioServer.addSocket(socket);
+    // add IoPeer to IoMultiIo list
+    this._ios.push({
+      io: ioPeer,
+      dump: false,
+      read: true,
+      write: false,
+      priority: 2,
+    });
+
+    // recreate IoMulti with new IoMultiIo list
+    this._ioMulti = new IoMulti(this._ios);
+    await this._ioMulti.init();
+    await this._ioMulti.isReady();
 
     // store socket with client id
     this._clients.set(clientId, {
@@ -58,65 +101,19 @@ export class Server {
       io: ioPeer,
     });
 
-    // re-init IoServer for all clients to use updated IoMulti
-    if (this._clients.size > 1) await this._reInitIoServerMultiCasting();
+    // recreate IoServer with new IoMulti
+    this._ioServer = new IoServer(this._ioMulti);
 
-    // reset listeners and re-broadcast
+    // add socket to IoServer
+    for (const { socket } of this._clients.values()) {
+      await this._ioServer.addSocket(socket);
+    }
+
+    // remove all existing listeners and re-establish multicast
     this._removeAllListeners();
-    this._broadcast();
+    this._multicastRefs();
 
     return this;
-  }
-
-  // ...........................................................................
-  /**
-   * Combines sockets to other connected clients to a single IoMulti. On top of that, a IoServer is created for each client to read from all other clients.
-   *
-   */
-  private async _reInitIoServerMultiCasting() {
-    for (const client of this._clients.values()) {
-      const { socket } = client;
-      const clientId = (socket as any).__clientId;
-
-      const otherSockets: SocketWithClientId[] = [];
-      for (const { socket: otherSocket } of this._clients.values()) {
-        if (otherSocket.__clientId === clientId) continue;
-        otherSockets.push(otherSocket);
-      }
-
-      if (client.ioServerToOtherClients) {
-        client.ioServerToOtherClients.removeSocket(client.socket);
-        delete client.ioServerToOtherClients;
-      }
-
-      const otherIoMultiIos: IoMultiIo[] = [];
-      for (const otherSocket of otherSockets) {
-        const remoteIo = new IoPeer(otherSocket);
-        await remoteIo.isReady();
-        await remoteIo.init();
-
-        otherIoMultiIos.push({
-          io: remoteIo,
-          dump: true,
-          read: true,
-          write: false,
-          priority: 2,
-        });
-      }
-      const otherIoMulti = new IoMulti(otherIoMultiIos);
-      await otherIoMulti.init();
-      await otherIoMulti.isReady();
-
-      const ioServerToOtherClients = new IoServer(otherIoMulti);
-      await ioServerToOtherClients.addSocket(client.socket);
-
-      // store socket with client id
-      this._clients.set(clientId, {
-        socket: client.socket,
-        io: client.io,
-        ioServerToOtherClients,
-      });
-    }
   }
 
   // ...........................................................................
@@ -133,19 +130,21 @@ export class Server {
   /**
    * Broadcasts incoming payloads from any client to all other connected clients.
    */
-  private _broadcast = () => {
+  private _multicastRefs = () => {
     for (const { socket: socketA } of this._clients.values()) {
       socketA.on(this._route.flat, (payload: ConnectorPayload) => {
         const ref = payload.r;
         // Avoid rebroadcasting the same ref multiple times
-        if (this._broadcastedRefs.has(ref)) {
+        /* v8 ignore next -- @preserve */
+        if (this._multicastedRefs.has(ref)) {
           return;
         }
-        this._broadcastedRefs.add(ref);
+        this._multicastedRefs.add(ref);
 
         const p = payload as any;
 
         // If payload already has an origin, it was forwarded by the wire and should not be re-forwarded.
+        /* v8 ignore next -- @preserve */
         if (p && p.__origin) {
           return;
         }
@@ -163,11 +162,24 @@ export class Server {
     }
   };
 
+  get route() {
+    return this._route;
+  }
+
+  get clients() {
+    return this._clients;
+  }
+
   /** Example instance for test purposes */
-  static get example(): Promise<Server> {
+  static async example(): Promise<Server> {
     const route = Route.fromFlat('example.route');
+
     const io = new IoMem();
+    await io.init();
+    await io.isReady();
+
     const socket = new SocketMock();
+    socket.connect();
 
     return new Server(route, io).addSocket(socket);
   }

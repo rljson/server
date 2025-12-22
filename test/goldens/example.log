@@ -1,1 +1,1 @@
-"Server.example\n  Returns an instance of the Server.\n    {\n  \"_socket\": {\n    \"connected\": false,\n    \"disconnected\": true,\n    \"_listeners\": {},\n    \"_onceListeners\": {}\n  }\n}"
+"Server.example\n  Returns an instance of the Server."

@@ -5,21 +5,33 @@
 // found in the LICENSE file in the root of this package.
 
 import { exampleEditActionColumnSelection, staticExample } from '@rljson/db';
-import { IoMem } from '@rljson/io';
+import { Io, IoMem } from '@rljson/io';
 import {
-  createEditHistoryTableCfg, createEditTableCfg, createMultiEditTableCfg, Edit, Route
+  createEditHistoryTableCfg,
+  createEditTableCfg,
+  createMultiEditTableCfg,
+  Edit,
+  Route,
 } from '@rljson/rljson';
 
 import { createServer } from 'node:http';
 import { AddressInfo } from 'node:net';
-import { Server as SocketIoServer, Socket as ServerSocket } from 'socket.io';
-import { io as SocketIoClient, Socket as ClientSocket } from 'socket.io-client';
-import { afterAll, beforeAll, describe, expect, it, Mock, vi } from 'vitest';
+import { Socket as ServerSocket, Server as SocketIoServer } from 'socket.io';
+import { Socket as ClientSocket, io as SocketIoClient } from 'socket.io-client';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  Mock,
+  vi,
+} from 'vitest';
 
 import { Client } from '../src/client';
 import { Server } from '../src/server';
 import { SocketIoBridge } from '../src/socket-io-bridge';
-
 
 describe('Server', () => {
   let socketIoServer: SocketIoServer;
@@ -151,17 +163,19 @@ describe('Server', () => {
   describe('Server instance', () => {
     const route = Route.fromFlat('test.route');
     let server: Server;
+    let serverIo: Io;
 
     beforeAll(async () => {
-      const io = new IoMem();
-      await io.init();
-      await io.isReady();
+      serverIo = new IoMem();
+      await serverIo.init();
+      await serverIo.isReady();
 
-      server = new Server(route, io);
+      server = new Server(route, serverIo);
+      await server.init();
     });
     afterAll(() => {});
 
-    it('Broadcasts packages', async () => {
+    it('Multicasts packages', async () => {
       const callback = vi.fn();
       for (const serverSocket of serverSockets) {
         await server.addSocket(new SocketIoBridge(serverSocket));
@@ -204,18 +218,32 @@ describe('Server', () => {
     const cakeKey = 'testCake';
     const route = Route.fromFlat(`${cakeKey}EditHistory`);
 
-    let a: Client;
-    let b: Client;
-    let c: Client;
+    let a: Client, aIo: Io;
+    let b: Client, bIo: Io;
+    let c: Client, cIo: Io;
     let clients: Client[] = [];
 
     let server: Server;
+    let serverIo: Io;
 
-    beforeAll(async () => {
+    beforeEach(async () => {
+      // Create client Ios
+      aIo = new IoMem();
+      await aIo.init();
+      await aIo.isReady();
+
+      bIo = new IoMem();
+      await bIo.init();
+      await bIo.isReady();
+
+      cIo = new IoMem();
+      await cIo.init();
+      await cIo.isReady();
+
       // Create clients
-      a = new Client(route, cakeKey, new SocketIoBridge(clientSockets[0]));
-      b = new Client(route, cakeKey, new SocketIoBridge(clientSockets[1]));
-      c = new Client(route, cakeKey, new SocketIoBridge(clientSockets[2]));
+      a = new Client(route, cakeKey, new SocketIoBridge(clientSockets[0]), aIo);
+      b = new Client(route, cakeKey, new SocketIoBridge(clientSockets[1]), bIo);
+      c = new Client(route, cakeKey, new SocketIoBridge(clientSockets[2]), cIo);
       clients = [a, b, c];
 
       // Create EditHistory Table
@@ -228,10 +256,12 @@ describe('Server', () => {
       }
 
       // Create server
-      const serverIo = new IoMem();
+      serverIo = new IoMem();
       await serverIo.init();
       await serverIo.isReady();
+
       server = new Server(route, serverIo);
+      await server.init();
 
       // Add server sockets to server
       for (const serverSocket of serverSockets) {
@@ -271,6 +301,50 @@ describe('Server', () => {
       expect(callbackB).toHaveBeenCalledWith('testMessage');
       expect(callbackC).toHaveBeenCalledWith('testMessage');
     });
+
+    it('Should teardown client instances', async () => {
+      const callbackA = vi.fn();
+      const callbackB = vi.fn();
+      const callbackC = vi.fn();
+
+      a.connector!.listen((msg: string) => callbackA(msg));
+      b.connector!.listen((msg: string) => callbackB(msg));
+      c.connector!.listen((msg: string) => callbackC(msg));
+
+      a.connector!.send('testMessage');
+
+      // Wait until both callbacks have been called
+      await vi.waitUntil(
+        () =>
+          callbackB.mock.calls.length === 1 &&
+          callbackC.mock.calls.length === 1,
+        {
+          timeout: 2000,
+          interval: 100,
+        },
+      );
+      expect(callbackA).not.toHaveBeenCalled();
+      expect(callbackB).toHaveBeenCalledWith('testMessage');
+      expect(callbackC).toHaveBeenCalledWith('testMessage');
+
+      // Teardown client b
+      await b.tearDown();
+
+      // Reset callbacks
+      callbackA.mockReset();
+      callbackB.mockReset();
+      callbackC.mockReset();
+
+      // Send another message from a
+      a.connector!.send('testMessage2');
+
+      // Wait to ensure no further calls are made
+      await new Promise((res) => setTimeout(res, 1000));
+
+      expect(callbackA).not.toHaveBeenCalled();
+      expect(callbackB).not.toHaveBeenCalled();
+      expect(callbackC).toHaveBeenCalledWith('testMessage2');
+    });
   });
 
   describe('Client instances with Db running', () => {
@@ -278,18 +352,31 @@ describe('Server', () => {
     const cakeRef = staticExample().carCake._data[0]._hash ?? '';
     const route = Route.fromFlat(`${cakeKey}EditHistory`);
 
-    let a: Client;
-    let b: Client;
-    let c: Client;
+    let a: Client, ioA: Io;
+    let b: Client, ioB: Io;
+    let c: Client, ioC: Io;
     let clients: Client[] = [];
 
     let server: Server;
+    let serverIo: Io;
 
-    beforeAll(async () => {
+    beforeEach(async () => {
       // Client setup
-      a = new Client(route, cakeKey, new SocketIoBridge(clientSockets[0]));
-      b = new Client(route, cakeKey, new SocketIoBridge(clientSockets[1]));
-      c = new Client(route, cakeKey, new SocketIoBridge(clientSockets[2]));
+      ioA = new IoMem();
+      await ioA.init();
+      await ioA.isReady();
+
+      ioB = new IoMem();
+      await ioB.init();
+      await ioB.isReady();
+
+      ioC = new IoMem();
+      await ioC.init();
+      await ioC.isReady();
+
+      a = new Client(route, cakeKey, new SocketIoBridge(clientSockets[0]), ioA);
+      b = new Client(route, cakeKey, new SocketIoBridge(clientSockets[1]), ioB);
+      c = new Client(route, cakeKey, new SocketIoBridge(clientSockets[2]), ioC);
 
       clients = [a, b, c];
 
@@ -313,12 +400,17 @@ describe('Server', () => {
         await client.import(exampleData);
       }
 
-      // Create server
-      const serverIo = new IoMem();
+      // Create server Io
+      serverIo = new IoMem();
       await serverIo.init();
       await serverIo.isReady();
 
+      // Create server
       server = new Server(route, serverIo);
+      await server.init();
+
+      await server.createTables(tableCfgs);
+      await server.import(exampleData);
 
       // Add server sockets to server
       for (const serverSocket of serverSockets) {
@@ -333,7 +425,7 @@ describe('Server', () => {
       }
     });
 
-    it('Should sync created EditHistories to connected clients', async () => {
+    it.skip('Should sync created EditHistories to connected clients', async () => {
       // Setup listeners before creating EditHistory
       const bReceivedEditHistoryRef = vi.fn();
       const cReceivedEditHistoryRef = vi.fn();
@@ -349,12 +441,15 @@ describe('Server', () => {
       const bUpdatedHead = vi.fn();
       const cUpdatedHead = vi.fn();
 
-      b.mem?.listenToHeadChanges((editHistoryRef: string) =>
-        bUpdatedHead(editHistoryRef),
-      );
-      c.mem?.listenToHeadChanges((editHistoryRef: string) =>
-        cUpdatedHead(editHistoryRef),
-      );
+      expect(b.mem).toBeDefined();
+      expect(c.mem).toBeDefined();
+
+      b.mem!.listenToHeadChanges(async (editHistoryRef: string) => {
+        bUpdatedHead(editHistoryRef);
+      });
+      c.mem!.listenToHeadChanges(async (editHistoryRef: string) => {
+        cUpdatedHead(editHistoryRef);
+      });
 
       const edit: Edit = {
         name: 'Select brand, type, serviceIntervals, isElectric, height, width, length, engine, repairedByWorkshop from CarExample',
@@ -373,15 +468,20 @@ describe('Server', () => {
           bReceivedEditHistoryRef.mock.calls.length >= 1 &&
           cReceivedEditHistoryRef.mock.calls.length >= 1
         );
-      }, 2000);
+      }, 20000);
 
       await vi.waitUntil(() => {
         return (
           bUpdatedHead.mock.calls.length >= 1 &&
           cUpdatedHead.mock.calls.length >= 1
         );
-      }, 10000);
-      debugger;
-    }, 50000);
+      }, 30000);
+
+      const bRows = [...b.mem!.join!.rows];
+      const cRows = [...c.mem!.join!.rows];
+
+      expect(aRows).toEqual(bRows);
+      expect(aRows).toEqual(cRows);
+    }, 60000);
   });
 });

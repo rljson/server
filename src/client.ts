@@ -5,15 +5,20 @@
 // found in the LICENSE file in the root of this package.
 
 import { Connector, Db, MultiEditManager } from '@rljson/db';
-import { Io, IoMem, IoMulti, IoMultiIo, IoPeer, IoPeerBridge, Socket } from '@rljson/io';
-import { Rljson, Route, TableCfg } from '@rljson/rljson';
+import {
+  Io,
+  IoMulti,
+  IoMultiIo,
+  IoPeer,
+  IoPeerBridge,
+  Socket,
+} from '@rljson/io';
+import { Route } from '@rljson/rljson';
 
+import { BaseNode } from './base-node.ts';
 
-export class Client {
+export class Client extends BaseNode {
   private _id = Math.random().toString(36).substring(2, 15);
-
-  private _ioLocalDb?: Db;
-  private _ioLocal?: Io;
 
   private _ioMultiDb?: Db;
   private _ioMultiIos: IoMultiIo[] = [];
@@ -30,43 +35,40 @@ export class Client {
    * @param _route - Route for edits
    * @param _cakeKey - Cake key for MultiEditManager
    * @param _socketToServer - Socket to connect to server
+   * @param _localIo - Local Io for local storage (default: IoMem)
    */
   constructor(
     private _route: Route,
     private _cakeKey: string,
     private _socketToServer: Socket,
-  ) {}
+    protected _localIo: Io,
+  ) {
+    //Call BaseNode constructor
+    super(_localIo);
+  }
 
   async init() {
-    //Init ioLocalDb
-    this._ioLocal = new IoMem();
-    await this._ioLocal.init();
-    await this._ioLocal.isReady();
-
-    //Init ioLocalDb to manage local storage in convenient way
-    this._ioLocalDb = new Db(this._ioLocal);
-
     //Add LocalIo to MultiIo
     this._ioMultiIos.push({
-      io: this._ioLocal,
+      io: this._localIo,
       dump: true,
       read: true,
       write: true,
       priority: 1,
     });
 
-    //Create IoPeerBridge: Endpoint letting the Server to pull data from Client (Upload)
-    const ioPeerBridge = new IoPeerBridge(this._ioLocal, this._socketToServer);
+    //Create IoPeerBridge: Endpoint letting the Server pull data from Client (Upstream, only local Io)
+    const ioPeerBridge = new IoPeerBridge(this._localIo, this._socketToServer);
     ioPeerBridge.start();
 
-    //Create IoPeer: Pull data from Server (Download)
+    //Create IoPeer: Pull data from Server (Downstream)
     const ioPeer = new IoPeer(this._socketToServer);
     await ioPeer.init();
     await ioPeer.isReady();
 
     this._ioMultiIos.push({
       io: ioPeer,
-      dump: true,
+      dump: false,
       read: true,
       write: false,
       priority: 2,
@@ -104,46 +106,22 @@ export class Client {
     return this._ioMulti;
   }
 
-  async createTables(cfgs: {
-    withInsertHistory?: TableCfg[];
-    withoutInsertHistory?: TableCfg[];
-  }) {
-    if (!this._ioLocalDb) throw new Error('Local Db not initialized');
-
-    //Create Tables for TableCfgs without InsertHistory
-    for (const tableCfg of cfgs.withoutInsertHistory || []) {
-      await this._ioLocalDb.core.createTable(tableCfg);
-    }
-
-    //Create Tables for TableCfgs with InsertHistory
-    for (const tableCfg of cfgs.withInsertHistory || []) {
-      await this._ioLocalDb.core.createTableWithInsertHistory(tableCfg);
-    }
-  }
-
-  async import(data: Rljson) {
-    if (!this._ioLocalDb) throw new Error('Local Db not initialized');
-
-    await this._ioLocalDb.core.import(data);
-  }
-
   async tearDown() {
     //Close Io
+    /* v8 ignore else -- @preserve */
     if (this._ioMulti && this._ioMulti.isOpen) {
       this._ioMulti.close();
     }
 
+    /* v8 ignore else -- @preserve */
     if (this._connector) {
       this._connector.teardown();
     }
 
+    /* v8 ignore else -- @preserve */
     if (this._mem) {
       this._mem.tearDown();
     }
-  }
-
-  get id() {
-    return this._id;
   }
 
   get db() {

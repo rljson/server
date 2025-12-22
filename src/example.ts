@@ -6,8 +6,7 @@
 
 import { Server } from './server.ts';
 
-
-export const example = () => {
+export const example = async () => {
   // Print methods
   const l = console.log;
   const h1 = (text: string) => l(`${text}`);
@@ -17,8 +16,9 @@ export const example = () => {
   // Example
   h1('Server.example');
   h2('Returns an instance of the Server.');
-  const example = Server.example;
-  p(JSON.stringify(example, null, 2));
+  const example = await Server.example();
+  p(JSON.stringify(example.clients, null, 2));
+  p(JSON.stringify(example.route, null, 2));
 };
 
 /*
