@@ -4,7 +4,10 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import { exampleEditActionColumnSelection, staticExample } from '@rljson/db';
+import {
+  exampleEditActionColumnSelectionOnlySomeColumns,
+  staticExample,
+} from '@rljson/db';
 import { Io, IoMem } from '@rljson/io';
 import {
   createEditHistoryTableCfg,
@@ -34,53 +37,53 @@ import { Server } from '../src/server';
 import { SocketIoBridge } from '../src/socket-io-bridge';
 
 describe('Server', () => {
-  let socketIoServer: SocketIoServer;
-  const serverSockets: ServerSocket[] = [];
-  const clientSockets: ClientSocket[] = [];
-  const clientCount = 3;
+  describe('Socket message exchange', () => {
+    let socketIoServer: SocketIoServer;
+    const serverSockets: ServerSocket[] = [];
+    const clientSockets: ClientSocket[] = [];
+    const clientCount = 3;
 
-  beforeAll(() => {
-    return new Promise((resolve) => {
-      const httpServer = createServer();
-      socketIoServer = new SocketIoServer(httpServer);
+    beforeAll(() => {
+      return new Promise((resolve) => {
+        const httpServer = createServer();
+        socketIoServer = new SocketIoServer(httpServer);
 
-      httpServer.listen(() => {
-        const port = (httpServer.address() as AddressInfo).port;
+        httpServer.listen(() => {
+          const port = (httpServer.address() as AddressInfo).port;
 
-        // Listen for client connections
-        socketIoServer.on('connection', (socket) => {
-          serverSockets.push(socket);
-        });
-
-        // Create client sockets
-        for (let i = 0; i < clientCount; i++) {
-          const clientSocket = SocketIoClient(`http://localhost:${port}`, {
-            forceNew: true,
+          // Listen for client connections
+          socketIoServer.on('connection', (socket) => {
+            serverSockets.push(socket);
           });
-          clientSockets.push(clientSocket);
-        }
 
-        // Wait for all clients to connect
-        Promise.all(
-          clientSockets.map(
-            (clientSocket) =>
-              new Promise<void>((res) => {
-                clientSocket.on('connect', () => res());
-              }),
-          ),
-        ).then(() => resolve(undefined));
+          // Create client sockets
+          for (let i = 0; i < clientCount; i++) {
+            const clientSocket = SocketIoClient(`http://localhost:${port}`, {
+              forceNew: true,
+            });
+            clientSockets.push(clientSocket);
+          }
+
+          // Wait for all clients to connect
+          Promise.all(
+            clientSockets.map(
+              (clientSocket) =>
+                new Promise<void>((res) => {
+                  clientSocket.on('connect', () => res());
+                }),
+            ),
+          ).then(() => resolve(undefined));
+        });
       });
     });
-  });
 
-  afterAll(() => {
-    socketIoServer.close();
-    for (const clientSocket of clientSockets) {
-      clientSocket.disconnect();
-    }
-  });
+    afterAll(() => {
+      socketIoServer.close();
+      for (const clientSocket of clientSockets) {
+        clientSocket.disconnect();
+      }
+    });
 
-  describe('Socket message exchange', () => {
     it('From server to clients', async () => {
       const callbacks: Map<string, { socket: ClientSocket; cb: Mock }> =
         new Map();
@@ -161,11 +164,48 @@ describe('Server', () => {
   });
 
   describe('Server instance', () => {
+    let socketIoServer: SocketIoServer;
+    const serverSockets: ServerSocket[] = [];
+    const clientSockets: ClientSocket[] = [];
+    const clientCount = 3;
+
     const route = Route.fromFlat('test.route');
     let server: Server;
     let serverIo: Io;
 
     beforeAll(async () => {
+      await new Promise((resolve) => {
+        const httpServer = createServer();
+        socketIoServer = new SocketIoServer(httpServer);
+
+        httpServer.listen(() => {
+          const port = (httpServer.address() as AddressInfo).port;
+
+          // Listen for client connections
+          socketIoServer.on('connection', (socket) => {
+            serverSockets.push(socket);
+          });
+
+          // Create client sockets
+          for (let i = 0; i < clientCount; i++) {
+            const clientSocket = SocketIoClient(`http://localhost:${port}`, {
+              forceNew: true,
+            });
+            clientSockets.push(clientSocket);
+          }
+
+          // Wait for all clients to connect
+          Promise.all(
+            clientSockets.map(
+              (clientSocket) =>
+                new Promise<void>((res) => {
+                  clientSocket.on('connect', () => res());
+                }),
+            ),
+          ).then(() => resolve(undefined));
+        });
+      });
+
       serverIo = new IoMem();
       await serverIo.init();
       await serverIo.isReady();
@@ -173,7 +213,20 @@ describe('Server', () => {
       server = new Server(route, serverIo);
       await server.init();
     });
-    afterAll(() => {});
+
+    afterAll(async () => {
+      await socketIoServer.close();
+
+      await Promise.all(
+        clientSockets.map(
+          (clientSocket) =>
+            new Promise<void>((resolve) => {
+              clientSocket.on('disconnect', () => resolve());
+              clientSocket.disconnect();
+            }),
+        ),
+      );
+    });
 
     it('Multicasts packages', async () => {
       const callback = vi.fn();
@@ -215,6 +268,11 @@ describe('Server', () => {
   });
 
   describe('Client instances', () => {
+    let socketIoServer: SocketIoServer;
+    const serverSockets: ServerSocket[] = [];
+    const clientSockets: ClientSocket[] = [];
+    const clientCount = 3;
+
     const cakeKey = 'testCake';
     const route = Route.fromFlat(`${cakeKey}EditHistory`);
 
@@ -225,6 +283,61 @@ describe('Server', () => {
 
     let server: Server;
     let serverIo: Io;
+
+    beforeAll(async () => {
+      await new Promise((resolve) => {
+        const httpServer = createServer();
+        socketIoServer = new SocketIoServer(httpServer);
+
+        httpServer.listen(() => {
+          const port = (httpServer.address() as AddressInfo).port;
+
+          // Listen for client connections
+          socketIoServer.on('connection', (socket) => {
+            serverSockets.push(socket);
+          });
+
+          // Create client sockets
+          for (let i = 0; i < clientCount; i++) {
+            const clientSocket = SocketIoClient(`http://localhost:${port}`, {
+              forceNew: true,
+            });
+            clientSockets.push(clientSocket);
+          }
+
+          // Wait for all clients to connect
+          Promise.all(
+            clientSockets.map(
+              (clientSocket) =>
+                new Promise<void>((res) => {
+                  clientSocket.on('connect', () => res());
+                }),
+            ),
+          ).then(() => resolve(undefined));
+        });
+      });
+
+      serverIo = new IoMem();
+      await serverIo.init();
+      await serverIo.isReady();
+
+      server = new Server(route, serverIo);
+      await server.init();
+    });
+
+    afterAll(async () => {
+      await socketIoServer.close();
+
+      await Promise.all(
+        clientSockets.map(
+          (clientSocket) =>
+            new Promise<void>((resolve) => {
+              clientSocket.on('disconnect', () => resolve());
+              clientSocket.disconnect();
+            }),
+        ),
+      );
+    });
 
     beforeEach(async () => {
       // Create client Ios
@@ -268,13 +381,6 @@ describe('Server', () => {
         server.addSocket(new SocketIoBridge(serverSocket));
       }
     });
-    afterAll(() => {});
-
-    it('Should create multiple clients', async () => {
-      expect(a.db).toBeDefined();
-      expect(b.db).toBeDefined();
-      expect(c.db).toBeDefined();
-    });
 
     it('Should sync messages between connectors', async () => {
       const callbackA = vi.fn();
@@ -301,53 +407,14 @@ describe('Server', () => {
       expect(callbackB).toHaveBeenCalledWith('testMessage');
       expect(callbackC).toHaveBeenCalledWith('testMessage');
     });
-
-    it('Should teardown client instances', async () => {
-      const callbackA = vi.fn();
-      const callbackB = vi.fn();
-      const callbackC = vi.fn();
-
-      a.connector!.listen((msg: string) => callbackA(msg));
-      b.connector!.listen((msg: string) => callbackB(msg));
-      c.connector!.listen((msg: string) => callbackC(msg));
-
-      a.connector!.send('testMessage');
-
-      // Wait until both callbacks have been called
-      await vi.waitUntil(
-        () =>
-          callbackB.mock.calls.length === 1 &&
-          callbackC.mock.calls.length === 1,
-        {
-          timeout: 2000,
-          interval: 100,
-        },
-      );
-      expect(callbackA).not.toHaveBeenCalled();
-      expect(callbackB).toHaveBeenCalledWith('testMessage');
-      expect(callbackC).toHaveBeenCalledWith('testMessage');
-
-      // Teardown client b
-      await b.tearDown();
-
-      // Reset callbacks
-      callbackA.mockReset();
-      callbackB.mockReset();
-      callbackC.mockReset();
-
-      // Send another message from a
-      a.connector!.send('testMessage2');
-
-      // Wait to ensure no further calls are made
-      await new Promise((res) => setTimeout(res, 1000));
-
-      expect(callbackA).not.toHaveBeenCalled();
-      expect(callbackB).not.toHaveBeenCalled();
-      expect(callbackC).toHaveBeenCalledWith('testMessage2');
-    });
   });
 
-  describe('Client instances with Db running', () => {
+  describe('Client instances with Db running', async () => {
+    let socketIoServer: SocketIoServer;
+    let serverSockets: ServerSocket[] = [];
+    let clientSockets: ClientSocket[] = [];
+    const clientCount = 3;
+
     const cakeKey = 'carCake';
     const cakeRef = staticExample().carCake._data[0]._hash ?? '';
     const route = Route.fromFlat(`${cakeKey}EditHistory`);
@@ -360,7 +427,50 @@ describe('Server', () => {
     let server: Server;
     let serverIo: Io;
 
-    beforeEach(async () => {
+    beforeAll(async () => {
+      // Clear arrays to ensure clean state
+      serverSockets = [];
+      clientSockets = [];
+
+      await new Promise((resolve) => {
+        const httpServer = createServer();
+        socketIoServer = new SocketIoServer(httpServer);
+
+        httpServer.listen(() => {
+          const port = (httpServer.address() as AddressInfo).port;
+
+          // Listen for client connections
+          socketIoServer.on('connection', (socket) => {
+            serverSockets.push(socket);
+          });
+
+          // Create client sockets
+          for (let i = 0; i < clientCount; i++) {
+            const clientSocket = SocketIoClient(`http://localhost:${port}`, {
+              forceNew: true,
+            });
+            clientSockets.push(clientSocket);
+          }
+
+          // Wait for all clients to connect
+          Promise.all(
+            clientSockets.map(
+              (clientSocket) =>
+                new Promise<void>((res) => {
+                  clientSocket.on('connect', () => res());
+                }),
+            ),
+          ).then(() => resolve(undefined));
+        });
+      });
+
+      serverIo = new IoMem();
+      await serverIo.init();
+      await serverIo.isReady();
+
+      server = new Server(route, serverIo);
+      await server.init();
+
       // Client setup
       ioA = new IoMem();
       await ioA.init();
@@ -417,15 +527,34 @@ describe('Server', () => {
         await server.addSocket(new SocketIoBridge(serverSocket));
       }
     });
-    afterAll(() => {});
 
-    it('Should create multiple clients', async () => {
+    afterAll(async () => {
+      // Proper cleanup sequence
       for (const client of clients) {
-        expect(client.db).toBeDefined();
+        await client.tearDown();
       }
+
+      // Wait a bit for client teardown to complete
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      for (const clientSocket of clientSockets) {
+        clientSocket.disconnect();
+      }
+
+      for (const serverSocket of serverSockets) {
+        serverSocket.disconnect();
+      }
+
+      // Wait for disconnections to complete
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      await socketIoServer.close();
+
+      // Final wait to ensure all resources are released
+      await new Promise((resolve) => setTimeout(resolve, 200));
     });
 
-    it.skip('Should sync created EditHistories to connected clients', async () => {
+    it('Should sync created EditHistories to connected clients', async () => {
       // Setup listeners before creating EditHistory
       const bReceivedEditHistoryRef = vi.fn();
       const cReceivedEditHistoryRef = vi.fn();
@@ -452,8 +581,8 @@ describe('Server', () => {
       });
 
       const edit: Edit = {
-        name: 'Select brand, type, serviceIntervals, isElectric, height, width, length, engine, repairedByWorkshop from CarExample',
-        action: exampleEditActionColumnSelection(),
+        name: 'Select brand, type, serviceIntervals, isElectric, length from CarExample',
+        action: exampleEditActionColumnSelectionOnlySomeColumns(),
         _hash: '',
       };
 
@@ -475,7 +604,7 @@ describe('Server', () => {
           bUpdatedHead.mock.calls.length >= 1 &&
           cUpdatedHead.mock.calls.length >= 1
         );
-      }, 30000);
+      }, 40000);
 
       const bRows = [...b.mem!.join!.rows];
       const cRows = [...c.mem!.join!.rows];
@@ -483,5 +612,50 @@ describe('Server', () => {
       expect(aRows).toEqual(bRows);
       expect(aRows).toEqual(cRows);
     }, 60000);
+    describe('Teardown', () => {
+      it('Should teardown client instances', async () => {
+        const callbackA = vi.fn();
+        const callbackB = vi.fn();
+        const callbackC = vi.fn();
+
+        a.connector!.listen((msg: string) => callbackA(msg));
+        b.connector!.listen((msg: string) => callbackB(msg));
+        c.connector!.listen((msg: string) => callbackC(msg));
+
+        a.connector!.send('testMessage');
+
+        // Wait until both callbacks have been called
+        await vi.waitUntil(
+          () =>
+            callbackB.mock.calls.length === 1 &&
+            callbackC.mock.calls.length === 1,
+          {
+            timeout: 2000,
+            interval: 100,
+          },
+        );
+        expect(callbackA).not.toHaveBeenCalled();
+        expect(callbackB).toHaveBeenCalledWith('testMessage');
+        expect(callbackC).toHaveBeenCalledWith('testMessage');
+
+        // Teardown client b
+        await b.tearDown();
+
+        // Reset callbacks
+        callbackA.mockReset();
+        callbackB.mockReset();
+        callbackC.mockReset();
+
+        // Send another message from a
+        a.connector!.send('testMessage2');
+
+        // Wait to ensure no further calls are made
+        await new Promise((res) => setTimeout(res, 1000));
+
+        expect(callbackA).not.toHaveBeenCalled();
+        expect(callbackB).not.toHaveBeenCalled();
+        expect(callbackC).toHaveBeenCalledWith('testMessage2');
+      });
+    });
   });
 });

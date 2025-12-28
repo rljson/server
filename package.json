@@ -29,8 +29,8 @@
   },
   "devDependencies": {
     "@types/node": "^25.0.3",
-    "@typescript-eslint/eslint-plugin": "^8.50.0",
-    "@typescript-eslint/parser": "^8.50.0",
+    "@typescript-eslint/eslint-plugin": "^8.50.1",
+    "@typescript-eslint/parser": "^8.50.1",
     "@vitest/coverage-v8": "^4.0.16",
     "cross-env": "^10.1.0",
     "eslint": "^9.39.2",
@@ -39,21 +39,21 @@
     "globals": "^16.5.0",
     "jsdoc": "^4.0.5",
     "read-pkg": "^10.0.0",
-    "socket.io": "^4.8.1",
-    "socket.io-client": "^4.8.1",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
     "typescript": "~5.9.3",
-    "typescript-eslint": "^8.50.0",
+    "typescript-eslint": "^8.50.1",
     "vite": "^7.3.0",
     "vite-node": "^5.2.0",
     "vite-plugin-dts": "^4.5.4",
-    "vite-tsconfig-paths": "^6.0.2",
+    "vite-tsconfig-paths": "^6.0.3",
     "vitest": "^4.0.16",
     "vitest-dom": "^0.1.1"
   },
   "dependencies": {
-    "@rljson/db": "link:../rljson-db",
+    "@rljson/db": "^0.0.10",
     "@rljson/hash": "^0.0.17",
-    "@rljson/io": "link:../rljson-io",
+    "@rljson/io": "^0.0.63",
     "@rljson/json": "^0.0.23",
     "@rljson/rljson": "^0.0.73"
   },
@@ -61,10 +61,7 @@
     "onlyBuiltDependencies": [
       "esbuild"
     ],
-    "overrides": {
-      "@rljson/db": "link:../rljson-db",
-      "@rljson/io": "link:../rljson-io"
-    }
+    "overrides": {}
   },
   "packageManager": "pnpm@10.11.0"
 }

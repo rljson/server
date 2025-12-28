@@ -18,8 +18,6 @@ import { Route } from '@rljson/rljson';
 import { BaseNode } from './base-node.ts';
 
 export class Client extends BaseNode {
-  private _id = Math.random().toString(36).substring(2, 15);
-
   private _ioMultiDb?: Db;
   private _ioMultiIos: IoMultiIo[] = [];
   private _ioMulti?: IoMulti;
@@ -124,23 +122,11 @@ export class Client extends BaseNode {
     }
   }
 
-  get db() {
-    return this._ioMultiDb;
-  }
-
   get connector() {
     return this._connector;
   }
 
   get mem() {
     return this._mem;
-  }
-
-  get io() {
-    return this._ioMulti;
-  }
-
-  get socket() {
-    return this._socketToServer;
   }
 }
