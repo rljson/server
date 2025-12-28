@@ -47,6 +47,22 @@
     "scminput": false
   },
 
+  "chat.tools.autoApprove": true,
+  "chat.agent.maxRequests": 300,
+  "chat.tools.terminal.enableAutoApprove": true,
+  "chat.tools.terminal.autoApprove": {
+    "rm": false,
+    "rmdir": false,
+    "del": false,
+    "kill": false,
+    "curl": false,
+    "wget": false,
+    "eval": false,
+    "chmod": false,
+    "chown": false,
+    "/^Remove-Item\\b/i": false
+  },
+
   // ##############
   // Git Editor
   // ##############
@@ -97,7 +113,7 @@
   "coverage-gutters.coverageBaseDir": "coverage/**",
   "coverage-gutters.showLineCoverage": true,
   "coverage-gutters.showRulerCoverage": true,
-  "debug.inlineValues": "on",
+  "debug.inlineValues": "off",
 
   // #############
   // Search
@@ -534,5 +550,10 @@
     "upate",
     "yrqcs"
   ],
-  "editor.codeLens": false
+  "editor.codeLens": false,
+  "workbench.colorCustomizations": {
+    "activityBar.background": "#233207",
+    "titleBar.activeBackground": "#314609",
+    "titleBar.activeForeground": "#F7FCED"
+  }
 }

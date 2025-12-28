@@ -4,10 +4,9 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import { TemplateProject } from './template-project.ts';
+import { Server } from './server.ts';
 
-
-export const example = () => {
+export const example = async () => {
   // Print methods
   const l = console.log;
   const h1 = (text: string) => l(`${text}`);
@@ -15,10 +14,11 @@ export const example = () => {
   const p = (text: string) => l(`    ${text}`);
 
   // Example
-  h1('TemplateProject.example');
-  h2('Returns an instance of the TemplateProject.');
-  const example = TemplateProject.example;
-  p(JSON.stringify(example, null, 2));
+  h1('Server.example');
+  h2('Returns an instance of the Server.');
+  const example = await Server.example();
+  p(JSON.stringify(example.clients, null, 2));
+  p(JSON.stringify(example.route, null, 2));
 };
 
 /*
