@@ -27,6 +27,7 @@ export default defineConfig({
         '@rljson/hash',
         '@rljson/io',
         '@rljson/db',
+        '@rljson/io-sqlite',
         'node:http',
         'node:net',
         'socket.io',

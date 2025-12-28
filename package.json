@@ -54,6 +54,7 @@
     "@rljson/db": "^0.0.10",
     "@rljson/hash": "^0.0.17",
     "@rljson/io": "^0.0.63",
+    "@rljson/io-sqlite": "^0.0.17",
     "@rljson/json": "^0.0.23",
     "@rljson/rljson": "^0.0.73"
   },
