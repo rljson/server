@@ -4,7 +4,7 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import { Connector, Db, MultiEditManager } from '@rljson/db';
+import { Bs, BsMulti, BsMultiBs, BsPeer, BsPeerBridge } from '@rljson/bs';
 import {
   Io,
   IoMulti,
@@ -13,40 +13,96 @@ import {
   IoPeerBridge,
   Socket,
 } from '@rljson/io';
-import { Route } from '@rljson/rljson';
 
 import { BaseNode } from './base-node.ts';
 
 export class Client extends BaseNode {
-  private _ioMultiDb?: Db;
   private _ioMultiIos: IoMultiIo[] = [];
   private _ioMulti?: IoMulti;
 
-  private _connector?: Connector;
-  private _mem?: MultiEditManager;
-
-  private _editRefsReceived: string[] = [];
+  private _bsMultiBss: BsMultiBs[] = [];
+  private _bsMulti?: BsMulti;
 
   // ...........................................................................
   /**
    * Creates a Client instance
-   * @param _route - Route for edits
-   * @param _cakeKey - Cake key for MultiEditManager
    * @param _socketToServer - Socket to connect to server
-   * @param _localIo - Local Io for local storage (default: IoMem)
+   * @param _localIo - Local Io for local storage
+   * @param _localBs - Local Bs for local blob storage
    */
   constructor(
-    private _route: Route,
-    private _cakeKey: string,
     private _socketToServer: Socket,
     protected _localIo: Io,
+    protected _localBs: Bs,
   ) {
     //Call BaseNode constructor
     super(_localIo);
   }
 
+  /**
+   * Initializes Io and Bs multis and their peer bridges.
+   * @returns The initialized Io implementation.
+   */
   async init() {
-    //Add LocalIo to MultiIo
+    await this._setupIo();
+    await this._setupBs();
+
+    await this.ready();
+
+    return this._ioMulti;
+  }
+
+  /**
+   * Resolves once the Io implementation is ready.
+   */
+  async ready() {
+    /* v8 ignore next -- @preserve */ if (this._ioMulti) {
+      await this._ioMulti.isReady();
+    }
+  }
+
+  /**
+   * Closes client resources and clears internal state.
+   */
+  async tearDown() {
+    //Close Io
+    /* v8 ignore else -- @preserve */
+    if (this._ioMulti && this._ioMulti.isOpen) {
+      this._ioMulti.close();
+    }
+
+    //Close Bs
+    /* v8 ignore else -- @preserve */
+    if (this._bsMulti) {
+      // BsMulti doesn't have isOpen, just close it
+      // (Future: BsMulti should have close() method)
+    }
+
+    this._ioMultiIos = [];
+    this._bsMultiBss = [];
+    this._ioMulti = undefined;
+    this._bsMulti = undefined;
+  }
+
+  /**
+   * Returns the Io implementation.
+   */
+  get io(): Io | undefined {
+    return this._ioMulti;
+  }
+
+  /**
+   * Returns the Bs implementation.
+   */
+  get bs(): Bs | undefined {
+    return this._bsMulti;
+  }
+
+  /**
+   * Builds the Io multi with local and peer layers.
+   */
+  private async _setupIo() {
+    // Add LocalIo to MultiIo
     this._ioMultiIos.push({
       io: this._localIo,
       dump: true,
@@ -55,14 +111,12 @@ export class Client extends BaseNode {
       priority: 1,
     });
 
-    //Create IoPeerBridge: Endpoint letting the Server pull data from Client (Upstream, only local Io)
+    // Upstream: let the server pull from client local Io
     const ioPeerBridge = new IoPeerBridge(this._localIo, this._socketToServer);
     ioPeerBridge.start();
 
-    //Create IoPeer: Pull data from Server (Downstream)
-    const ioPeer = new IoPeer(this._socketToServer);
-    await ioPeer.init();
-    await ioPeer.isReady();
+    // Downstream: pull from server
+    const ioPeer = await this._createIoPeer();
 
     this._ioMultiIos.push({
       io: ioPeer,
@@ -72,61 +126,57 @@ export class Client extends BaseNode {
       priority: 2,
     });
 
-    //Create IoMulti
     this._ioMulti = new IoMulti(this._ioMultiIos);
     await this._ioMulti.init();
     await this._ioMulti.isReady();
+  }
 
-    //Create IoMultiDb
-    this._ioMultiDb = new Db(this._ioMulti);
-
-    //Connector
-    //Receiver: Edits from Server and applies them to IoMultiDb
-    //Sender: Edits made in IoLocalDb to Server
-    this._connector = new Connector(
-      this._ioMultiDb,
-      this._route,
-      this._socketToServer,
-    );
-
-    //MultiEditManager
-    //Convenience to manage MultiEdits
-    this._mem = new MultiEditManager(this._cakeKey, this._ioMultiDb);
-    this._mem.init();
-
-    //Wire up Connector to MultiEditManager
-    //When Connector receives new EditHistoryRef, inform MultiEditManager
-    this._connector.listen(async (editHistoryRef: string) => {
-      this._editRefsReceived.push(editHistoryRef);
-      await this._mem!.editHistoryRef(editHistoryRef);
+  /**
+   * Builds the Bs multi with local and peer layers.
+   */
+  private async _setupBs() {
+    // Add LocalBs to MultiBs
+    this._bsMultiBss.push({
+      bs: this._localBs,
+      read: true,
+      write: true,
+      priority: 1,
     });
 
-    return this._ioMulti;
+    // Upstream: let the server pull from client local Bs
+    const bsPeerBridge = new BsPeerBridge(this._localBs, this._socketToServer);
+    bsPeerBridge.start();
+
+    // Downstream: pull from server
+    const bsPeer = await this._createBsPeer();
+
+    this._bsMultiBss.push({
+      bs: bsPeer,
+      read: true,
+      write: false,
+      priority: 2,
+    });
+
+    this._bsMulti = new BsMulti(this._bsMultiBss);
+    await this._bsMulti.init();
   }
 
-  async tearDown() {
-    //Close Io
-    /* v8 ignore else -- @preserve */
-    if (this._ioMulti && this._ioMulti.isOpen) {
-      this._ioMulti.close();
-    }
-
-    /* v8 ignore else -- @preserve */
-    if (this._connector) {
-      this._connector.teardown();
-    }
-
-    /* v8 ignore else -- @preserve */
-    if (this._mem) {
-      this._mem.tearDown();
-    }
+  /**
+   * Creates and initializes a downstream Io peer.
+   */
+  private async _createIoPeer() {
+    const ioPeer = new IoPeer(this._socketToServer);
+    await ioPeer.init();
+    await ioPeer.isReady();
+    return ioPeer;
   }
 
-  get connector() {
-    return this._connector;
-  }
-
-  get mem() {
-    return this._mem;
+  /**
+   * Creates and initializes a downstream Bs peer.
+   */
+  private async _createBsPeer() {
+    const bsPeer = new BsPeer(this._socketToServer);
+    await bsPeer.init();
+    return bsPeer;
   }
 }

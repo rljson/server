@@ -4,6 +4,7 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
+import { Bs, BsMem, BsMulti, BsMultiBs, BsPeer, BsServer } from '@rljson/bs';
 import { ConnectorPayload } from '@rljson/db';
 import {
   Io,
@@ -31,6 +32,7 @@ export class Server extends BaseNode {
     {
       socket: SocketWithClientId;
       io: IoPeer;
+      bs: BsPeer;
     }
   > = new Map();
 
@@ -40,10 +42,23 @@ export class Server extends BaseNode {
   // Storage => Let Clients read from Servers Io
   private _ioServer: IoServer;
 
+  private _bss: BsMultiBs[] = [];
+  private _bsMulti: BsMulti;
+
+  // Storage => Let Clients read from Servers Bs
+  private _bsServer: BsServer;
+
   // To avoid rebroadcasting the same edit refs multiple times
   private _multicastedRefs: Set<string> = new Set();
 
-  constructor(private _route: Route, protected _localIo: Io) {
+  private _refreshPromise?: Promise<void>;
+  private _pendingSockets: SocketWithClientId[] = [];
+
+  constructor(
+    private _route: Route,
+    protected _localIo: Io,
+    protected _localBs: Bs,
+  ) {
     //Call BaseNode constructor
     super(_localIo);
 
@@ -59,14 +74,46 @@ export class Server extends BaseNode {
 
     // Initialize IoServer
     this._ioServer = new IoServer(this._ioMulti);
+
+    const bsMultiBsLocal = {
+      bs: this._localBs,
+      read: true,
+      write: true,
+      priority: 1,
+    };
+    this._bss.push(bsMultiBsLocal);
+    this._bsMulti = new BsMulti(this._bss);
+
+    // Initialize BsServer
+    this._bsServer = new BsServer(this._bsMulti);
   }
 
+  /**
+   * Initializes Io and Bs multis on the server.
+   */
   async init() {
     // Initialize IoServer
     await this._ioMulti.init();
     await this._ioMulti.isReady();
+
+    // Initialize BsServer
+    await this._bsMulti.init();
+
+    await this.ready();
   }
 
+  /**
+   * Resolves once the Io implementation is ready.
+   */
+  async ready() {
+    /* v8 ignore next -- @preserve */ await this._ioMulti.isReady();
+  }
+
+  /**
+   * Adds a client socket, rebuilds multis, and refreshes servers.
+   * @param socket - Client socket to register.
+   * @returns The server instance.
+   */
   async addSocket(socket: Socket) {
     // attach a stable id to each socket
     const clientId = `client_${this._clients.size}_${Math.random()
@@ -76,38 +123,15 @@ export class Server extends BaseNode {
     // add clientId to socket (shorthand)
     (socket as any).__clientId = clientId;
 
-    // create IoPeer for the socket and initialize it
-    const ioPeer = new IoPeer(socket);
-    await ioPeer.init();
-    await ioPeer.isReady();
+    const ioPeer = await this._createIoPeer(socket);
+    const bsPeer = await this._createBsPeer(socket);
 
-    // add IoPeer to IoMultiIo list
-    this._ios.push({
-      io: ioPeer,
-      dump: false,
-      read: true,
-      write: false,
-      priority: 2,
-    });
+    this._registerClient(clientId, socket, ioPeer, bsPeer);
+    this._pendingSockets.push(socket as SocketWithClientId);
+    this._queueIoPeer(ioPeer);
+    this._queueBsPeer(bsPeer);
 
-    // recreate IoMulti with new IoMultiIo list
-    this._ioMulti = new IoMulti(this._ios);
-    await this._ioMulti.init();
-    await this._ioMulti.isReady();
-
-    // store socket with client id
-    this._clients.set(clientId, {
-      socket: socket,
-      io: ioPeer,
-    });
-
-    // recreate IoServer with new IoMulti
-    this._ioServer = new IoServer(this._ioMulti);
-
-    // add socket to IoServer
-    for (const { socket } of this._clients.values()) {
-      await this._ioServer.addSocket(socket);
-    }
+    await this._queueRefresh();
 
     // remove all existing listeners and re-establish multicast
     this._removeAllListeners();
@@ -166,8 +190,138 @@ export class Server extends BaseNode {
     return this._route;
   }
 
+  /**
+   * Returns the Io implementation.
+   */
+  get io(): Io {
+    /* v8 ignore next -- @preserve */ return this._ioMulti;
+  }
+
+  /**
+   * Returns the Bs implementation.
+   */
+  get bs(): Bs {
+    /* v8 ignore next -- @preserve */ return this._bsMulti;
+  }
+
+  /**
+   * Returns the connected clients map.
+   */
   get clients() {
     return this._clients;
+  }
+
+  /**
+   * Creates and initializes a downstream Io peer for a socket.
+   * @param socket - Client socket to bind the peer to.
+   */
+  private async _createIoPeer(socket: Socket) {
+    const ioPeer = new IoPeer(socket);
+    await ioPeer.init();
+    await ioPeer.isReady();
+    return ioPeer;
+  }
+
+  /**
+   * Creates and initializes a downstream Bs peer for a socket.
+   * @param socket - Client socket to bind the peer to.
+   */
+  private async _createBsPeer(socket: Socket) {
+    const bsPeer = new BsPeer(socket);
+    await bsPeer.init();
+    return bsPeer;
+  }
+
+  /**
+   * Registers the client socket and peers.
+   * @param clientId - Stable client identifier.
+   * @param socket - Client socket to register.
+   * @param io - Io peer associated with the client.
+   * @param bs - Bs peer associated with the client.
+   */
+  private _registerClient(
+    clientId: string,
+    socket: SocketWithClientId,
+    io: IoPeer,
+    bs: BsPeer,
+  ) {
+    this._clients.set(clientId, {
+      socket,
+      io,
+      bs,
+    });
+  }
+
+  /**
+   * Queues an Io peer for inclusion in the Io multi.
+   * @param ioPeer - Io peer to add.
+   */
+  private _queueIoPeer(ioPeer: IoPeer) {
+    this._ios.push({
+      io: ioPeer,
+      dump: false,
+      read: true,
+      write: false,
+      priority: 2,
+    });
+  }
+
+  /**
+   * Queues a Bs peer for inclusion in the Bs multi.
+   * @param bsPeer - Bs peer to add.
+   */
+  private _queueBsPeer(bsPeer: BsPeer) {
+    this._bss.push({
+      bs: bsPeer,
+      read: true,
+      write: false,
+      priority: 2,
+    });
+  }
+
+  /**
+   * Rebuilds Io and Bs multis from queued peers.
+   */
+  private async _rebuildMultis() {
+    this._ioMulti = new IoMulti(this._ios);
+    await this._ioMulti.init();
+    await this._ioMulti.isReady();
+
+    this._bsMulti = new BsMulti(this._bss);
+    await this._bsMulti.init();
+  }
+
+  /**
+   * Recreates servers and reattaches sockets.
+   */
+  private async _refreshServers() {
+    (this._ioServer as any)._io = this._ioMulti;
+    (this._bsServer as any)._bs = this._bsMulti;
+
+    for (const socket of this._pendingSockets) {
+      await this._ioServer.addSocket(socket);
+      await this._bsServer.addSocket(socket);
+    }
+
+    this._pendingSockets = [];
+  }
+
+  /**
+   * Batches multi/server refreshes into a single queued task.
+   */
+  private _queueRefresh() {
+    if (!this._refreshPromise) {
+      this._refreshPromise = Promise.resolve()
+        .then(async () => {
+          await this._rebuildMultis();
+          await this._refreshServers();
+        })
+        .finally(() => {
+          this._refreshPromise = undefined;
+        });
+    }
+
+    return this._refreshPromise;
   }
 
   /** Example instance for test purposes */
@@ -178,9 +332,11 @@ export class Server extends BaseNode {
     await io.init();
     await io.isReady();
 
+    const bs = new BsMem();
+
     const socket = new SocketMock();
     socket.connect();
 
-    return new Server(route, io).addSocket(socket);
+    return new Server(route, io, bs).addSocket(socket);
   }
 }
