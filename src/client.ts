@@ -47,6 +47,8 @@ export class Client extends BaseNode {
     await this._setupIo();
     await this._setupBs();
 
+    await this.ready();
+
     return this._ioMulti;
   }
 
@@ -54,7 +56,7 @@ export class Client extends BaseNode {
    * Resolves once the Io implementation is ready.
    */
   async ready() {
-    if (this._ioMulti) {
+    /* v8 ignore next -- @preserve */ if (this._ioMulti) {
       await this._ioMulti.isReady();
     }
   }

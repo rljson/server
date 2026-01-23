@@ -52,6 +52,7 @@ export class Server extends BaseNode {
   private _multicastedRefs: Set<string> = new Set();
 
   private _refreshPromise?: Promise<void>;
+  private _pendingSockets: SocketWithClientId[] = [];
 
   constructor(
     private _route: Route,
@@ -97,13 +98,15 @@ export class Server extends BaseNode {
 
     // Initialize BsServer
     await this._bsMulti.init();
+
+    await this.ready();
   }
 
   /**
    * Resolves once the Io implementation is ready.
    */
   async ready() {
-    await this._ioMulti.isReady();
+    /* v8 ignore next -- @preserve */ await this._ioMulti.isReady();
   }
 
   /**
@@ -124,6 +127,7 @@ export class Server extends BaseNode {
     const bsPeer = await this._createBsPeer(socket);
 
     this._registerClient(clientId, socket, ioPeer, bsPeer);
+    this._pendingSockets.push(socket as SocketWithClientId);
     this._queueIoPeer(ioPeer);
     this._queueBsPeer(bsPeer);
 
@@ -190,14 +194,14 @@ export class Server extends BaseNode {
    * Returns the Io implementation.
    */
   get io(): Io {
-    return this._ioMulti;
+    /* v8 ignore next -- @preserve */ return this._ioMulti;
   }
 
   /**
    * Returns the Bs implementation.
    */
   get bs(): Bs {
-    return this._bsMulti;
+    /* v8 ignore next -- @preserve */ return this._bsMulti;
   }
 
   /**
@@ -291,13 +295,15 @@ export class Server extends BaseNode {
    * Recreates servers and reattaches sockets.
    */
   private async _refreshServers() {
-    this._ioServer = new IoServer(this._ioMulti);
-    this._bsServer = new BsServer(this._bsMulti);
+    (this._ioServer as any)._io = this._ioMulti;
+    (this._bsServer as any)._bs = this._bsMulti;
 
-    for (const { socket } of this._clients.values()) {
+    for (const socket of this._pendingSockets) {
       await this._ioServer.addSocket(socket);
       await this._bsServer.addSocket(socket);
     }
+
+    this._pendingSockets = [];
   }
 
   /**

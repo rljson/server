@@ -29,6 +29,7 @@ export default defineConfig({
         '@rljson/db',
         'node:http',
         'node:net',
+        'node:stream',
         'socket.io',
         'socket.io-client',
         // Add all peer depencies from package.json here

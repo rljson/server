@@ -14,7 +14,11 @@ import { Socket as ClientSocket } from 'socket.io-client';
  * Works with both server-side and client-side Socket.IO implementations.
  */
 export class SocketIoBridge implements Socket {
-  constructor(private _socket: ServerSocket | ClientSocket) {}
+  constructor(private _socket: ServerSocket | ClientSocket) {
+    if ('setMaxListeners' in this._socket) {
+      (this._socket as any).setMaxListeners(0);
+    }
+  }
 
   get connected(): boolean {
     return this._socket.connected;
