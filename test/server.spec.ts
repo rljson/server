@@ -6,39 +6,23 @@
 
 import { BsMem } from '@rljson/bs';
 import {
-  Connector,
-  Db,
-  exampleEditActionColumnSelectionOnlySomeColumns,
-  MultiEditManager,
-  staticExample,
+  Connector, Db, exampleEditActionColumnSelectionOnlySomeColumns, MultiEditManager, staticExample
 } from '@rljson/db';
 import { Io, IoMem, IoMulti, SocketMock } from '@rljson/io';
 import {
-  createEditHistoryTableCfg,
-  createEditTableCfg,
-  createMultiEditTableCfg,
-  Edit,
-  Route,
+  createEditHistoryTableCfg, createEditTableCfg, createMultiEditTableCfg, Edit, Route
 } from '@rljson/rljson';
 
 import { createServer } from 'node:http';
 import { AddressInfo } from 'node:net';
-import { Socket as ServerSocket, Server as SocketIoServer } from 'socket.io';
-import { Socket as ClientSocket, io as SocketIoClient } from 'socket.io-client';
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  Mock,
-  vi,
-} from 'vitest';
+import { Server as SocketIoServer, Socket as ServerSocket } from 'socket.io';
+import { io as SocketIoClient, Socket as ClientSocket } from 'socket.io-client';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, Mock, vi } from 'vitest';
 
 import { Client } from '../src/client';
 import { Server } from '../src/server';
 import { SocketIoBridge } from '../src/socket-io-bridge';
+
 
 describe('Server', () => {
   describe('Socket message exchange', () => {
@@ -271,6 +255,165 @@ describe('Server', () => {
       expect(callback).toHaveBeenCalledTimes(2);
       expect(callback).toHaveBeenNthCalledWith(1, { data: 123 });
       expect(callback).toHaveBeenNthCalledWith(2, { data: 123 });
+    });
+
+    it('Should NOT broadcast back to sender', async () => {
+      const senderCallback = vi.fn();
+      const receiverCallbacks: Mock[] = [vi.fn(), vi.fn()];
+
+      // Listen on sender (should NOT receive its own message)
+      clientSockets[0].on(route.flat, (m) => {
+        senderCallback(m);
+      });
+
+      // Listen on other clients (should receive the message)
+      clientSockets[1].on(route.flat, (m) => {
+        receiverCallbacks[0](m);
+      });
+      clientSockets[2].on(route.flat, (m) => {
+        receiverCallbacks[1](m);
+      });
+
+      // Emit from first client (sender)
+      clientSockets[0].emit(route.flat, { r: 'ref1', data: 'test' });
+
+      // Wait until receivers have been called
+      await vi.waitUntil(
+        () => receiverCallbacks.every((cb) => cb.mock.calls.length > 0),
+        {
+          timeout: 2000,
+          interval: 100,
+        },
+      );
+
+      // Verify sender did NOT receive its own message
+      expect(senderCallback).not.toHaveBeenCalled();
+
+      // Verify other clients did receive the message
+      expect(receiverCallbacks[0]).toHaveBeenCalledTimes(1);
+      expect(receiverCallbacks[1]).toHaveBeenCalledTimes(1);
+    });
+
+    it('Should broadcast to ALL OTHER clients', async () => {
+      const callbacks: Mock[] = [vi.fn(), vi.fn(), vi.fn()];
+
+      // Clear any previous listeners
+      clientSockets[0].removeAllListeners(route.flat);
+      clientSockets[1].removeAllListeners(route.flat);
+      clientSockets[2].removeAllListeners(route.flat);
+
+      // Set up listeners on all clients
+      clientSockets.forEach((socket, idx) => {
+        socket.on(route.flat, (m) => {
+          callbacks[idx](m);
+        });
+      });
+
+      // Emit from second client
+      const senderId = 1;
+      clientSockets[senderId].emit(route.flat, {
+        r: 'ref2',
+        data: 'broadcast-test',
+      });
+
+      // Wait until non-sender callbacks have been called
+      await vi.waitUntil(
+        () =>
+          callbacks[0].mock.calls.length > 0 &&
+          callbacks[2].mock.calls.length > 0,
+        {
+          timeout: 2000,
+          interval: 100,
+        },
+      );
+
+      // Verify sender (index 1) did NOT receive
+      expect(callbacks[senderId]).not.toHaveBeenCalled();
+
+      // Verify all OTHER clients received the message
+      expect(callbacks[0]).toHaveBeenCalledTimes(1);
+      expect(callbacks[2]).toHaveBeenCalledTimes(1);
+
+      // Verify the data is correct
+      expect(callbacks[0]).toHaveBeenCalledWith(
+        expect.objectContaining({
+          r: 'ref2',
+          data: 'broadcast-test',
+        }),
+      );
+      expect(callbacks[2]).toHaveBeenCalledWith(
+        expect.objectContaining({
+          r: 'ref2',
+          data: 'broadcast-test',
+        }),
+      );
+    });
+
+    it('Should add __origin to forwarded messages', async () => {
+      const receiverCallback = vi.fn();
+
+      // Clear any previous listeners
+      clientSockets[0].removeAllListeners(route.flat);
+      clientSockets[1].removeAllListeners(route.flat);
+      clientSockets[2].removeAllListeners(route.flat);
+
+      // Listen on receiver
+      clientSockets[1].on(route.flat, (m) => {
+        receiverCallback(m);
+      });
+
+      // Emit from first client
+      clientSockets[0].emit(route.flat, { r: 'ref3', data: 'origin-test' });
+
+      // Wait until receiver callback has been called
+      await vi.waitUntil(() => receiverCallback.mock.calls.length > 0, {
+        timeout: 2000,
+        interval: 100,
+      });
+
+      // Verify the message has __origin property
+      expect(receiverCallback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          r: 'ref3',
+          data: 'origin-test',
+          __origin: expect.any(String),
+        }),
+      );
+
+      // Verify __origin is set to sender's client ID
+      const receivedMessage = receiverCallback.mock.calls[0][0];
+      expect(receivedMessage.__origin).toMatch(/^client_\d+_/);
+    });
+
+    it('Should NOT re-forward messages with existing __origin', async () => {
+      const callbacks: Mock[] = [vi.fn(), vi.fn(), vi.fn()];
+
+      // Clear any previous listeners
+      clientSockets[0].removeAllListeners(route.flat);
+      clientSockets[1].removeAllListeners(route.flat);
+      clientSockets[2].removeAllListeners(route.flat);
+
+      // Set up listeners that track all messages
+      clientSockets.forEach((socket, idx) => {
+        socket.on(route.flat, (m) => {
+          callbacks[idx](m);
+        });
+      });
+
+      // Emit a message with __origin already set (simulating a forwarded message)
+      clientSockets[0].emit(route.flat, {
+        r: 'ref4',
+        data: 'already-forwarded',
+        __origin: 'some_other_client',
+      });
+
+      // Wait a bit to ensure no messages are forwarded
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      // Verify no client received the message (since it already has __origin)
+      expect(callbacks[0]).not.toHaveBeenCalled();
+      expect(callbacks[1]).not.toHaveBeenCalled();
+      expect(callbacks[2]).not.toHaveBeenCalled();
     });
   });
 
