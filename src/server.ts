@@ -6,19 +6,11 @@
 
 import { Bs, BsMem, BsMulti, BsMultiBs, BsPeer, BsServer } from '@rljson/bs';
 import { ConnectorPayload } from '@rljson/db';
-import {
-  Io,
-  IoMem,
-  IoMulti,
-  IoMultiIo,
-  IoPeer,
-  IoServer,
-  Socket,
-  SocketMock,
-} from '@rljson/io';
+import { Io, IoMem, IoMulti, IoMultiIo, IoPeer, IoServer, Socket, SocketMock } from '@rljson/io';
 import { Route } from '@rljson/rljson';
 
 import { BaseNode } from './base-node.ts';
+
 
 export type SocketWithClientId = Socket & { __clientId?: string };
 
@@ -153,9 +145,10 @@ export class Server extends BaseNode {
   // ...........................................................................
   /**
    * Broadcasts incoming payloads from any client to all other connected clients.
+   * Ensures the sender is filtered out when broadcasting.
    */
   private _multicastRefs = () => {
-    for (const { socket: socketA } of this._clients.values()) {
+    for (const [clientIdA, { socket: socketA }] of this._clients.entries()) {
       socketA.on(this._route.flat, (payload: ConnectorPayload) => {
         const ref = payload.r;
         // Avoid rebroadcasting the same ref multiple times
@@ -173,11 +166,15 @@ export class Server extends BaseNode {
           return;
         }
 
-        for (const { socket: socketB } of this._clients.values()) {
-          if (socketA !== socketB) {
+        // Broadcast to all OTHER clients (filter out the sender)
+        for (const [
+          clientIdB,
+          { socket: socketB },
+        ] of this._clients.entries()) {
+          if (clientIdA !== clientIdB) {
             // clone and mark the forwarded payload with the origin to prevent loops
             const forwarded = Object.assign({}, payload, {
-              __origin: (socketA as any).__clientId,
+              __origin: clientIdA,
             });
             socketB.emit(this._route.flat, forwarded);
           }
