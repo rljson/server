@@ -6,23 +6,41 @@
 
 import { BsMem } from '@rljson/bs';
 import {
-  Connector, Db, exampleEditActionColumnSelectionOnlySomeColumns, MultiEditManager, staticExample
+  Connector,
+  Db,
+  exampleEditActionColumnSelectionOnlySomeColumns,
+  MultiEditManager,
+  staticExample,
 } from '@rljson/db';
 import { Io, IoMem, IoMulti, SocketMock } from '@rljson/io';
 import {
-  createEditHistoryTableCfg, createEditTableCfg, createMultiEditTableCfg, Edit, Route
+  createEditHistoryTableCfg,
+  createEditTableCfg,
+  createMultiEditTableCfg,
+  createTreesTableCfg,
+  Edit,
+  Route,
+  treeFromObject,
 } from '@rljson/rljson';
 
 import { createServer } from 'node:http';
 import { AddressInfo } from 'node:net';
-import { Server as SocketIoServer, Socket as ServerSocket } from 'socket.io';
-import { io as SocketIoClient, Socket as ClientSocket } from 'socket.io-client';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, Mock, vi } from 'vitest';
+import { Socket as ServerSocket, Server as SocketIoServer } from 'socket.io';
+import { Socket as ClientSocket, io as SocketIoClient } from 'socket.io-client';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  Mock,
+  vi,
+} from 'vitest';
 
 import { Client } from '../src/client';
 import { Server } from '../src/server';
 import { SocketIoBridge } from '../src/socket-io-bridge';
-
 
 describe('Server', () => {
   describe('Socket message exchange', () => {
@@ -1548,6 +1566,476 @@ describe('Server', () => {
 
       const count = await serverIo.rowCount(tableCfg.key);
       expect(count).toBe(0);
+    });
+  });
+});
+
+describe('Db Operations over IoMulti Integration', () => {
+  let socketIoServer: SocketIoServer;
+  let serverSockets: ServerSocket[] = [];
+  let clientSockets: ClientSocket[] = [];
+  const clientCount = 2;
+
+  const cakeKey = 'dbTestCake';
+  const route = Route.fromFlat(`${cakeKey}EditHistory`);
+
+  let clientA: Client, ioA: IoMem, bsA: BsMem, dbA: Db;
+  let clientB: Client, ioB: IoMem, bsB: BsMem, dbB: Db;
+
+  let server: Server;
+  let serverIo: Io;
+  let serverBs: BsMem;
+
+  beforeAll(async () => {
+    serverSockets = [];
+    clientSockets = [];
+
+    await new Promise((resolve) => {
+      const httpServer = createServer();
+      socketIoServer = new SocketIoServer(httpServer);
+
+      httpServer.listen(() => {
+        const port = (httpServer.address() as AddressInfo).port;
+
+        socketIoServer.on('connection', (socket) => {
+          serverSockets.push(socket);
+        });
+
+        for (let i = 0; i < clientCount; i++) {
+          const clientSocket = SocketIoClient(`http://localhost:${port}`, {
+            forceNew: true,
+          });
+          clientSockets.push(clientSocket);
+        }
+
+        Promise.all(
+          clientSockets.map(
+            (clientSocket) =>
+              new Promise<void>((res) => {
+                clientSocket.on('connect', () => res());
+              }),
+          ),
+        ).then(() => resolve(undefined));
+      });
+    });
+
+    serverBs = new BsMem();
+  });
+
+  afterAll(async () => {
+    await socketIoServer.close();
+
+    await Promise.all(
+      clientSockets.map(
+        (clientSocket) =>
+          new Promise<void>((resolve) => {
+            clientSocket.on('disconnect', () => resolve());
+            clientSocket.disconnect();
+          }),
+      ),
+    );
+  });
+
+  beforeEach(async () => {
+    // Recreate serverIo for each test to avoid table pollution
+    serverIo = new IoMem();
+    await serverIo.init();
+    await serverIo.isReady();
+
+    // Recreate server with fresh Io
+    server = new Server(route, serverIo, serverBs);
+    await server.init();
+
+    await server.addSocket(new SocketIoBridge(serverSockets[0]));
+    await server.addSocket(new SocketIoBridge(serverSockets[1]));
+
+    // Setup client A
+    ioA = new IoMem();
+    await ioA.init();
+    await ioA.isReady();
+    bsA = new BsMem();
+
+    clientA = new Client(new SocketIoBridge(clientSockets[0]), ioA, bsA);
+    await clientA.init();
+
+    // Setup client B
+    ioB = new IoMem();
+    await ioB.init();
+    await ioB.isReady();
+    bsB = new BsMem();
+
+    clientB = new Client(new SocketIoBridge(clientSockets[1]), ioB, bsB);
+    await clientB.init();
+
+    // Create Db instances using client IoMulti
+    dbA = new Db(clientA.io!);
+    dbB = new Db(clientB.io!);
+  });
+
+  it('Should initialize Db instances with IoMulti', async () => {
+    expect(dbA).toBeDefined();
+    expect(dbB).toBeDefined();
+  });
+
+  describe('Pattern: Server Data Distribution', () => {
+    it('Should allow both clients to read data from server via get', async () => {
+      const exampleData = staticExample();
+      const carCakeRoute = Route.fromFlat('carCake');
+
+      // Server creates tables and imports data
+      await server.createTables({
+        withInsertHistory: exampleData.tableCfgs._data,
+      });
+      await server.import(exampleData);
+
+      // Clients need table definitions
+      await clientA.createTables({
+        withInsertHistory: exampleData.tableCfgs._data,
+      });
+      await clientB.createTables({
+        withInsertHistory: exampleData.tableCfgs._data,
+      });
+
+      // Both clients can read server data through their IoPeer (priority 2)
+      const dataFromA = await dbA.get(carCakeRoute, {});
+      const dataFromB = await dbB.get(carCakeRoute, {});
+
+      // Verify both clients see the same server data
+      expect(dataFromA.rljson.carCake).toBeDefined();
+      expect(dataFromB.rljson.carCake).toBeDefined();
+      expect(dataFromA.rljson.carCake._data.length).toBe(
+        dataFromB.rljson.carCake._data.length,
+      );
+      expect(dataFromA.rljson.carCake._data.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Pattern: Insert on Client A, Get on Client B', () => {
+    it('Should demonstrate distributed data access with ref passing', async () => {
+      const exampleData = staticExample();
+      const carCakeRoute = Route.fromFlat('carCake');
+
+      // Setup: All parties need table definitions
+      await clientA.createTables({
+        withInsertHistory: exampleData.tableCfgs._data,
+      });
+      await clientB.createTables({
+        withInsertHistory: exampleData.tableCfgs._data,
+      });
+      await server.createTables({
+        withInsertHistory: exampleData.tableCfgs._data,
+      });
+
+      // Client A imports data (writes to local IoMem at priority 1)
+      await clientA.import(exampleData);
+
+      // Get a reference from Client A's data
+      const dataFromA = await dbA.get(carCakeRoute, {});
+      expect(dataFromA.rljson.carCake._data.length).toBeGreaterThan(0);
+
+      const carRef = dataFromA.rljson.carCake._data[0]._hash;
+      expect(carRef).toBeDefined();
+
+      // Client A can read its own data (priority 1 - local)
+      const readByA = await dbA.get(carCakeRoute, { _hash: carRef });
+      expect(readByA.rljson.carCake._data[0]._hash).toBe(carRef);
+
+      // Client B retrieves the same data using the ref
+      // (via IoPeer to server, which reads from Client A via IoPeerBridge)
+      const readByB = await dbB.get(carCakeRoute, { _hash: carRef });
+      expect(readByB.rljson.carCake._data[0]._hash).toBe(carRef);
+
+      // Verify the data content matches
+      expect(readByB.rljson.carCake._data[0]).toEqual(
+        readByA.rljson.carCake._data[0],
+      );
+    });
+  });
+});
+
+describe('Tree Operations over IoMulti Integration', () => {
+  let socketIoServer: SocketIoServer;
+  let serverSockets: ServerSocket[] = [];
+  let clientSockets: ClientSocket[] = [];
+  const clientCount = 2;
+
+  const treeName = 'exampleTree';
+  const route = Route.fromFlat(treeName);
+
+  let clientA: Client, ioA: IoMem, bsA: BsMem, dbA: Db;
+  let clientB: Client, ioB: IoMem, bsB: BsMem, dbB: Db;
+
+  let server: Server;
+  let serverIo: Io;
+  let serverBs: BsMem;
+
+  beforeAll(async () => {
+    serverSockets = [];
+    clientSockets = [];
+
+    await new Promise((resolve) => {
+      const httpServer = createServer();
+      socketIoServer = new SocketIoServer(httpServer);
+
+      httpServer.listen(() => {
+        const port = (httpServer.address() as AddressInfo).port;
+
+        socketIoServer.on('connection', (socket) => {
+          serverSockets.push(socket);
+        });
+
+        for (let i = 0; i < clientCount; i++) {
+          const clientSocket = SocketIoClient(`http://localhost:${port}`, {
+            forceNew: true,
+          });
+          clientSockets.push(clientSocket);
+        }
+
+        Promise.all(
+          clientSockets.map(
+            (clientSocket) =>
+              new Promise<void>((res) => {
+                clientSocket.on('connect', () => res());
+              }),
+          ),
+        ).then(() => resolve(undefined));
+      });
+    });
+
+    serverBs = new BsMem();
+  });
+
+  afterAll(async () => {
+    await socketIoServer.close();
+
+    await Promise.all(
+      clientSockets.map(
+        (clientSocket) =>
+          new Promise<void>((resolve) => {
+            clientSocket.on('disconnect', () => resolve());
+            clientSocket.disconnect();
+          }),
+      ),
+    );
+  });
+
+  beforeEach(async () => {
+    // Remove all event listeners from previous test to prevent interference
+    serverSockets.forEach((socket) => socket.removeAllListeners());
+    clientSockets.forEach((socket) => socket.removeAllListeners());
+
+    // Recreate serverIo for each test
+    serverIo = new IoMem();
+    await serverIo.init();
+    await serverIo.isReady();
+
+    // Recreate server with fresh Io
+    server = new Server(route, serverIo, serverBs);
+    await server.init();
+
+    await server.addSocket(new SocketIoBridge(serverSockets[0]));
+    await server.addSocket(new SocketIoBridge(serverSockets[1]));
+
+    // Setup client A
+    ioA = new IoMem();
+    await ioA.init();
+    await ioA.isReady();
+    bsA = new BsMem();
+
+    clientA = new Client(new SocketIoBridge(clientSockets[0]), ioA, bsA);
+    await clientA.init();
+
+    // Setup client B
+    ioB = new IoMem();
+    await ioB.init();
+    await ioB.isReady();
+    bsB = new BsMem();
+
+    clientB = new Client(new SocketIoBridge(clientSockets[1]), ioB, bsB);
+    await clientB.init();
+
+    // Create Db instances using client IoMulti
+    dbA = new Db(clientA.io!);
+    dbB = new Db(clientB.io!);
+  });
+
+  it('Should initialize Db instances with IoMulti for Tree operations', async () => {
+    expect(dbA).toBeDefined();
+    expect(dbB).toBeDefined();
+  });
+
+  describe('Pattern: Tree Data Distribution - Pull Pattern', () => {
+    it('Should allow Client A to store tree, Client B to retrieve via server (pull pattern)', async () => {
+      const testTreeName = 'pullPatternTree';
+      // 1. Create a simple tree object
+      const treeObject = { a: 1, b: { c: 2, d: [3, 4] } };
+      const trees = treeFromObject(treeObject);
+      const rootTree = trees[trees.length - 1];
+      const rootTreeHash = rootTree._hash; // Last tree is the root
+      const rootId = 'root'; // Use explicit root node
+
+      // 2. Create trees table configuration
+      const treeTableCfg = createTreesTableCfg(testTreeName);
+
+      // 3. All parties need table definitions (server does NOT import data)
+      await server.createTables({ withInsertHistory: [treeTableCfg] });
+      await clientA.createTables({ withInsertHistory: [treeTableCfg] });
+      await clientB.createTables({ withInsertHistory: [treeTableCfg] });
+
+      // 4. Client A stores tree data locally (NOT pushed to server)
+      await clientA.import({
+        [testTreeName]: { _type: 'trees', _data: trees },
+      });
+
+      // 5. Client A can read its own tree data (priority 1 - local)
+      // Use controller.get() with root node ID for recursive child fetching
+      const controllerA = await dbA.getController(testTreeName);
+      const dataFromA = await controllerA.get(rootTreeHash, undefined, rootId);
+      expect(dataFromA[testTreeName]).toBeDefined();
+      expect(dataFromA[testTreeName]._data.length).toBeGreaterThan(0);
+      const hasRootInA = dataFromA[testTreeName]._data.some(
+        (node: any) => node._hash === rootTreeHash,
+      );
+      expect(hasRootInA).toBe(true);
+
+      // 6. Client B retrieves tree via server (PULL pattern):
+      //    Client B -> IoPeer -> Server -> IoPeerBridge -> Client A
+      const controllerB = await dbB.getController(testTreeName);
+      const dataFromB = await controllerB.get(rootTreeHash, undefined, rootId);
+
+      // 7. Verify Client B can access Client A's tree data
+      expect(dataFromB[testTreeName]).toBeDefined();
+      expect(dataFromB[testTreeName]._data.length).toBe(
+        dataFromA[testTreeName]._data.length,
+      );
+      const hasRootInB = dataFromB[testTreeName]._data.some(
+        (node: any) => node._hash === rootTreeHash,
+      );
+      expect(hasRootInB).toBe(true);
+    });
+  });
+
+  describe('Pattern: Tree Insert on Client A, Get on Client B', () => {
+    it('Should demonstrate distributed tree data access with ref passing', async () => {
+      const testTreeName = 'distributedTree';
+      // 1. Create tree object and convert to trees
+      const treeObject = { x: 10, y: { z: 20 } };
+      const trees = treeFromObject(treeObject);
+      const rootTree = trees[trees.length - 1]; // Last tree is the root
+      const rootTreeHash = rootTree._hash;
+      const rootId = 'root'; // Use explicit root node
+
+      // 2. Create trees table configuration
+      const treeTableCfg = createTreesTableCfg(testTreeName);
+
+      // 3. Setup: All parties need table definitions (same as working Db tests)
+      await clientA.createTables({ withInsertHistory: [treeTableCfg] });
+      await clientB.createTables({ withInsertHistory: [treeTableCfg] });
+      await server.createTables({ withInsertHistory: [treeTableCfg] });
+
+      // 4. Client A imports tree data (writes to local IoMem at priority 1)
+      await clientA.import({
+        [testTreeName]: { _type: 'trees', _data: trees },
+      });
+
+      // 5. Client A can read its own tree data using root hash (priority 1 - local)
+      // Use controller.get() with root node ID for recursive child fetching
+      const controllerA = await dbA.getController(testTreeName);
+      const readByA = await controllerA.get(rootTreeHash, undefined, rootId);
+      expect(readByA[testTreeName]._data.length).toBeGreaterThan(0);
+      const hasRootNode = readByA[testTreeName]._data.some(
+        (node: any) => node._hash === rootTreeHash,
+      );
+      expect(hasRootNode).toBe(true);
+
+      // 7. Client B retrieves tree data using root ref
+      // via IoPeer to server, which reads from Client A via IoPeerBridge
+      const controllerB = await dbB.getController(testTreeName);
+      const readByB = await controllerB.get(rootTreeHash, undefined, rootId);
+
+      // Verify cross-client tree sync works
+      expect(readByB[testTreeName]).toBeDefined();
+      const hasRootInB = readByB[testTreeName]._data.some(
+        (node: any) => node._hash === rootTreeHash,
+      );
+      expect(hasRootInB).toBe(true);
+
+      // Verify both clients received the same tree structure
+      expect(readByB[testTreeName]._data.length).toBe(
+        readByA[testTreeName]._data.length,
+      );
+    });
+  });
+
+  describe('Pattern: Tree modification and distribution', () => {
+    it('Should demonstrate creating and sharing different tree structures', async () => {
+      const testTreeName = 'modifiedTree';
+      // 1. Create two different tree structures
+      const tree1 = { x: 10, y: 20 };
+      const tree2 = { a: 100, b: { c: 200 } };
+
+      const trees1 = treeFromObject(tree1);
+      const trees2 = treeFromObject(tree2);
+
+      const root1Tree = trees1[trees1.length - 1];
+      const root1Hash = root1Tree._hash;
+      const root1Id = 'root'; // Use explicit root node
+
+      const root2Tree = trees2[trees2.length - 1];
+      const root2Hash = root2Tree._hash;
+      const root2Id = 'root'; // Use explicit root node
+
+      // 2. Create trees table configuration
+      const treeTableCfg = createTreesTableCfg(testTreeName);
+
+      // 3. Setup tables on all parties
+      await clientA.createTables({ withInsertHistory: [treeTableCfg] });
+      await clientB.createTables({ withInsertHistory: [treeTableCfg] });
+      await server.createTables({ withInsertHistory: [treeTableCfg] });
+
+      // 4. Client A imports first tree
+      await clientA.import({
+        [testTreeName]: { _type: 'trees', _data: trees1 },
+      });
+
+      // 5. Client B imports second tree
+      await clientB.import({
+        [testTreeName]: { _type: 'trees', _data: trees2 },
+      });
+
+      // 6. Client A can read its own tree (priority 1 - local)
+      // Use controller.get() with root node ID for recursive child fetching
+      const controllerA = await dbA.getController(testTreeName);
+      const readTree1 = await controllerA.get(root1Hash, undefined, root1Id);
+      const hasTree1 = readTree1[testTreeName]._data.some(
+        (node: any) => node._hash === root1Hash,
+      );
+      expect(hasTree1).toBe(true);
+
+      // 7. Client B can read its own tree (priority 1 - local)
+      const controllerB = await dbB.getController(testTreeName);
+      const readTree2ByB = await controllerB.get(root2Hash, undefined, root2Id);
+      const hasTree2InB = readTree2ByB[testTreeName]._data.some(
+        (node: any) => node._hash === root2Hash,
+      );
+      expect(hasTree2InB).toBe(true);
+
+      // 8. Client A reads Client B's tree via server (priority 2)
+      const readTree2ByA = await controllerA.get(root2Hash, undefined, root2Id);
+
+      // Verify query completes
+      expect(readTree2ByA[testTreeName]).toBeDefined();
+
+      // Verify cross-client tree sync works
+      const hasTree2InA = readTree2ByA[testTreeName]._data.some(
+        (node: any) => node._hash === root2Hash,
+      );
+      expect(hasTree2InA).toBe(true);
+
+      // Verify both clients see the same tree structure for tree2
+      expect(readTree2ByA[testTreeName]._data.length).toBe(
+        readTree2ByB[testTreeName]._data.length,
+      );
     });
   });
 });
