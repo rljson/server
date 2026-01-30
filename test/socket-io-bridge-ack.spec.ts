@@ -12,7 +12,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { SocketIoBridge } from '../src/socket-io-bridge';
 
-
 describe('SocketIoBridge Acknowledgment Tests', () => {
   let socketIoServer: SocketIoServer;
   let port: number;
