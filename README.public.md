@@ -10,6 +10,12 @@ found in the LICENSE file in the root of this package.
 
 @rljson/server provides a lightweight client/server layer for Rljson storage. It wires Io (row/table data) and Bs (blob storage) over sockets so clients can read from server storage while still keeping their own local storage.
 
+## Prerequisites
+
+- Node.js v22.14.0 or newer
+- A socket runtime (examples use Socket.IO)
+- `Io`/`Bs` implementations (in-memory examples use `IoMem` and `BsMem`)
+
 ## Design pillars
 
 - **Local-first, read-through**: Writes stay on the caller; reads walk priorities (local first, then peers via server).
@@ -27,6 +33,50 @@ found in the LICENSE file in the root of this package.
 
 ```sh
 pnpm add @rljson/server
+```
+
+## Quick start (Socket.IO example)
+
+Server setup:
+
+```ts
+import { createServer } from 'node:http';
+import { Server as SocketIoServer } from 'socket.io';
+import { BsMem } from '@rljson/bs';
+import { IoMem } from '@rljson/io';
+import { Route } from '@rljson/rljson';
+import { Server, SocketIoBridge } from '@rljson/server';
+
+const httpServer = createServer();
+const socketIo = new SocketIoServer(httpServer);
+
+const route = Route.fromFlat('my.app');
+const server = new Server(route, new IoMem(), new BsMem());
+await server.init();
+
+socketIo.on('connection', async (socket) => {
+   await server.addSocket(new SocketIoBridge(socket));
+});
+
+httpServer.listen(0);
+```
+
+Client setup:
+
+```ts
+import { io as socketIoClient } from 'socket.io-client';
+import { BsMem } from '@rljson/bs';
+import { IoMem } from '@rljson/io';
+import { Db } from '@rljson/db';
+import { Client, SocketIoBridge } from '@rljson/server';
+
+const socket = socketIoClient('http://localhost:3000', { forceNew: true });
+
+const client = new Client(new SocketIoBridge(socket), new IoMem(), new BsMem());
+await client.init();
+
+const db = new Db(client.io!);
+// db.get/insert now cascade local ➜ server automatically
 ```
 
 ## Basic usage

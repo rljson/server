@@ -135,4 +135,68 @@ describe('SocketIoBridge Acknowledgment Tests', () => {
       });
     });
   });
+
+  it('Should expose connected/disconnected flags', async () => {
+    return new Promise<void>((resolve) => {
+      socketIoServer.on('connection', (serverSocket) => {
+        const serverBridge = new SocketIoBridge(serverSocket);
+        expect(serverBridge.connected).toBe(true);
+        expect(serverBridge.disconnected).toBe(false);
+        resolve();
+      });
+
+      const clientSocket = SocketIoClient(`http://localhost:${port}`);
+      const clientBridge = new SocketIoBridge(clientSocket);
+
+      clientBridge.on('connect', () => {
+        expect(clientBridge.connected).toBe(true);
+        expect(clientBridge.disconnected).toBe(false);
+        clientSocket.disconnect();
+      });
+    });
+  });
+
+  it('Should support connect/disconnect passthrough', async () => {
+    // Use a fresh client socket that is initially disconnected
+    const clientSocket = SocketIoClient(`http://localhost:${port}`, {
+      autoConnect: false,
+      forceNew: true,
+    });
+    const clientBridge = new SocketIoBridge(clientSocket);
+
+    expect(clientBridge.connected).toBe(false);
+    clientBridge.connect();
+
+    await new Promise<void>((resolve) => {
+      clientBridge.on('connect', () => {
+        expect(clientBridge.connected).toBe(true);
+        clientBridge.disconnect();
+        resolve();
+      });
+    });
+  });
+
+  it('Should expose rawSocket and off/removeAllListeners passthroughs', async () => {
+    return new Promise<void>((resolve) => {
+      socketIoServer.on('connection', (serverSocket) => {
+        const serverBridge = new SocketIoBridge(serverSocket);
+
+        const handler = () => {};
+        serverBridge.on('noop', handler);
+        expect(serverBridge.rawSocket).toBe(serverSocket);
+        serverBridge.off('noop', handler);
+        serverBridge.removeAllListeners('noop');
+        resolve();
+      });
+
+      const clientSocket = SocketIoClient(`http://localhost:${port}`);
+      const clientBridge = new SocketIoBridge(clientSocket);
+      clientBridge.on('connect', () => {
+        const handler = () => {};
+        clientBridge.on('noop', handler);
+        clientBridge.off('noop', handler);
+        clientBridge.removeAllListeners('noop');
+      });
+    });
+  });
 });

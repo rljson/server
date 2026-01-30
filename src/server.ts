@@ -6,11 +6,24 @@
 
 import { Bs, BsMem, BsMulti, BsMultiBs, BsPeer, BsServer } from '@rljson/bs';
 import { ConnectorPayload } from '@rljson/db';
-import { Io, IoMem, IoMulti, IoMultiIo, IoPeer, IoServer, Socket, SocketMock } from '@rljson/io';
+import {
+  Io,
+  IoMem,
+  IoMulti,
+  IoMultiIo,
+  IoPeer,
+  IoServer,
+  Socket,
+  SocketMock,
+} from '@rljson/io';
 import { Route } from '@rljson/rljson';
 
 import { BaseNode } from './base-node.ts';
-
+import {
+  normalizeSocketBundle,
+  SocketLike,
+  SocketNamespaceBundle,
+} from './socket-bundle.ts';
 
 export type SocketWithClientId = Socket & { __clientId?: string };
 
@@ -22,7 +35,10 @@ export class Server extends BaseNode {
   private _clients: Map<
     string,
     {
-      socket: SocketWithClientId;
+      ioUp: SocketWithClientId;
+      ioDown: SocketWithClientId;
+      bsUp: SocketWithClientId;
+      bsDown: SocketWithClientId;
       io: IoPeer;
       bs: BsPeer;
     }
@@ -44,7 +60,10 @@ export class Server extends BaseNode {
   private _multicastedRefs: Set<string> = new Set();
 
   private _refreshPromise?: Promise<void>;
-  private _pendingSockets: SocketWithClientId[] = [];
+  private _pendingSockets: Array<{
+    ioDown: SocketWithClientId;
+    bsDown: SocketWithClientId;
+  }> = [];
 
   constructor(
     private _route: Route,
@@ -106,20 +125,34 @@ export class Server extends BaseNode {
    * @param socket - Client socket to register.
    * @returns The server instance.
    */
-  async addSocket(socket: Socket) {
+  async addSocket(socket: SocketLike) {
+    const sockets = normalizeSocketBundle(socket);
     // attach a stable id to each socket
     const clientId = `client_${this._clients.size}_${Math.random()
       .toString(36)
       .slice(2)}`;
 
     // add clientId to socket (shorthand)
-    (socket as any).__clientId = clientId;
+    const ioUp = sockets.ioUp as SocketWithClientId;
+    const ioDown = sockets.ioDown as SocketWithClientId;
+    const bsUp = sockets.bsUp as SocketWithClientId;
+    const bsDown = sockets.bsDown as SocketWithClientId;
 
-    const ioPeer = await this._createIoPeer(socket);
-    const bsPeer = await this._createBsPeer(socket);
+    (ioUp as any).__clientId = clientId;
+    (ioDown as any).__clientId = clientId;
+    (bsUp as any).__clientId = clientId;
+    (bsDown as any).__clientId = clientId;
 
-    this._registerClient(clientId, socket, ioPeer, bsPeer);
-    this._pendingSockets.push(socket as SocketWithClientId);
+    const ioPeer = await this._createIoPeer(ioUp);
+    const bsPeer = await this._createBsPeer(bsUp);
+
+    this._registerClient(
+      clientId,
+      { ioUp, ioDown, bsUp, bsDown },
+      ioPeer,
+      bsPeer,
+    );
+    this._pendingSockets.push({ ioDown, bsDown });
     this._queueIoPeer(ioPeer);
     this._queueBsPeer(bsPeer);
 
@@ -137,8 +170,8 @@ export class Server extends BaseNode {
    * Removes all listeners from all connected clients.
    */
   private _removeAllListeners() {
-    for (const { socket } of this._clients.values()) {
-      socket.removeAllListeners(this._route.flat);
+    for (const { ioUp } of this._clients.values()) {
+      ioUp.removeAllListeners(this._route.flat);
     }
   }
 
@@ -148,7 +181,7 @@ export class Server extends BaseNode {
    * Ensures the sender is filtered out when broadcasting.
    */
   private _multicastRefs = () => {
-    for (const [clientIdA, { socket: socketA }] of this._clients.entries()) {
+    for (const [clientIdA, { ioUp: socketA }] of this._clients.entries()) {
       socketA.on(this._route.flat, (payload: ConnectorPayload) => {
         const ref = payload.r;
         // Avoid rebroadcasting the same ref multiple times
@@ -169,7 +202,7 @@ export class Server extends BaseNode {
         // Broadcast to all OTHER clients (filter out the sender)
         for (const [
           clientIdB,
-          { socket: socketB },
+          { ioDown: socketB },
         ] of this._clients.entries()) {
           if (clientIdA !== clientIdB) {
             // clone and mark the forwarded payload with the origin to prevent loops
@@ -232,18 +265,21 @@ export class Server extends BaseNode {
   /**
    * Registers the client socket and peers.
    * @param clientId - Stable client identifier.
-   * @param socket - Client socket to register.
+   * @param sockets - Directional sockets to register.
    * @param io - Io peer associated with the client.
    * @param bs - Bs peer associated with the client.
    */
   private _registerClient(
     clientId: string,
-    socket: SocketWithClientId,
+    sockets: SocketNamespaceBundle & { [k: string]: SocketWithClientId },
     io: IoPeer,
     bs: BsPeer,
   ) {
     this._clients.set(clientId, {
-      socket,
+      ioUp: sockets.ioUp as SocketWithClientId,
+      ioDown: sockets.ioDown as SocketWithClientId,
+      bsUp: sockets.bsUp as SocketWithClientId,
+      bsDown: sockets.bsDown as SocketWithClientId,
       io,
       bs,
     });
@@ -295,9 +331,9 @@ export class Server extends BaseNode {
     (this._ioServer as any)._io = this._ioMulti;
     (this._bsServer as any)._bs = this._bsMulti;
 
-    for (const socket of this._pendingSockets) {
-      await this._ioServer.addSocket(socket);
-      await this._bsServer.addSocket(socket);
+    for (const pending of this._pendingSockets) {
+      await this._ioServer.addSocket(pending.ioDown);
+      await this._bsServer.addSocket(pending.bsDown);
     }
 
     this._pendingSockets = [];

@@ -12,6 +12,62 @@ found in the LICENSE file in the root of this package.
 
 The `@rljson/server` package implements a distributed, local-first data architecture that enables multiple clients to share data through a central server while maintaining local storage priority. The system uses a multi-layer approach where local data always takes precedence over server data.
 
+### System map (ASCII)
+
+```
+     [ Client A ]                     [ Client B ]
+  ┌────────────────┐               ┌────────────────┐
+  │  IoMulti       │               │  IoMulti       │
+  │  BsMulti       │               │  BsMulti       │
+  │  (local first) │               │  (local first) │
+  └───────┬────────┘               └────────┬───────┘
+    │  IoPeer/BsPeer (pull from server) │
+    │                                   │
+  ┌───────▼────────┐   multicast refs   ┌──────▼────────┐
+  │    Server      │◄──────────────────►│    Server     │
+  │  IoMulti       │                    │  BsMulti      │
+  │  (local+peers) │                    │  (local+peers)│
+  └───────┬────────┘                    └────────┬──────┘
+    │  IoPeerBridge/BsPeerBridge (pull to clients)
+    │
+  ┌───────▼────────┐
+  │ Client C (etc) │
+  └────────────────┘
+```
+
+- **Refs broadcast**: Clients emit hashes; server multicasts to others.
+- **Data pulls**: Readers query by ref; multis cascade local ➜ server ➜ peers.
+- **No push of payloads**: Only hashes traverse sockets by default.
+
+### Request flow (pull by reference)
+
+```
+Client B: db.get(route, {_hash: ref})
+    ↓ priority walk
+1) Local Io (miss)
+2) IoPeer → Server IoMulti
+       a) Server Local Io (miss?)
+       b) IoPeer[Client A] (hit)
+    ↑ data flows back A → Server → B
+```
+
+### Layer cheat sheet
+
+- **Priority 1**: Local Io/Bs (read+write)
+- **Priority 2+**: Peers (read-only), ordered insertion
+- **Servers**: IoServer/BsServer expose multis to clients
+- **Bridges**: IoPeerBridge/BsPeerBridge let server pull from clients
+- **Peers**: IoPeer/BsPeer let clients pull from server
+
+### Socket namespace separation (why)
+
+- **Isolation of channels**: Io (tables) and Bs (blobs) have different payload shapes and backpressure behavior. Separate namespaces prevent cross-talk and let us tune each channel independently.
+- **Avoid coupling and event collisions**: Socket.IO treats event names within a namespace; isolating `io` and `bs` avoids accidental handler overlap and makes tracing simpler.
+- **Directional clarity**: We split up/down per layer (`ioUp/ioDown`, `bsUp/bsDown`) so bridges can enforce read-only vs. read/write roles and keep the API symmetrical for server and client wiring.
+- **Transport flexibility**: In environments that support multiple transports or QoS settings, namespaces can be mapped to different priorities or even different sockets without changing higher-level code.
+
+In default setups you can reuse a single socket for all four channels; the code normalizes that into a bundle. When you need stricter isolation (e.g., large blob streams vs. small Io refs), use distinct namespaces/sockets to avoid head-of-line blocking and to keep logging/metrics per channel.
+
 ### Design Pillars
 
 - **Local-first reads, local-only writes**: All mutations stay on the caller; reads walk the priority ladder (local first, then peers through the server).
