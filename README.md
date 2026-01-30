@@ -8,6 +8,12 @@ found in the LICENSE file in the root of this package.
 
 # @rljson/server
 
+Local-first, pull-by-reference server layer for Rljson:
+
+- Writes stay local; reads walk priorities (local first, then peers via server proxy)
+- References (hashes) are broadcast; data is pulled on-demand through Io/Bs multis
+- Server aggregates and multicasts refs without duplicating client data by default
+
 ## Users
 
 | File                                 | Purpose                     |

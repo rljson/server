@@ -10,6 +10,13 @@ found in the LICENSE file in the root of this package.
 
 @rljson/server provides a lightweight client/server layer for Rljson storage. It wires Io (row/table data) and Bs (blob storage) over sockets so clients can read from server storage while still keeping their own local storage.
 
+## Design pillars
+
+- **Local-first, read-through**: Writes stay on the caller; reads walk priorities (local first, then peers via server).
+- **Pull by reference**: Only references (hashes) travel over the wire; data is pulled on demand through `IoMulti`/`BsMulti`.
+- **Server as proxy**: The server aggregates and multicasts refs, but does not duplicate client data unless you intentionally store it there.
+- **Single abstraction surface**: `Client.io`/`Client.bs` and `Server.io`/`Server.bs` expose merged multis so you do not handle peers manually.
+
 ## What it does (quick overview)
 
 - **Server** hosts Io + Bs and exposes them over sockets.
@@ -127,6 +134,7 @@ The same pattern is used for Bs (blob storage).
 
 - `Client.io` and `Client.bs` are already merged interfaces. No need to access multis directly.
 - `Server.addSocket()` batches refreshes to reduce rebuild overhead when multiple sockets connect.
+- Multicast includes `__origin` markers plus a `_multicastedRefs` set to prevent ref echo loops.
 
 ## Architecture Overview
 

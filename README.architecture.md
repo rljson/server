@@ -12,6 +12,13 @@ found in the LICENSE file in the root of this package.
 
 The `@rljson/server` package implements a distributed, local-first data architecture that enables multiple clients to share data through a central server while maintaining local storage priority. The system uses a multi-layer approach where local data always takes precedence over server data.
 
+### Design Pillars
+
+- **Local-first reads, local-only writes**: All mutations stay on the caller; reads walk the priority ladder (local first, then peers through the server).
+- **Pull by reference**: References (hashes) travel over the wire; data is fetched on-demand through `IoMulti`/`BsMulti`.
+- **Server as proxy/aggregator**: The server multicasts refs and aggregates peers but does not duplicate client data unless explicitly imported there.
+- **Unified surface area**: Public APIs expose merged multis (`Client.io/bs`, `Server.io/bs`) so callers never assemble peer lists manually.
+
 ## Core Components
 
 ### 1. Client
@@ -102,6 +109,12 @@ The `Server` class acts as a central coordination point that:
 └────────────────────────────────────────────────────┘
 ```
 
+**Lifecycle and controls:**
+
+- `addSocket()` attaches a stable `__clientId`, builds `IoPeer`/`BsPeer`, queues them, rebuilds multis once, and refreshes servers in a batch.
+- Multicast uses `__origin` markers plus `_multicastedRefs` to avoid echo loops and duplicate ref forwarding.
+- Pending sockets are refreshed together so multiple joins trigger a single multi rebuild.
+
 ### 3. Multi-Layer Priority System
 
 Both Client and Server use `IoMulti` and `BsMulti` to merge multiple data sources:
@@ -124,6 +137,14 @@ Client A writes to table "cars":
 2. IoPeer is read-only, no write to server
 3. Local data now takes precedence
 ```
+
+### 4. BaseNode (shared helper)
+
+`Client` and `Server` both extend `BaseNode`, which enforces an open local Io and provides Db helpers:
+
+- `createTables()` seeds table definitions on the local Io (optionally with insert history).
+- `import()` loads rljson payloads into the local Db, keeping writes local-first.
+- A guard throws if the supplied local Io is not initialized/open, catching miswired setups early.
 
 ## Synchronization Patterns
 
@@ -487,13 +508,6 @@ For real-time updates, the server multicasts references between clients:
      │                             │ 3. Client B receives ref    │
      │                             │    and can fetch data       │
 ```
-
-**Multicast Logic:**
-
-- Server listens on route for all connected clients
-- When Client A emits on route, server forwards to all OTHER clients
-- `__origin` marker prevents infinite loops
-- Deduplication via `_multicastedRefs` Set
 
 **Multicast Logic:**
 
