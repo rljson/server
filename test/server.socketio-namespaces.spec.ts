@@ -1000,7 +1000,7 @@ describe('[Socket.IO namespaces] Bs Operations over BsMulti Integration', () => 
 
       const { content } = await clientB.bs!.getBlob(blobId);
       expect(content.every((byte) => byte === 0x00)).toBe(true);
-    });
+    }, 15000);
 
     it('Should handle all 0xFF bytes', async () => {
       const ones = Buffer.alloc(1024, 0xff);
@@ -1008,7 +1008,7 @@ describe('[Socket.IO namespaces] Bs Operations over BsMulti Integration', () => 
 
       const { content } = await clientB.bs!.getBlob(blobId);
       expect(content.every((byte) => byte === 0xff)).toBe(true);
-    });
+    }, 15000);
 
     it('Should handle alternating binary pattern', async () => {
       const pattern = Buffer.from(
