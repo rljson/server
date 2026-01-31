@@ -12,7 +12,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { SocketIoBridge } from '../src/socket-io-bridge';
 
-
 describe('SocketIoBridge Acknowledgment Tests', () => {
   let socketIoServer: SocketIoServer;
   let port: number;
@@ -41,9 +40,7 @@ describe('SocketIoBridge Acknowledgment Tests', () => {
         // When client emits 'testTrue', respond with callback(true)
         serverBridge.on(
           'testTrue',
-          (data: any, callback: (result: boolean) => void) => {
-            console.log('Server received testTrue, data:', data);
-            console.log('Server calling callback with true');
+          (_data: any, callback: (result: boolean) => void) => {
             callback(true);
           },
         );
@@ -53,14 +50,7 @@ describe('SocketIoBridge Acknowledgment Tests', () => {
       const clientBridge = new SocketIoBridge(clientSocket);
 
       clientBridge.on('connect', () => {
-        console.log('Client connected');
         clientBridge.emit('testTrue', { test: 'data' }, (result: boolean) => {
-          console.log(
-            'Client received acknowledgment:',
-            result,
-            'Type:',
-            typeof result,
-          );
           expect(result).toBe(true);
           expect(typeof result).toBe('boolean');
           clientSocket.disconnect();
@@ -78,9 +68,7 @@ describe('SocketIoBridge Acknowledgment Tests', () => {
         // When client emits 'testFalse', respond with callback(false)
         serverBridge.on(
           'testFalse',
-          (data: any, callback: (result: boolean) => void) => {
-            console.log('Server received testFalse, data:', data);
-            console.log('Server calling callback with false');
+          (_data: any, callback: (result: boolean) => void) => {
             callback(false);
           },
         );
@@ -90,14 +78,7 @@ describe('SocketIoBridge Acknowledgment Tests', () => {
       const clientBridge = new SocketIoBridge(clientSocket);
 
       clientBridge.on('connect', () => {
-        console.log('Client connected');
         clientBridge.emit('testFalse', { test: 'data' }, (result: boolean) => {
-          console.log(
-            'Client received acknowledgment:',
-            result,
-            'Type:',
-            typeof result,
-          );
           expect(result).toBe(false);
           expect(typeof result).toBe('boolean');
           clientSocket.disconnect();
@@ -114,8 +95,7 @@ describe('SocketIoBridge Acknowledgment Tests', () => {
 
         serverBridge.on(
           'testSingleArg',
-          (data: any, callback: (...args: any[]) => void) => {
-            console.log('Server calling callback with single boolean argument');
+          (_data: any, callback: (...args: any[]) => void) => {
             callback(true); // Single argument
           },
         );
@@ -126,12 +106,75 @@ describe('SocketIoBridge Acknowledgment Tests', () => {
 
       clientBridge.on('connect', () => {
         clientBridge.emit('testSingleArg', {}, (...args: any[]) => {
-          console.log('Client received', args.length, 'arguments:', args);
           expect(args.length).toBe(1);
           expect(args[0]).toBe(true);
           clientSocket.disconnect();
           resolve();
         });
+      });
+    });
+  });
+
+  it('Should expose connected/disconnected flags', async () => {
+    return new Promise<void>((resolve) => {
+      socketIoServer.on('connection', (serverSocket) => {
+        const serverBridge = new SocketIoBridge(serverSocket);
+        expect(serverBridge.connected).toBe(true);
+        expect(serverBridge.disconnected).toBe(false);
+        resolve();
+      });
+
+      const clientSocket = SocketIoClient(`http://localhost:${port}`);
+      const clientBridge = new SocketIoBridge(clientSocket);
+
+      clientBridge.on('connect', () => {
+        expect(clientBridge.connected).toBe(true);
+        expect(clientBridge.disconnected).toBe(false);
+        clientSocket.disconnect();
+      });
+    });
+  });
+
+  it('Should support connect/disconnect passthrough', async () => {
+    // Use a fresh client socket that is initially disconnected
+    const clientSocket = SocketIoClient(`http://localhost:${port}`, {
+      autoConnect: false,
+      forceNew: true,
+    });
+    const clientBridge = new SocketIoBridge(clientSocket);
+
+    expect(clientBridge.connected).toBe(false);
+    clientBridge.connect();
+
+    await new Promise<void>((resolve) => {
+      clientBridge.on('connect', () => {
+        expect(clientBridge.connected).toBe(true);
+        clientBridge.disconnect();
+        resolve();
+      });
+    });
+  });
+
+  it('Should expose rawSocket and off/removeAllListeners passthroughs', async () => {
+    return new Promise<void>((resolve) => {
+      socketIoServer.on('connection', (serverSocket) => {
+        const serverBridge = new SocketIoBridge(serverSocket);
+
+        const handler = () => {};
+        serverBridge.on('noop', handler);
+        expect(serverBridge.rawSocket).toBe(serverSocket);
+        serverBridge.off('noop', handler);
+        serverBridge.removeAllListeners('noop');
+        resolve();
+      });
+
+      const clientSocket = SocketIoClient(`http://localhost:${port}`);
+      const clientBridge = new SocketIoBridge(clientSocket);
+      clientBridge.on('connect', () => {
+        const handler = () => {};
+        clientBridge.on('noop', handler);
+        clientBridge.off('noop', handler);
+        clientBridge.removeAllListeners('noop');
       });
     });
   });

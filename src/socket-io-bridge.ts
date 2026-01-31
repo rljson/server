@@ -47,6 +47,7 @@ export class SocketIoBridge implements Socket {
   }
 
   disconnect(): void {
+    /* v8 ignore next -- @preserve */
     this._socket.disconnect();
   }
 

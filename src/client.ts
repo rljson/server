@@ -5,16 +5,14 @@
 // found in the LICENSE file in the root of this package.
 
 import { Bs, BsMulti, BsMultiBs, BsPeer, BsPeerBridge } from '@rljson/bs';
-import {
-  Io,
-  IoMulti,
-  IoMultiIo,
-  IoPeer,
-  IoPeerBridge,
-  Socket,
-} from '@rljson/io';
+import { Io, IoMulti, IoMultiIo, IoPeer, IoPeerBridge } from '@rljson/io';
 
 import { BaseNode } from './base-node.ts';
+import {
+  normalizeSocketBundle,
+  SocketLike,
+  SocketNamespaceBundle,
+} from './socket-bundle.ts';
 
 export class Client extends BaseNode {
   private _ioMultiIos: IoMultiIo[] = [];
@@ -26,12 +24,12 @@ export class Client extends BaseNode {
   // ...........................................................................
   /**
    * Creates a Client instance
-   * @param _socketToServer - Socket to connect to server
+   * @param _socketToServer - Socket or namespace bundle to connect to server
    * @param _localIo - Local Io for local storage
    * @param _localBs - Local Bs for local blob storage
    */
   constructor(
-    private _socketToServer: Socket,
+    private _socketToServer: SocketLike,
     protected _localIo: Io,
     protected _localBs: Bs,
   ) {
@@ -102,6 +100,8 @@ export class Client extends BaseNode {
    * Builds the Io multi with local and peer layers.
    */
   private async _setupIo() {
+    const sockets = normalizeSocketBundle(this._socketToServer);
+
     // Add LocalIo to MultiIo
     this._ioMultiIos.push({
       io: this._localIo,
@@ -112,11 +112,11 @@ export class Client extends BaseNode {
     });
 
     // Upstream: let the server pull from client local Io
-    const ioPeerBridge = new IoPeerBridge(this._localIo, this._socketToServer);
+    const ioPeerBridge = new IoPeerBridge(this._localIo, sockets.ioUp);
     ioPeerBridge.start();
 
     // Downstream: pull from server
-    const ioPeer = await this._createIoPeer();
+    const ioPeer = await this._createIoPeer(sockets.ioDown);
 
     this._ioMultiIos.push({
       io: ioPeer,
@@ -135,6 +135,8 @@ export class Client extends BaseNode {
    * Builds the Bs multi with local and peer layers.
    */
   private async _setupBs() {
+    const sockets = normalizeSocketBundle(this._socketToServer);
+
     // Add LocalBs to MultiBs
     this._bsMultiBss.push({
       bs: this._localBs,
@@ -144,11 +146,11 @@ export class Client extends BaseNode {
     });
 
     // Upstream: let the server pull from client local Bs
-    const bsPeerBridge = new BsPeerBridge(this._localBs, this._socketToServer);
+    const bsPeerBridge = new BsPeerBridge(this._localBs, sockets.bsUp);
     bsPeerBridge.start();
 
     // Downstream: pull from server
-    const bsPeer = await this._createBsPeer();
+    const bsPeer = await this._createBsPeer(sockets.bsDown);
 
     this._bsMultiBss.push({
       bs: bsPeer,
@@ -163,9 +165,10 @@ export class Client extends BaseNode {
 
   /**
    * Creates and initializes a downstream Io peer.
+   * @param socket - Downstream socket to the server Io namespace.
    */
-  private async _createIoPeer() {
-    const ioPeer = new IoPeer(this._socketToServer);
+  private async _createIoPeer(socket: SocketNamespaceBundle['ioDown']) {
+    const ioPeer = new IoPeer(socket);
     await ioPeer.init();
     await ioPeer.isReady();
     return ioPeer;
@@ -173,9 +176,10 @@ export class Client extends BaseNode {
 
   /**
    * Creates and initializes a downstream Bs peer.
+   * @param socket - Downstream socket to the server Bs namespace.
    */
-  private async _createBsPeer() {
-    const bsPeer = new BsPeer(this._socketToServer);
+  private async _createBsPeer(socket: SocketNamespaceBundle['bsDown']) {
+    const bsPeer = new BsPeer(socket);
     await bsPeer.init();
     return bsPeer;
   }
