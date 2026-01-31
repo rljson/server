@@ -18,7 +18,7 @@ found in the LICENSE file in the root of this package.
 
 - Node.js v22.14.0+
 - pnpm v10 (see [install-node-mac.md](doc/install-node-mac.md) or [install-node-win.md](doc/install-node-win.md))
-- Access to sibling repos `rljson-io`, `rljson-bs`, `rljson-db`, `rljson` at paths expected by the local `link:` dependencies
+- Optional: sibling repos `rljson-io`, `rljson-bs`, `rljson-db`, `rljson` if you prefer linking for local development
 
 ## Setup
 
@@ -26,33 +26,33 @@ found in the LICENSE file in the root of this package.
 pnpm install
 ```
 
-If working outside the mono repo root, ensure the linked packages exist next to this folder (see `dependencies` in package.json).
+By default we consume published npm versions. If you want to work against local packages instead, `pnpm link` them in sibling folders and add temporary overrides as needed.
 
 ## Everyday development
 
 - Run tests + lint (default CI path):
 
-	```sh
-	pnpm test
-	```
+  ```sh
+  pnpm test
+  ```
 
 - Lint only:
 
-	```sh
-	pnpm lint
-	```
+  ```sh
+  pnpm lint
+  ```
 
 - Build the package (emits dist, copies README):
 
-	```sh
-	pnpm build
-	```
+  ```sh
+  pnpm build
+  ```
 
 - Update goldens for snapshot-like tests:
 
-	```sh
-	pnpm updateGoldens
-	```
+  ```sh
+  pnpm updateGoldens
+  ```
 
 ## Publishing
 

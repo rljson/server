@@ -51,23 +51,18 @@
     "vitest-dom": "^0.1.1"
   },
   "dependencies": {
-    "@rljson/bs": "link:../rljson-bs",
-    "@rljson/db": "link:../rljson-db",
+    "@rljson/bs": "^0.0.20",
+    "@rljson/db": "^0.0.13",
     "@rljson/hash": "^0.0.18",
-    "@rljson/io": "link:../rljson-io",
+    "@rljson/io": "^0.0.65",
     "@rljson/json": "^0.0.23",
-    "@rljson/rljson": "link:../rljson"
+    "@rljson/rljson": "^0.0.75"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
     ],
-    "overrides": {
-      "@rljson/db": "link:../rljson-db",
-      "@rljson/io": "link:../rljson-io",
-      "@rljson/rljson": "link:../rljson",
-      "@rljson/bs": "link:../rljson-bs"
-    }
+    "overrides": {}
   },
   "packageManager": "pnpm@10.11.0"
 }

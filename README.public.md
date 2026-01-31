@@ -103,7 +103,7 @@ await server.init();
 // await server.addSocket(new SocketIoBridge(serverSocket));
 ```
 
-### Client
+### Client API
 
 ```ts
 import { BsMem } from '@rljson/bs';
@@ -144,7 +144,7 @@ This is implemented with `IoMulti` and `BsMulti` internally, but the public API 
 - `io` – Io interface (multi-layer)
 - `bs` – Bs interface (multi-layer)
 
-### Server
+### Server API
 
 - `init()` – initializes server multis
 - `ready()` – resolves when Io is ready
@@ -192,9 +192,9 @@ The same pattern is used for Bs (blob storage).
 
 @rljson/server implements a **pull-based architecture** where data is retrieved on-demand using content-addressed references (hashes), not automatically pushed between clients. This fundamentally differs from traditional sync systems:
 
-**Key Principle: References flow, data is pulled**
+### Key principle: references flow, data is pulled
 
-```
+```text
 Reference Flow: Client A → Server → Client B (broadcast)
 Data Flow:      Client A ← Server ← Client B (pulled on query)
 ```
@@ -262,7 +262,7 @@ Data Flow:      Client A ← Server ← Client B (pulled on query)
 
 ### Client-to-Client Communication
 
-**Pattern: Insert on Client A, Get on Client B**
+### Pattern: Insert on Client A, Get on Client B
 
 ```ts
 // Setup: All parties create table definitions

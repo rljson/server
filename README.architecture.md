@@ -14,7 +14,7 @@ The `@rljson/server` package implements a distributed, local-first data architec
 
 ### System map (ASCII)
 
-```
+```text
      [ Client A ]                     [ Client B ]
   ┌────────────────┐               ┌────────────────┐
   │  IoMulti       │               │  IoMulti       │
@@ -41,7 +41,7 @@ The `@rljson/server` package implements a distributed, local-first data architec
 
 ### Request flow (pull by reference)
 
-```
+```text
 Client B: db.get(route, {_hash: ref})
     ↓ priority walk
 1) Local Io (miss)
@@ -89,7 +89,7 @@ The `Client` class provides a unified interface for data access by combining loc
 
 **Data Flow Architecture:**
 
-```
+```text
 ┌─────────────────────────────────────────┐
 │           Client Instance               │
 ├─────────────────────────────────────────┤
@@ -136,7 +136,7 @@ The `Server` class acts as a central coordination point that:
 
 **Data Flow Architecture:**
 
-```
+```text
 ┌────────────────────────────────────────────────────┐
 │              Server Instance                       │
 ├────────────────────────────────────────────────────┤
@@ -182,7 +182,7 @@ Both Client and Server use `IoMulti` and `BsMulti` to merge multiple data source
 
 **Example Flow:**
 
-```
+```text
 Client A reads table "cars":
 1. Check local IoMem (priority 1) → Not found
 2. Check IoPeer to server (priority 2) → Found!
@@ -213,9 +213,9 @@ The system implements a **pull-based architecture** where data is retrieved on-d
 3. **Other clients retrieve data by reference** (pull from priority 2 layer)
 4. **Server acts as proxy**, pulling from connected clients on-demand
 
-**Key Principle: References flow, data is pulled**
+### Key principle: references flow, data is pulled
 
-```
+```text
 Reference Flow: Client A → Server → Client B
 Data Flow:     Client A ← Server ← Client B (pulled on-demand)
 ```
@@ -236,7 +236,7 @@ Both Client and Server use multi-layer storage to aggregate data from multiple s
 
 **Multi-Layer Query Flow:**
 
-```
+```text
 Query: db.get(route, { _hash: "abc123" })
        │
        ▼
@@ -262,9 +262,9 @@ Query: db.get(route, { _hash: "abc123" })
 
 Io data represents regular relational tables (Cake, Cell, etc.) stored in the Io layer.
 
-**Scenario: Client A inserts data, Client B retrieves it**
+#### Scenario: Client A inserts data, Client B retrieves it
 
-```
+```text
 ┌──────────┐                  ┌──────────┐                  ┌──────────┐
 │Client A  │                  │  Server  │                  │Client B  │
 └────┬─────┘                  └────┬─────┘                  └────┬─────┘
@@ -324,9 +324,9 @@ const result = await dbB.get(route, { _hash: dataRef });
 
 Bs data represents binary blobs (files, images, videos) stored in the Bs layer.
 
-**Scenario: Client A stores blob, Client B retrieves it**
+#### Scenario: Client A stores blob, Client B retrieves it
 
-```
+```text
 ┌──────────┐                  ┌──────────┐                  ┌──────────┐
 │Client A  │                  │  Server  │                  │Client B  │
 └────┬─────┘                  └────┬─────┘                  └────┬─────┘
@@ -397,9 +397,9 @@ const blob = await clientB.bs!.get(blobHash);
 
 Tree data represents hierarchical structures converted from JavaScript objects using `treeFromObject()`.
 
-**Scenario: Client A creates tree, Client B retrieves entire tree**
+#### Scenario: Client A creates tree, Client B retrieves entire tree
 
-```
+```text
 ┌──────────┐                  ┌──────────┐                  ┌──────────┐
 │Client A  │                  │  Server  │                  │Client B  │
 └────┬─────┘                  └────┬─────┘                  └────┬─────┘
@@ -517,7 +517,7 @@ interface Tree {
 
 When Client A creates/modifies data that other clients need to access:
 
-```
+```text
 ┌──────────┐                  ┌──────────┐                  ┌──────────┐
 │Client A  │                  │  Server  │                  │Client B  │
 └────┬─────┘                  └────┬─────┘                  └────┬─────┘
@@ -542,13 +542,13 @@ When Client A creates/modifies data that other clients need to access:
      │                             ├─────────────────────────────►
      │                             │ 4. Data flows back to B     │
      │                             │    (Client A → Server → B)  │
-```
+```text
 
 ### Pattern 2: Notification Broadcasting
 
 For real-time updates, the server multicasts references between clients:
 
-```
+```text
 ┌──────────┐                  ┌──────────┐                  ┌──────────┐
 │Client A  │                  │  Server  │                  │Client B  │
 └────┬─────┘                  └────┬─────┘                  └────┬─────┘
@@ -563,7 +563,7 @@ For real-time updates, the server multicasts references between clients:
      │                             │                             │
      │                             │ 3. Client B receives ref    │
      │                             │    and can fetch data       │
-```
+```text
 
 **Multicast Logic:**
 
@@ -605,7 +605,7 @@ const result = await dbB.get(route, { _hash: ref });
 
 The most efficient pattern for distributed access:
 
-```
+```text
 1. Client A creates data → Returns references (hashes)
 2. Client A broadcasts references (not data) to server
 3. Server multicasts references to Client B
@@ -801,11 +801,11 @@ await dbB.get(route, { _hash: rootRef });  // Pulls from Client A
 await dbB.get(route, { _hash: rootRef });  // Reads from local cache
 ```
 
-## Consistency Model
+## Consistency Model (Db layer)
 
 The `Db` class operates on top of `IoMulti`, providing distributed data access:
 
-```
+```text
 ┌────────────────────────────────────────┐
 │          Client A                      │
 │  ┌──────────────────────────────────┐ │
@@ -952,7 +952,7 @@ The `Db` class operates on top of `IoMulti`, providing distributed data access:
 
 ### Scenario 1: Collaborative Document Editing
 
-```
+```text
 Team working on shared documents:
 - Each client has local document storage (Io data)
 - Document edits create new versions (content-addressed)
@@ -964,7 +964,7 @@ Team working on shared documents:
 
 ### Scenario 2: Media Sharing Application
 
-```
+```text
 Users sharing photos/videos:
 - Photos stored in local Bs (Client A)
 - Photo metadata in Io table (title, tags, blobRef)
@@ -976,7 +976,7 @@ Users sharing photos/videos:
 
 ### Scenario 3: Configuration Management
 
-```
+```text
 Application configuration distribution:
 - Config as JSON object → converted to Tree
 - Config stored on admin client (Client A)
@@ -1123,5 +1123,3 @@ await expect(dbB.get(route, {})).rejects.toThrow();
 - **Change detection**: Notify on data changes
 - **Batch operations**: Optimize bulk transfers
 - **Compression**: Reduce network payload size
-
-```
