@@ -67,16 +67,18 @@ Client setup:
 import { io as socketIoClient } from 'socket.io-client';
 import { BsMem } from '@rljson/bs';
 import { IoMem } from '@rljson/io';
-import { Db } from '@rljson/db';
+import { Route } from '@rljson/rljson';
 import { Client, SocketIoBridge } from '@rljson/server';
 
 const socket = socketIoClient('http://localhost:3000', { forceNew: true });
 
-const client = new Client(new SocketIoBridge(socket), new IoMem(), new BsMem());
+// Pass the same route as the server to automatically create Db and Connector
+const route = Route.fromFlat('my.app');
+const client = new Client(new SocketIoBridge(socket), new IoMem(), new BsMem(), route);
 await client.init();
 
-const db = new Db(client.io!);
-// db.get/insert now cascade local ➜ server automatically
+// client.db and client.connector are ready to use
+// client.db.get/insert now cascade local ➜ server automatically
 ```
 
 ## Basic usage
@@ -108,6 +110,7 @@ await server.init();
 ```ts
 import { BsMem } from '@rljson/bs';
 import { IoMem } from '@rljson/io';
+import { Route } from '@rljson/rljson';
 
 import { Client } from '@rljson/server';
 
@@ -117,13 +120,19 @@ await localIo.isReady();
 
 const localBs = new BsMem();
 
-const client = new Client(new SocketIoBridge(clientSocket), localIo, localBs);
+// With route: Db and Connector are created automatically
+const route = Route.fromFlat('my.app.route');
+const client = new Client(new SocketIoBridge(clientSocket), localIo, localBs, route);
 await client.init();
 
 // Unified interfaces
-const io = client.io;
-const bs = client.bs;
+const io = client.io;          // IoMulti (local + server)
+const bs = client.bs;          // BsMulti (local + server)
+const db = client.db;          // Db (wraps IoMulti)
+const connector = client.connector; // Connector (wired to route + socket)
 ```
+
+The `route` parameter is optional. Without it, the client only sets up `io` and `bs`, and `db`/`connector` will be `undefined`.
 
 ## How the layering works
 
@@ -138,11 +147,14 @@ This is implemented with `IoMulti` and `BsMulti` internally, but the public API 
 
 ### Client
 
-- `init()` – builds Io/Bs multis and starts peer bridges
+- `init()` – builds Io/Bs multis, starts peer bridges, and (if route was provided) creates Db and Connector
 - `ready()` – resolves once Io is ready
 - `tearDown()` – closes and clears local state
 - `io` – Io interface (multi-layer)
 - `bs` – Bs interface (multi-layer)
+- `db` – Db instance wrapping IoMulti (available when route was provided)
+- `connector` – Connector wired to the route and socket (available when route was provided)
+- `route` – the Route passed to the constructor
 
 ### Server API
 

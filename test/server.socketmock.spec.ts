@@ -61,7 +61,7 @@ describe('[SocketMock] Data Storage (Io) Integration', () => {
   const clientCount = 3;
 
   const cakeKey = 'ioTestCake';
-  const route = Route.fromFlat(`${cakeKey}EditHistory`);
+  const route = Route.fromFlat(cakeKey);
 
   let a: Client, aIo: Io, aBs: BsMem;
   let b: Client, bIo: Io, bBs: BsMem;
@@ -366,7 +366,7 @@ describe('[SocketMock] Db Operations over IoMulti Integration', () => {
   const clientCount = 2;
 
   const cakeKey = 'dbTestCake';
-  const route = Route.fromFlat(`${cakeKey}EditHistory`);
+  const route = Route.fromFlat(cakeKey);
 
   let clientA: Client, ioA: IoMem, bsA: BsMem, dbA: Db;
   let clientB: Client, ioB: IoMem, bsB: BsMem, dbB: Db;
@@ -1792,6 +1792,68 @@ describe('[SocketMock] Coverage helpers', () => {
       close: () => undefined,
     };
     (client as any)._bsMulti = {};
+
+    await client.tearDown();
+  });
+
+  it('Client with route should create db and connector', async () => {
+    const io = new IoMem();
+    await io.init();
+    await io.isReady();
+    const bs = new BsMem();
+
+    const serverIoLocal = new IoMem();
+    await serverIoLocal.init();
+    await serverIoLocal.isReady();
+    const serverBsLocal = new BsMem();
+
+    const route = Route.fromFlat('clientRouteTest');
+    const server = new Server(route, serverIoLocal, serverBsLocal);
+    await server.init();
+
+    const socket = new SocketMock();
+    socket.connect();
+    await server.addSocket(socket);
+
+    const client = new Client(socket, io, bs, route);
+    await client.init();
+
+    expect(client.db).toBeDefined();
+    expect(client.connector).toBeDefined();
+    expect(client.route).toBeDefined();
+    expect(client.route!.flat).toBe('/clientRouteTest');
+
+    await client.tearDown();
+
+    expect(client.db).toBeUndefined();
+    expect(client.connector).toBeUndefined();
+  });
+
+  it('Client without route should not create db and connector', async () => {
+    const io = new IoMem();
+    await io.init();
+    await io.isReady();
+    const bs = new BsMem();
+
+    const serverIoLocal = new IoMem();
+    await serverIoLocal.init();
+    await serverIoLocal.isReady();
+    const serverBsLocal = new BsMem();
+
+    const route = Route.fromFlat('noRouteTest');
+    const server = new Server(route, serverIoLocal, serverBsLocal);
+    await server.init();
+
+    const socket = new SocketMock();
+    socket.connect();
+    await server.addSocket(socket);
+
+    const client = new Client(socket, io, bs);
+    await client.init();
+
+    expect(client.db).toBeUndefined();
+    expect(client.connector).toBeUndefined();
+    expect(client.route).toBeUndefined();
 
     await client.tearDown();
   });

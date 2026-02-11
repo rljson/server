@@ -24,7 +24,7 @@
     "test": "pnpx vitest run --coverage && pnpm run lint",
     "prebuild": "npm run test",
     "prepublishOnly": "npm run build",
-    "lint": "pnpx eslint",
+    "lint": "pnpm exec eslint",
     "updateGoldens": "cross-env UPDATE_GOLDENS=true pnpm test"
   },
   "devDependencies": {

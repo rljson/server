@@ -49,11 +49,15 @@ import { BsMem } from '@rljson/bs';
 import { IoMem } from '@rljson/io';
 import { Client, SocketIoBridge } from '@rljson/server';
 
-const client = new Client(new SocketIoBridge(clientSocket), new IoMem(), new BsMem());
+// Pass the same route as the server to get Db and Connector automatically
+const route = Route.fromFlat('my.app');
+const client = new Client(new SocketIoBridge(clientSocket), new IoMem(), new BsMem(), route);
 await client.init();
 
-const io = client.io; // IoMulti merged interface
-const bs = client.bs; // BsMulti merged interface
+const io = client.io;               // IoMulti merged interface
+const bs = client.bs;               // BsMulti merged interface
+const db = client.db;               // Db (available when route provided)
+const connector = client.connector; // Connector (available when route provided)
 ```
 
 Run tests and lint:

@@ -637,9 +637,9 @@ await server.createTables({ withInsertHistory: [cakeCfg] });
 await clientA.createTables({ withInsertHistory: [cakeCfg] });
 await clientB.createTables({ withInsertHistory: [cakeCfg] });
 
-// Create Db instances
-const dbA = new Db(clientA.io!);
-const dbB = new Db(clientB.io!);
+// When route was passed to Client constructor, Db is available directly:
+const dbA = clientA.db!;
+const dbB = clientB.db!;
 
 // Client A: Insert data (stores locally)
 const route = Route.fromFlat('carCake');
@@ -708,8 +708,9 @@ await server.createTables({ withInsertHistory: [treeCfg] });
 await clientA.createTables({ withInsertHistory: [treeCfg] });
 await clientB.createTables({ withInsertHistory: [treeCfg] });
 
-const dbA = new Db(clientA.io!);
-const dbB = new Db(clientB.io!);
+// When route was passed to Client constructor, Db is available directly:
+const dbA = clientA.db!;
+const dbB = clientB.db!;
 
 // Client A: Create tree from object
 const projectData = {
@@ -991,11 +992,18 @@ Application configuration distribution:
 ### Client Initialization
 
 ```typescript
-const client = new Client(socket, localIo, localBs);
-await client.init(); // Sets up IoMulti and BsMulti
+// With route: Db and Connector are created automatically during init()
+const client = new Client(socket, localIo, localBs, route);
+await client.init(); // Sets up IoMulti, BsMulti, Db, and Connector
 await client.ready(); // Waits for IoMulti to be ready
 
-const db = new Db(client.io!); // Create Db on top of IoMulti
+const db = client.db!;             // Db wrapping IoMulti
+const connector = client.connector!; // Connector wired to route + socket
+
+// Without route (legacy): only IoMulti and BsMulti are created
+const client = new Client(socket, localIo, localBs);
+await client.init();
+const db = new Db(client.io!); // Caller creates Db manually
 ```
 
 ### Server Initialization
@@ -1021,7 +1029,7 @@ When `server.addSocket(socket)` is called:
 ### Teardown
 
 ```typescript
-await client.tearDown(); // Closes IoMulti, clears state
+await client.tearDown(); // Closes IoMulti, clears Db, Connector, and all state
 ```
 
 ## Testing Patterns

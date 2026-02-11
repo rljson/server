@@ -5,7 +5,9 @@
 // found in the LICENSE file in the root of this package.
 
 import { Bs, BsMulti, BsMultiBs, BsPeer, BsPeerBridge } from '@rljson/bs';
+import { Connector, Db } from '@rljson/db';
 import { Io, IoMulti, IoMultiIo, IoPeer, IoPeerBridge } from '@rljson/io';
+import { Route } from '@rljson/rljson';
 
 import { BaseNode } from './base-node.ts';
 import {
@@ -21,17 +23,22 @@ export class Client extends BaseNode {
   private _bsMultiBss: BsMultiBs[] = [];
   private _bsMulti?: BsMulti;
 
+  private _db?: Db;
+  private _connector?: Connector;
+
   // ...........................................................................
   /**
    * Creates a Client instance
    * @param _socketToServer - Socket or namespace bundle to connect to server
    * @param _localIo - Local Io for local storage
    * @param _localBs - Local Bs for local blob storage
+   * @param _route - Optional route for automatic Db and Connector creation
    */
   constructor(
     private _socketToServer: SocketLike,
     protected _localIo: Io,
     protected _localBs: Bs,
+    private _route?: Route,
   ) {
     //Call BaseNode constructor
     super(_localIo);
@@ -44,6 +51,10 @@ export class Client extends BaseNode {
   async init() {
     await this._setupIo();
     await this._setupBs();
+
+    if (this._route) {
+      this._setupDbAndConnector();
+    }
 
     await this.ready();
 
@@ -80,6 +91,8 @@ export class Client extends BaseNode {
     this._bsMultiBss = [];
     this._ioMulti = undefined;
     this._bsMulti = undefined;
+    this._db = undefined;
+    this._connector = undefined;
   }
 
   /**
@@ -94,6 +107,37 @@ export class Client extends BaseNode {
    */
   get bs(): Bs | undefined {
     return this._bsMulti;
+  }
+
+  /**
+   * Returns the Db instance (available when route was provided).
+   */
+  get db(): Db | undefined {
+    return this._db;
+  }
+
+  /**
+   * Returns the Connector instance (available when route was provided).
+   */
+  get connector(): Connector | undefined {
+    return this._connector;
+  }
+
+  /**
+   * Returns the route (if provided).
+   */
+  get route(): Route | undefined {
+    return this._route;
+  }
+
+  /**
+   * Creates Db and Connector from the route and IoMulti.
+   * Called during init() when a route was provided.
+   */
+  private _setupDbAndConnector() {
+    this._db = new Db(this._ioMulti!);
+    const socket = normalizeSocketBundle(this._socketToServer);
+    this._connector = new Connector(this._db, this._route!, socket.ioUp);
   }
 
   /**
