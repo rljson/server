@@ -34,6 +34,20 @@ export type SocketWithClientId = Socket & { __clientId?: string };
 export interface ServerOptions {
   /** Logger instance for monitoring (defaults to NoopLogger). */
   logger?: ServerLogger;
+
+  /**
+   * Interval in milliseconds for evicting stale multicast ref entries.
+   * Uses a two-generation sweep: refs older than two intervals are discarded.
+   * Defaults to 60 000 (60 s). Set to 0 to disable automatic eviction.
+   */
+  refEvictionIntervalMs?: number;
+
+  /**
+   * Timeout in milliseconds for peer initialization during addSocket().
+   * If a peer does not respond within this window, addSocket() rejects.
+   * Defaults to 30 000 (30 s). Set to 0 to disable the timeout.
+   */
+  peerInitTimeoutMs?: number;
 }
 
 // .............................................................................
@@ -65,8 +79,11 @@ export class Server extends BaseNode {
   // Storage => Let Clients read from Servers Bs
   private _bsServer: BsServer;
 
-  // To avoid rebroadcasting the same edit refs multiple times
-  private _multicastedRefs: Set<string> = new Set();
+  // Two-generation ref dedup: refs in current or previous are considered seen.
+  // On each eviction tick, previous is discarded and current becomes previous.
+  private _multicastedRefsCurrent: Set<string> = new Set();
+  private _multicastedRefsPrevious: Set<string> = new Set();
+  private _refEvictionTimer?: ReturnType<typeof setInterval>;
 
   private _refreshPromise?: Promise<void>;
   private _pendingSockets: Array<{
@@ -75,6 +92,12 @@ export class Server extends BaseNode {
   }> = [];
 
   private _logger: ServerLogger;
+  private _peerInitTimeoutMs: number;
+
+  // Cleanup callbacks for socket disconnect listeners (clientId → cleanup fn)
+  private _disconnectCleanups: Map<string, () => void> = new Map();
+
+  private _tornDown = false;
 
   constructor(
     private _route: Route,
@@ -86,10 +109,23 @@ export class Server extends BaseNode {
     super(_localIo);
 
     this._logger = options?.logger ?? noopLogger;
+    this._peerInitTimeoutMs = options?.peerInitTimeoutMs ?? 30_000;
 
     this._logger.info('Server', 'Constructing server', {
       route: this._route.flat,
     });
+
+    // Start two-generation ref eviction
+    const evictionMs = options?.refEvictionIntervalMs ?? 60_000;
+    /* v8 ignore if -- @preserve */
+    if (evictionMs > 0) {
+      this._refEvictionTimer = setInterval(() => {
+        this._multicastedRefsPrevious = this._multicastedRefsCurrent;
+        this._multicastedRefsCurrent = new Set();
+      }, evictionMs);
+      // Don't let the timer keep the process alive
+      this._refEvictionTimer.unref();
+    }
 
     const ioMultiIoLocal = {
       io: this._localIo,
@@ -194,6 +230,9 @@ export class Server extends BaseNode {
       this._removeAllListeners();
       this._multicastRefs();
 
+      // Auto-cleanup on socket disconnect
+      this._registerDisconnectHandler(clientId, ioUp);
+
       this._logger.info('Server', 'Client socket added successfully', {
         clientId,
         totalClients: this._clients.size,
@@ -235,16 +274,19 @@ export class Server extends BaseNode {
           from: clientIdA,
         });
 
-        // Avoid rebroadcasting the same ref multiple times
+        // Avoid rebroadcasting the same ref multiple times (two-generation check)
         /* v8 ignore if -- @preserve */
-        if (this._multicastedRefs.has(ref)) {
+        if (
+          this._multicastedRefsCurrent.has(ref) ||
+          this._multicastedRefsPrevious.has(ref)
+        ) {
           this._logger.warn('Server.Multicast', 'Duplicate ref suppressed', {
             ref,
             from: clientIdA,
           });
           return;
         }
-        this._multicastedRefs.add(ref);
+        this._multicastedRefsCurrent.add(ref);
 
         const p = payload as any;
 
@@ -325,8 +367,8 @@ export class Server extends BaseNode {
     this._logger.info('Server.Io', 'Creating Io peer', { clientId });
     try {
       const ioPeer = new IoPeer(sockets.ioUp);
-      await ioPeer.init();
-      await ioPeer.isReady();
+      await this._withTimeout(ioPeer.init(), 'IoPeer.init()');
+      await this._withTimeout(ioPeer.isReady(), 'IoPeer.isReady()');
       this._logger.info('Server.Io', 'Io peer created', { clientId });
       return ioPeer;
     } catch (error) {
@@ -349,7 +391,7 @@ export class Server extends BaseNode {
     this._logger.info('Server.Bs', 'Creating Bs peer', { clientId });
     try {
       const bsPeer = new BsPeer(sockets.bsUp);
-      await bsPeer.init();
+      await this._withTimeout(bsPeer.init(), 'BsPeer.init()');
       this._logger.info('Server.Bs', 'Bs peer created', { clientId });
       return bsPeer;
     } catch (error) {
@@ -491,6 +533,152 @@ export class Server extends BaseNode {
     }
 
     return this._refreshPromise;
+  }
+
+  // ...........................................................................
+  /**
+   * Removes a connected client by its internal client ID.
+   * Cleans up listeners, peers, and rebuilds multis.
+   * @param clientId - The client identifier (from server.clients keys).
+   */
+  async removeSocket(clientId: string): Promise<void> {
+    const client = this._clients.get(clientId);
+    if (!client) return;
+
+    this._logger.info('Server', 'Removing client socket', { clientId });
+
+    // Remove multicast listener for this client
+    client.ioUp.removeAllListeners(this._route.flat);
+
+    // Remove disconnect handler
+    const cleanup = this._disconnectCleanups.get(clientId);
+    /* v8 ignore if -- @preserve */
+    if (cleanup) {
+      cleanup();
+      this._disconnectCleanups.delete(clientId);
+    }
+
+    // Remove peers from multi arrays
+    this._ios = this._ios.filter((entry) => entry.io !== client.io);
+    this._bss = this._bss.filter((entry) => entry.bs !== client.bs);
+
+    // Remove from clients map
+    this._clients.delete(clientId);
+
+    // Rebuild multis with remaining peers
+    await this._rebuildMultis();
+
+    // Refresh servers so IoServer/BsServer use updated multis
+    // (pending sockets are empty here — we only refresh the internal references)
+    await this._refreshServers();
+
+    // Re-establish multicast for remaining clients
+    this._removeAllListeners();
+    this._multicastRefs();
+
+    this._logger.info('Server', 'Client socket removed', {
+      clientId,
+      remainingClients: this._clients.size,
+    });
+  }
+
+  // ...........................................................................
+  /**
+   * Gracefully shuts down the server: stops timers, removes listeners,
+   * clears all client state, and closes storage layers.
+   */
+  async tearDown(): Promise<void> {
+    this._logger.info('Server', 'Tearing down server');
+
+    // Stop ref eviction timer
+    if (this._refEvictionTimer) {
+      clearInterval(this._refEvictionTimer);
+      this._refEvictionTimer = undefined;
+    }
+
+    // Remove all multicast listeners
+    this._removeAllListeners();
+
+    // Remove disconnect handlers
+    for (const cleanup of this._disconnectCleanups.values()) {
+      cleanup();
+    }
+    this._disconnectCleanups.clear();
+
+    // Clear all client-related data
+    this._clients.clear();
+    this._pendingSockets = [];
+
+    // Close IoMulti
+    /* v8 ignore else -- @preserve */
+    if (this._ioMulti && this._ioMulti.isOpen) {
+      this._ioMulti.close();
+    }
+
+    // Clear multi arrays
+    this._ios = [];
+    this._bss = [];
+
+    // Clear ref tracking
+    this._multicastedRefsCurrent.clear();
+    this._multicastedRefsPrevious.clear();
+
+    this._tornDown = true;
+
+    this._logger.info('Server', 'Server torn down successfully');
+  }
+
+  /**
+   * Whether the server has been torn down.
+   */
+  get isTornDown(): boolean {
+    return this._tornDown;
+  }
+
+  // ...........................................................................
+  /**
+   * Registers a listener that auto-removes the client on socket disconnect.
+   * @param clientId - Client identifier.
+   * @param socket - The upstream socket to listen on.
+   */
+  private _registerDisconnectHandler(
+    clientId: string,
+    socket: SocketWithClientId,
+  ) {
+    const handler = () => {
+      this._logger.info('Server', 'Client disconnected', { clientId });
+      this.removeSocket(clientId);
+    };
+    socket.on('disconnect', handler);
+    this._disconnectCleanups.set(clientId, () => {
+      socket.off('disconnect', handler);
+    });
+  }
+
+  // ...........................................................................
+  /**
+   * Races a promise against a timeout. Resolves/rejects with the original
+   * promise outcome if it settles first, or rejects with a timeout error.
+   * @param promise - The promise to race.
+   * @param label - Human-readable label for timeout error messages.
+   */
+  private _withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+    const ms = this._peerInitTimeoutMs;
+    if (ms <= 0) return promise;
+
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        /* v8 ignore next -- @preserve */
+        () => reject(new Error(`Timeout after ${ms}ms: ${label}`)),
+        ms,
+      );
+    });
+
+    return Promise.race([promise, timeout]).finally(
+      /* v8 ignore next -- @preserve */
+      () => clearTimeout(timer),
+    );
   }
 
   /** Example instance for test purposes */

@@ -54,6 +54,10 @@ const route = Route.fromFlat('my.app');
 const server = new Server(route, new IoMem(), new BsMem());
 await server.init();
 
+// Or with logging enabled:
+// import { ConsoleLogger } from '@rljson/server';
+// const server = new Server(route, new IoMem(), new BsMem(), { logger: new ConsoleLogger() });
+
 socketIo.on('connection', async (socket) => {
    await server.addSocket(new SocketIoBridge(socket));
 });
@@ -76,6 +80,10 @@ const socket = socketIoClient('http://localhost:3000', { forceNew: true });
 const route = Route.fromFlat('my.app');
 const client = new Client(new SocketIoBridge(socket), new IoMem(), new BsMem(), route);
 await client.init();
+
+// Or with logging enabled:
+// import { ConsoleLogger } from '@rljson/server';
+// const client = new Client(socket, io, bs, route, { logger: new ConsoleLogger() });
 
 // client.db and client.connector are ready to use
 // client.db.get/insert now cascade local ➜ server automatically
@@ -155,14 +163,20 @@ This is implemented with `IoMulti` and `BsMulti` internally, but the public API 
 - `db` – Db instance wrapping IoMulti (available when route was provided)
 - `connector` – Connector wired to the route and socket (available when route was provided)
 - `route` – the Route passed to the constructor
+- `logger` – the `ServerLogger` instance (defaults to `noopLogger`)
 
 ### Server API
 
 - `init()` – initializes server multis
 - `ready()` – resolves when Io is ready
-- `addSocket(socket)` – registers a client socket and refreshes multis
+- `addSocket(socket)` – registers a client socket, sets up disconnect handling, and refreshes multis
+- `removeSocket(clientId)` – removes a client, cleans up peers/listeners, and rebuilds multis
+- `tearDown()` – gracefully shuts down: stops timers, clears all clients, closes storage
 - `io` – Io interface used by server
 - `bs` – Bs interface used by server
+- `clients` – `Map` of connected clients (keyed by internal clientId)
+- `isTornDown` – whether the server has been shut down
+- `logger` – the `ServerLogger` instance (defaults to `noopLogger`)
 
 ## Example
 
@@ -196,7 +210,135 @@ The same pattern is used for Bs (blob storage).
 
 - `Client.io` and `Client.bs` are already merged interfaces. No need to access multis directly.
 - `Server.addSocket()` batches refreshes to reduce rebuild overhead when multiple sockets connect.
-- Multicast includes `__origin` markers plus a `_multicastedRefs` set to prevent ref echo loops.
+- Multicast uses `__origin` markers plus a two-generation ref set to prevent echo loops. Stale refs are automatically evicted (configurable via `refEvictionIntervalMs`).
+- Disconnected sockets are auto-detected and cleaned up — dead peers are removed and multis rebuilt.
+- Peer initialization is guarded by a configurable timeout (`peerInitTimeoutMs`, default 30 s) to prevent `addSocket()` from hanging on unresponsive clients.
+- Logging is opt-in via `{ logger }` options. Use `ConsoleLogger` for development, `BufferedLogger` for testing, `FilteredLogger` for production. Default is `NoopLogger` (zero overhead).
+
+## Logging
+
+Both `Server` and `Client` support structured logging via an injectable `ServerLogger` interface. Logging is opt-in — by default a zero-overhead `NoopLogger` is used.
+
+### Logger implementations
+
+| Class            | Purpose                                                       |
+| ---------------- | ------------------------------------------------------------- |
+| `NoopLogger`     | Default. All methods are empty — zero overhead in production. |
+| `ConsoleLogger`  | Logs to `console.log`/`warn`/`error`. Good for development.   |
+| `BufferedLogger` | Stores entries in memory. Ideal for test assertions.          |
+| `FilteredLogger` | Wraps another logger, filtering by level and/or source.       |
+
+### Injecting a logger
+
+```ts
+import { Server, Client, ConsoleLogger, BufferedLogger, FilteredLogger } from '@rljson/server';
+
+// Console logging (development)
+const server = new Server(route, io, bs, { logger: new ConsoleLogger() });
+const client = new Client(socket, io, bs, route, { logger: new ConsoleLogger() });
+
+// Buffered logging (testing)
+const logger = new BufferedLogger();
+const server = new Server(route, io, bs, { logger });
+// After operations:
+logger.entries;           // All log entries
+logger.byLevel('error');  // Only errors
+logger.bySource('Server.Multicast'); // Only multicast entries
+logger.clear();           // Reset
+
+// Filtered logging (production — errors and warnings only)
+const filtered = new FilteredLogger(new ConsoleLogger(), {
+  levels: ['error', 'warn'],
+});
+const server = new Server(route, io, bs, { logger: filtered });
+
+// Filtered by source (only multicast traffic)
+const trafficOnly = new FilteredLogger(new ConsoleLogger(), {
+  levels: ['traffic'],
+  sources: ['Server.Multicast'],
+});
+```
+
+### Log levels
+
+| Level     | Method                                            | What it captures                                                              |
+| --------- | ------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `info`    | `logger.info(source, message, data?)`             | Lifecycle events: construction, init, tearDown, peer creation, multi rebuilds |
+| `warn`    | `logger.warn(source, message, data?)`             | Duplicate ref suppression, loop prevention                                    |
+| `error`   | `logger.error(source, message, error?, data?)`    | Failures during init, peer creation, multicast, multi rebuilds                |
+| `traffic` | `logger.traffic(direction, source, event, data?)` | Socket traffic: inbound refs from clients, outbound multicasts to clients     |
+
+### Log sources
+
+Each log entry includes a `source` field identifying the component:
+
+| Source             | Component                                             |
+| ------------------ | ----------------------------------------------------- |
+| `Server`           | Server lifecycle (init, addSocket, rebuild, refresh)  |
+| `Server.Io`        | Server Io peer creation                               |
+| `Server.Bs`        | Server Bs peer creation                               |
+| `Server.Multicast` | Ref broadcasting between clients                      |
+| `Client`           | Client lifecycle (init, tearDown, Db/Connector setup) |
+| `Client.Io`        | Client Io multi setup, peer bridge, peer creation     |
+| `Client.Bs`        | Client Bs multi setup, peer bridge, peer creation     |
+
+### Custom logger
+
+Implement the `ServerLogger` interface to integrate with any logging framework:
+
+```ts
+import type { ServerLogger } from '@rljson/server';
+
+const myLogger: ServerLogger = {
+  info(source, message, data?) { /* your logging framework */ },
+  warn(source, message, data?) { /* ... */ },
+  error(source, message, error?, data?) { /* ... */ },
+  traffic(direction, source, event, data?) { /* ... */ },
+};
+```
+
+## Server options
+
+`ServerOptions` configures production behavior:
+
+```ts
+const server = new Server(route, io, bs, {
+  logger: new ConsoleLogger(),     // Structured logging (default: NoopLogger)
+  refEvictionIntervalMs: 60_000,   // Ref dedup sweep interval (default: 60 s, 0 = disable)
+  peerInitTimeoutMs: 30_000,       // Peer handshake timeout (default: 30 s, 0 = disable)
+});
+```
+
+| Option                  | Default    | Description                                                                                                                             |
+| ----------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `logger`                | NoopLogger | Structured logger for lifecycle, traffic, and error events.                                                                             |
+| `refEvictionIntervalMs` | 60 000     | Two-generation sweep interval for multicast ref dedup. Refs older than two intervals are forgotten, preventing unbounded memory growth. |
+| `peerInitTimeoutMs`     | 30 000     | Maximum time `addSocket()` waits for a peer to initialize. Prevents hanging on unresponsive clients.                                    |
+
+## Lifecycle management
+
+### Graceful shutdown
+
+```ts
+// Server
+await server.tearDown();
+// Stops eviction timer, removes all listeners, clears clients, closes IoMulti.
+console.log(server.isTornDown); // true
+
+// Client
+await client.tearDown();
+// Closes IoMulti, clears Bs references, resets Db/Connector.
+```
+
+### Removing a client
+
+```ts
+// Manual removal by clientId
+const clientIds = Array.from(server.clients.keys());
+await server.removeSocket(clientIds[0]);
+
+// Automatic: clients are removed when their socket emits 'disconnect'
+```
 
 ## Architecture Overview
 

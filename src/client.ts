@@ -117,15 +117,11 @@ export class Client extends BaseNode {
       this._ioMulti.close();
     }
 
-    //Close Bs
-    /* v8 ignore else -- @preserve */
-    if (this._bsMulti) {
-      // BsMulti doesn't have isOpen, just close it
-      // (Future: BsMulti should have close() method)
-    }
+    // Clear Bs layers (BsMulti has no close() yet — clear references so GC
+    // can reclaim the inner BsPeer and BsPeerBridge instances).
+    this._bsMultiBss = [];
 
     this._ioMultiIos = [];
-    this._bsMultiBss = [];
     this._ioMulti = undefined;
     this._bsMulti = undefined;
     this._db = undefined;

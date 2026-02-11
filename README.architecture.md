@@ -167,9 +167,14 @@ The `Server` class acts as a central coordination point that:
 
 **Lifecycle and controls:**
 
-- `addSocket()` attaches a stable `__clientId`, builds `IoPeer`/`BsPeer`, queues them, rebuilds multis once, and refreshes servers in a batch.
-- Multicast uses `__origin` markers plus `_multicastedRefs` to avoid echo loops and duplicate ref forwarding.
+- `addSocket()` attaches a stable `__clientId`, builds `IoPeer`/`BsPeer` (guarded by `peerInitTimeoutMs`), queues them, rebuilds multis once, refreshes servers in a batch, and registers an auto-disconnect handler.
+- `removeSocket(clientId)` removes a client’s listeners and peers, rebuilds multis, and re-establishes multicast for remaining clients.
+- `tearDown()` stops the eviction timer, removes all listeners/disconnect handlers, clears clients, closes IoMulti, and resets all internal state.
+- Multicast uses `__origin` markers plus a **two-generation ref set** (`_multicastedRefsCurrent` / `_multicastedRefsPrevious`) to avoid echo loops and duplicate ref forwarding. Refs are evicted on a configurable interval (`refEvictionIntervalMs`, default 60 s) to prevent unbounded memory growth.
 - Pending sockets are refreshed together so multiple joins trigger a single multi rebuild.
+- All lifecycle events, errors, and traffic are logged via the injected `ServerLogger` (defaults to `NoopLogger`).
+- Traffic logging captures inbound refs from clients and outbound multicasts with `from`/`to` client IDs.
+- Disconnected sockets are auto-detected: a `'disconnect'` listener triggers `removeSocket()`, cleaning up dead peers and rebuilding multis.
 
 ### 3. Multi-Layer Priority System
 
@@ -1000,6 +1005,15 @@ await client.ready(); // Waits for IoMulti to be ready
 const db = client.db!;             // Db wrapping IoMulti
 const connector = client.connector!; // Connector wired to route + socket
 
+// With logging:
+import { BufferedLogger } from '@rljson/server';
+const logger = new BufferedLogger();
+const client = new Client(socket, localIo, localBs, route, { logger });
+await client.init();
+// logger.entries now contains lifecycle events:
+//   Constructing client, Initializing client, Setting up Io multi,
+//   Io peer bridge started, Io multi ready, Setting up Bs multi, ...
+
 // Without route (legacy): only IoMulti and BsMulti are created
 const client = new Client(socket, localIo, localBs);
 await client.init();
@@ -1025,6 +1039,8 @@ When `server.addSocket(socket)` is called:
 3. **Rebuild multis**: Recreate IoMulti/BsMulti with all peers
 4. **Refresh servers**: Update IoServer/BsServer with new multis
 5. **Setup multicast**: Register listeners for route broadcasting
+
+Each step is logged at `info` level. Errors in any step are logged at `error` level and re-thrown.
 
 ### Teardown
 
@@ -1124,6 +1140,52 @@ await expect(dbB.get(route, {})).rejects.toThrow();
 - **@rljson/db**: Db operations (insert, get, join, etc.)
 - **@rljson/rljson**: Data structures (Route, TableCfg, etc.)
 
+## Observability
+
+### Structured Logging
+
+Both `Server` and `Client` accept an optional `ServerLogger` via their options parameter. The logger is called at every significant lifecycle point, error boundary, and network traffic event.
+
+**Logger interface:**
+
+```typescript
+interface ServerLogger {
+  info(source: string, message: string, data?: Record<string, unknown>): void;
+  warn(source: string, message: string, data?: Record<string, unknown>): void;
+  error(source: string, message: string, error?: unknown, data?: Record<string, unknown>): void;
+  traffic(direction: 'in' | 'out', source: string, event: string, data?: Record<string, unknown>): void;
+}
+```
+
+**What gets logged:**
+
+| Phase           | Source                    | Level   | Events                                      |
+| --------------- | ------------------------- | ------- | ------------------------------------------- |
+| Construction    | `Server` / `Client`       | info    | Route, options                              |
+| Initialization  | `Server` / `Client`       | info    | Start, success                              |
+| Io/Bs setup     | `Client.Io` / `Client.Bs` | info    | Multi creation, peer bridges, peer creation |
+| Peer creation   | `Server.Io` / `Server.Bs` | info    | Per-client peer setup                       |
+| Multi rebuild   | `Server`                  | info    | Peer count, rebuild success                 |
+| Server refresh  | `Server`                  | info    | Pending socket count, completion            |
+| Multicast in    | `Server.Multicast`        | traffic | Ref, sender clientId                        |
+| Multicast out   | `Server.Multicast`        | traffic | Ref, sender clientId, receiver clientId     |
+| Duplicate ref   | `Server.Multicast`        | warn    | Ref, sender                                 |
+| Loop prevention | `Server.Multicast`        | warn    | Ref, origin, sender                         |
+| Any failure     | Various                   | error   | Error object, context data                  |
+| TearDown        | `Client`                  | info    | Start, completion                           |
+| Socket removal  | `Server`                  | info    | Removing, rebuilding multis, removal done   |
+| Server tearDown | `Server`                  | info    | Tearing down, timer stop, completion        |
+| Disconnect      | `Server`                  | info    | Client disconnected, auto-removal           |
+
+**Built-in implementations:**
+
+- `NoopLogger` — zero overhead, used by default
+- `ConsoleLogger` — `console.log`/`warn`/`error` with formatted prefixes
+- `BufferedLogger` — in-memory array with `byLevel()`, `bySource()`, `clear()` helpers
+- `FilteredLogger` — wraps another logger, filters by `levels` and/or `sources`
+
+**Production recommendation:** Use `FilteredLogger` wrapping your framework's logger, filtering to `['error', 'warn']` levels. Enable `traffic` level only for debugging multicast issues.
+
 ## Future Considerations
 
 - **Write replication**: Automatically sync writes to server
@@ -1131,3 +1193,7 @@ await expect(dbB.get(route, {})).rejects.toThrow();
 - **Change detection**: Notify on data changes
 - **Batch operations**: Optimize bulk transfers
 - **Compression**: Reduce network payload size
+- **Authentication hooks**: Verify client identity in `addSocket()`
+- **Connection health introspection**: Query connected client state, connection time, etc.
+- **Backpressure / rate limiting**: Protect against misbehaving clients flooding multicast
+- **Metrics / counters**: Numeric counters (connected clients, refs/sec) for monitoring dashboards

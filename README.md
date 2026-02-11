@@ -13,6 +13,9 @@ Local-first, pull-by-reference server layer for Rljson. Clients keep writes loca
 - Writes stay local; reads cascade: local ➜ server ➜ peers
 - References (hashes) flow; data is pulled on demand
 - Server aggregates sockets and multicasts refs, but only stores what you explicitly import
+- Graceful lifecycle: `tearDown()` for both Server and Client, automatic disconnect cleanup, `removeSocket()` for manual removal
+- Configurable production defaults: ref eviction interval, peer init timeout
+- Structured logging via injectable `ServerLogger` (NoopLogger default, ConsoleLogger, BufferedLogger, FilteredLogger included)
 
 ## Quick start
 
