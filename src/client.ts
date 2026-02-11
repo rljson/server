@@ -10,11 +10,20 @@ import { Io, IoMulti, IoMultiIo, IoPeer, IoPeerBridge } from '@rljson/io';
 import { Route } from '@rljson/rljson';
 
 import { BaseNode } from './base-node.ts';
+import { noopLogger, ServerLogger } from './logger.ts';
 import {
   normalizeSocketBundle,
   SocketLike,
   SocketNamespaceBundle,
 } from './socket-bundle.ts';
+
+/**
+ * Options for the Client constructor.
+ */
+export interface ClientOptions {
+  /** Logger instance for monitoring (defaults to NoopLogger). */
+  logger?: ServerLogger;
+}
 
 export class Client extends BaseNode {
   private _ioMultiIos: IoMultiIo[] = [];
@@ -26,6 +35,8 @@ export class Client extends BaseNode {
   private _db?: Db;
   private _connector?: Connector;
 
+  private _logger: ServerLogger;
+
   // ...........................................................................
   /**
    * Creates a Client instance
@@ -33,15 +44,24 @@ export class Client extends BaseNode {
    * @param _localIo - Local Io for local storage
    * @param _localBs - Local Bs for local blob storage
    * @param _route - Optional route for automatic Db and Connector creation
+   * @param options - Optional configuration including logger for monitoring
    */
   constructor(
     private _socketToServer: SocketLike,
     protected _localIo: Io,
     protected _localBs: Bs,
     private _route?: Route,
+    options?: ClientOptions,
   ) {
     //Call BaseNode constructor
     super(_localIo);
+
+    this._logger = options?.logger ?? noopLogger;
+
+    this._logger.info('Client', 'Constructing client', {
+      hasRoute: !!this._route,
+      route: this._route?.flat,
+    });
   }
 
   /**
@@ -49,16 +69,31 @@ export class Client extends BaseNode {
    * @returns The initialized Io implementation.
    */
   async init() {
-    await this._setupIo();
-    await this._setupBs();
+    this._logger.info('Client', 'Initializing client');
 
-    if (this._route) {
-      this._setupDbAndConnector();
+    try {
+      await this._setupIo();
+      await this._setupBs();
+
+      if (this._route) {
+        this._setupDbAndConnector();
+      }
+
+      await this.ready();
+
+      this._logger.info('Client', 'Client initialized successfully', {
+        hasRoute: !!this._route,
+        hasDb: !!this._db,
+        hasConnector: !!this._connector,
+      });
+
+      return this._ioMulti;
+    } catch (error) {
+      /* v8 ignore start -- @preserve */
+      this._logger.error('Client', 'Failed to initialize client', error);
+      throw error;
     }
-
-    await this.ready();
-
-    return this._ioMulti;
+    /* v8 ignore stop -- @preserve */
   }
 
   /**
@@ -74,6 +109,8 @@ export class Client extends BaseNode {
    * Closes client resources and clears internal state.
    */
   async tearDown() {
+    this._logger.info('Client', 'Tearing down client');
+
     //Close Io
     /* v8 ignore else -- @preserve */
     if (this._ioMulti && this._ioMulti.isOpen) {
@@ -93,6 +130,8 @@ export class Client extends BaseNode {
     this._bsMulti = undefined;
     this._db = undefined;
     this._connector = undefined;
+
+    this._logger.info('Client', 'Client torn down successfully');
   }
 
   /**
@@ -131,80 +170,117 @@ export class Client extends BaseNode {
   }
 
   /**
+   * Returns the logger instance.
+   */
+  get logger(): ServerLogger {
+    return this._logger;
+  }
+
+  /**
    * Creates Db and Connector from the route and IoMulti.
    * Called during init() when a route was provided.
    */
   private _setupDbAndConnector() {
+    this._logger.info('Client', 'Setting up Db and Connector', {
+      route: this._route!.flat,
+    });
+
     this._db = new Db(this._ioMulti!);
     const socket = normalizeSocketBundle(this._socketToServer);
     this._connector = new Connector(this._db, this._route!, socket.ioUp);
+
+    this._logger.info('Client', 'Db and Connector created');
   }
 
   /**
    * Builds the Io multi with local and peer layers.
    */
   private async _setupIo() {
-    const sockets = normalizeSocketBundle(this._socketToServer);
+    this._logger.info('Client.Io', 'Setting up Io multi');
 
-    // Add LocalIo to MultiIo
-    this._ioMultiIos.push({
-      io: this._localIo,
-      dump: true,
-      read: true,
-      write: true,
-      priority: 1,
-    });
+    try {
+      const sockets = normalizeSocketBundle(this._socketToServer);
 
-    // Upstream: let the server pull from client local Io
-    const ioPeerBridge = new IoPeerBridge(this._localIo, sockets.ioUp);
-    ioPeerBridge.start();
+      // Add LocalIo to MultiIo
+      this._ioMultiIos.push({
+        io: this._localIo,
+        dump: true,
+        read: true,
+        write: true,
+        priority: 1,
+      });
 
-    // Downstream: pull from server
-    const ioPeer = await this._createIoPeer(sockets.ioDown);
+      // Upstream: let the server pull from client local Io
+      const ioPeerBridge = new IoPeerBridge(this._localIo, sockets.ioUp);
+      ioPeerBridge.start();
+      this._logger.info('Client.Io', 'Io peer bridge started (upstream)');
 
-    this._ioMultiIos.push({
-      io: ioPeer,
-      dump: false,
-      read: true,
-      write: false,
-      priority: 2,
-    });
+      // Downstream: pull from server
+      const ioPeer = await this._createIoPeer(sockets.ioDown);
 
-    this._ioMulti = new IoMulti(this._ioMultiIos);
-    await this._ioMulti.init();
-    await this._ioMulti.isReady();
+      this._ioMultiIos.push({
+        io: ioPeer,
+        dump: false,
+        read: true,
+        write: false,
+        priority: 2,
+      });
+
+      this._ioMulti = new IoMulti(this._ioMultiIos);
+      await this._ioMulti.init();
+      await this._ioMulti.isReady();
+
+      this._logger.info('Client.Io', 'Io multi ready');
+    } catch (error) {
+      /* v8 ignore start -- @preserve */
+      this._logger.error('Client.Io', 'Failed to set up Io', error);
+      throw error;
+    }
+    /* v8 ignore stop -- @preserve */
   }
 
   /**
    * Builds the Bs multi with local and peer layers.
    */
   private async _setupBs() {
-    const sockets = normalizeSocketBundle(this._socketToServer);
+    this._logger.info('Client.Bs', 'Setting up Bs multi');
 
-    // Add LocalBs to MultiBs
-    this._bsMultiBss.push({
-      bs: this._localBs,
-      read: true,
-      write: true,
-      priority: 1,
-    });
+    try {
+      const sockets = normalizeSocketBundle(this._socketToServer);
 
-    // Upstream: let the server pull from client local Bs
-    const bsPeerBridge = new BsPeerBridge(this._localBs, sockets.bsUp);
-    bsPeerBridge.start();
+      // Add LocalBs to MultiBs
+      this._bsMultiBss.push({
+        bs: this._localBs,
+        read: true,
+        write: true,
+        priority: 1,
+      });
 
-    // Downstream: pull from server
-    const bsPeer = await this._createBsPeer(sockets.bsDown);
+      // Upstream: let the server pull from client local Bs
+      const bsPeerBridge = new BsPeerBridge(this._localBs, sockets.bsUp);
+      bsPeerBridge.start();
+      this._logger.info('Client.Bs', 'Bs peer bridge started (upstream)');
 
-    this._bsMultiBss.push({
-      bs: bsPeer,
-      read: true,
-      write: false,
-      priority: 2,
-    });
+      // Downstream: pull from server
+      const bsPeer = await this._createBsPeer(sockets.bsDown);
 
-    this._bsMulti = new BsMulti(this._bsMultiBss);
-    await this._bsMulti.init();
+      this._bsMultiBss.push({
+        bs: bsPeer,
+        read: true,
+        write: false,
+        priority: 2,
+      });
+
+      this._bsMulti = new BsMulti(this._bsMultiBss);
+      await this._bsMulti.init();
+
+      this._logger.info('Client.Bs', 'Bs multi ready');
+    } catch (error) {
+      /* v8 ignore start -- @preserve */
+      this._logger.error('Client.Bs', 'Failed to set up Bs', error);
+      throw error;
+    }
+    /* v8 ignore stop -- @preserve */
   }
 
   /**
@@ -212,10 +288,23 @@ export class Client extends BaseNode {
    * @param socket - Downstream socket to the server Io namespace.
    */
   private async _createIoPeer(socket: SocketNamespaceBundle['ioDown']) {
-    const ioPeer = new IoPeer(socket);
-    await ioPeer.init();
-    await ioPeer.isReady();
-    return ioPeer;
+    this._logger.info('Client.Io', 'Creating Io peer (downstream)');
+    try {
+      const ioPeer = new IoPeer(socket);
+      await ioPeer.init();
+      await ioPeer.isReady();
+      this._logger.info('Client.Io', 'Io peer created (downstream)');
+      return ioPeer;
+    } catch (error) {
+      /* v8 ignore start -- @preserve */
+      this._logger.error(
+        'Client.Io',
+        'Failed to create Io peer (downstream)',
+        error,
+      );
+      throw error;
+    }
+    /* v8 ignore stop -- @preserve */
   }
 
   /**
@@ -223,8 +312,21 @@ export class Client extends BaseNode {
    * @param socket - Downstream socket to the server Bs namespace.
    */
   private async _createBsPeer(socket: SocketNamespaceBundle['bsDown']) {
-    const bsPeer = new BsPeer(socket);
-    await bsPeer.init();
-    return bsPeer;
+    this._logger.info('Client.Bs', 'Creating Bs peer (downstream)');
+    try {
+      const bsPeer = new BsPeer(socket);
+      await bsPeer.init();
+      this._logger.info('Client.Bs', 'Bs peer created (downstream)');
+      return bsPeer;
+    } catch (error) {
+      /* v8 ignore start -- @preserve */
+      this._logger.error(
+        'Client.Bs',
+        'Failed to create Bs peer (downstream)',
+        error,
+      );
+      throw error;
+    }
+    /* v8 ignore stop -- @preserve */
   }
 }

@@ -19,6 +19,7 @@ import {
 import { Route } from '@rljson/rljson';
 
 import { BaseNode } from './base-node.ts';
+import { noopLogger, ServerLogger } from './logger.ts';
 import {
   normalizeSocketBundle,
   SocketLike,
@@ -26,6 +27,14 @@ import {
 } from './socket-bundle.ts';
 
 export type SocketWithClientId = Socket & { __clientId?: string };
+
+/**
+ * Options for the Server constructor.
+ */
+export interface ServerOptions {
+  /** Logger instance for monitoring (defaults to NoopLogger). */
+  logger?: ServerLogger;
+}
 
 // .............................................................................
 export class Server extends BaseNode {
@@ -65,13 +74,22 @@ export class Server extends BaseNode {
     bsDown: SocketWithClientId;
   }> = [];
 
+  private _logger: ServerLogger;
+
   constructor(
     private _route: Route,
     protected _localIo: Io,
     protected _localBs: Bs,
+    options?: ServerOptions,
   ) {
     //Call BaseNode constructor
     super(_localIo);
+
+    this._logger = options?.logger ?? noopLogger;
+
+    this._logger.info('Server', 'Constructing server', {
+      route: this._route.flat,
+    });
 
     const ioMultiIoLocal = {
       io: this._localIo,
@@ -103,14 +121,25 @@ export class Server extends BaseNode {
    * Initializes Io and Bs multis on the server.
    */
   async init() {
-    // Initialize IoServer
-    await this._ioMulti.init();
-    await this._ioMulti.isReady();
+    this._logger.info('Server', 'Initializing server');
 
-    // Initialize BsServer
-    await this._bsMulti.init();
+    try {
+      // Initialize IoServer
+      await this._ioMulti.init();
+      await this._ioMulti.isReady();
 
-    await this.ready();
+      // Initialize BsServer
+      await this._bsMulti.init();
+
+      await this.ready();
+
+      this._logger.info('Server', 'Server initialized successfully');
+    } catch (error) {
+      /* v8 ignore start -- @preserve */
+      this._logger.error('Server', 'Failed to initialize server', error);
+      throw error;
+    }
+    /* v8 ignore stop -- @preserve */
   }
 
   /**
@@ -132,6 +161,8 @@ export class Server extends BaseNode {
       .toString(36)
       .slice(2)}`;
 
+    this._logger.info('Server', 'Adding client socket', { clientId });
+
     // add clientId to socket (shorthand)
     const ioUp = sockets.ioUp as SocketWithClientId;
     const ioDown = sockets.ioDown as SocketWithClientId;
@@ -143,24 +174,38 @@ export class Server extends BaseNode {
     (bsUp as any).__clientId = clientId;
     (bsDown as any).__clientId = clientId;
 
-    const ioPeer = await this._createIoPeer(ioUp);
-    const bsPeer = await this._createBsPeer(bsUp);
+    try {
+      const ioPeer = await this._createIoPeer(socket, clientId);
+      const bsPeer = await this._createBsPeer(socket, clientId);
 
-    this._registerClient(
-      clientId,
-      { ioUp, ioDown, bsUp, bsDown },
-      ioPeer,
-      bsPeer,
-    );
-    this._pendingSockets.push({ ioDown, bsDown });
-    this._queueIoPeer(ioPeer);
-    this._queueBsPeer(bsPeer);
+      this._registerClient(
+        clientId,
+        { ioUp, ioDown, bsUp, bsDown },
+        ioPeer,
+        bsPeer,
+      );
+      this._pendingSockets.push({ ioDown, bsDown });
+      this._queueIoPeer(ioPeer);
+      this._queueBsPeer(bsPeer);
 
-    await this._queueRefresh();
+      await this._queueRefresh();
 
-    // remove all existing listeners and re-establish multicast
-    this._removeAllListeners();
-    this._multicastRefs();
+      // remove all existing listeners and re-establish multicast
+      this._removeAllListeners();
+      this._multicastRefs();
+
+      this._logger.info('Server', 'Client socket added successfully', {
+        clientId,
+        totalClients: this._clients.size,
+      });
+    } catch (error) {
+      /* v8 ignore start -- @preserve */
+      this._logger.error('Server', 'Failed to add client socket', error, {
+        clientId,
+      });
+      throw error;
+    }
+    /* v8 ignore stop -- @preserve */
 
     return this;
   }
@@ -184,9 +229,19 @@ export class Server extends BaseNode {
     for (const [clientIdA, { ioUp: socketA }] of this._clients.entries()) {
       socketA.on(this._route.flat, (payload: ConnectorPayload) => {
         const ref = payload.r;
+
+        this._logger.traffic('in', 'Server.Multicast', this._route.flat, {
+          ref,
+          from: clientIdA,
+        });
+
         // Avoid rebroadcasting the same ref multiple times
-        /* v8 ignore next -- @preserve */
+        /* v8 ignore if -- @preserve */
         if (this._multicastedRefs.has(ref)) {
+          this._logger.warn('Server.Multicast', 'Duplicate ref suppressed', {
+            ref,
+            from: clientIdA,
+          });
           return;
         }
         this._multicastedRefs.add(ref);
@@ -194,8 +249,13 @@ export class Server extends BaseNode {
         const p = payload as any;
 
         // If payload already has an origin, it was forwarded by the wire and should not be re-forwarded.
-        /* v8 ignore next -- @preserve */
+        /* v8 ignore if -- @preserve */
         if (p && p.__origin) {
+          this._logger.warn(
+            'Server.Multicast',
+            'Loop prevention: payload already has origin',
+            { ref, origin: p.__origin, from: clientIdA },
+          );
           return;
         }
 
@@ -209,6 +269,13 @@ export class Server extends BaseNode {
             const forwarded = Object.assign({}, payload, {
               __origin: clientIdA,
             });
+
+            this._logger.traffic('out', 'Server.Multicast', this._route.flat, {
+              ref,
+              from: clientIdA,
+              to: clientIdB,
+            });
+
             socketB.emit(this._route.flat, forwarded);
           }
         }
@@ -218,6 +285,13 @@ export class Server extends BaseNode {
 
   get route() {
     return this._route;
+  }
+
+  /**
+   * Returns the logger instance.
+   */
+  get logger(): ServerLogger {
+    return this._logger;
   }
 
   /**
@@ -244,22 +318,48 @@ export class Server extends BaseNode {
   /**
    * Creates and initializes a downstream Io peer for a socket.
    * @param socket - Client socket to bind the peer to.
+   * @param clientId - Client identifier for logging.
    */
-  private async _createIoPeer(socket: Socket) {
-    const ioPeer = new IoPeer(socket);
-    await ioPeer.init();
-    await ioPeer.isReady();
-    return ioPeer;
+  private async _createIoPeer(socket: SocketLike, clientId: string) {
+    const sockets = normalizeSocketBundle(socket);
+    this._logger.info('Server.Io', 'Creating Io peer', { clientId });
+    try {
+      const ioPeer = new IoPeer(sockets.ioUp);
+      await ioPeer.init();
+      await ioPeer.isReady();
+      this._logger.info('Server.Io', 'Io peer created', { clientId });
+      return ioPeer;
+    } catch (error) {
+      /* v8 ignore start -- @preserve */
+      this._logger.error('Server.Io', 'Failed to create Io peer', error, {
+        clientId,
+      });
+      throw error;
+    }
+    /* v8 ignore stop -- @preserve */
   }
 
   /**
    * Creates and initializes a downstream Bs peer for a socket.
    * @param socket - Client socket to bind the peer to.
+   * @param clientId - Client identifier for logging.
    */
-  private async _createBsPeer(socket: Socket) {
-    const bsPeer = new BsPeer(socket);
-    await bsPeer.init();
-    return bsPeer;
+  private async _createBsPeer(socket: SocketLike, clientId: string) {
+    const sockets = normalizeSocketBundle(socket);
+    this._logger.info('Server.Bs', 'Creating Bs peer', { clientId });
+    try {
+      const bsPeer = new BsPeer(sockets.bsUp);
+      await bsPeer.init();
+      this._logger.info('Server.Bs', 'Bs peer created', { clientId });
+      return bsPeer;
+    } catch (error) {
+      /* v8 ignore start -- @preserve */
+      this._logger.error('Server.Bs', 'Failed to create Bs peer', error, {
+        clientId,
+      });
+      throw error;
+    }
+    /* v8 ignore stop -- @preserve */
   }
 
   /**
@@ -316,27 +416,54 @@ export class Server extends BaseNode {
    * Rebuilds Io and Bs multis from queued peers.
    */
   private async _rebuildMultis() {
-    this._ioMulti = new IoMulti(this._ios);
-    await this._ioMulti.init();
-    await this._ioMulti.isReady();
+    this._logger.info('Server', 'Rebuilding multis', {
+      ioCount: this._ios.length,
+      bsCount: this._bss.length,
+    });
 
-    this._bsMulti = new BsMulti(this._bss);
-    await this._bsMulti.init();
+    try {
+      this._ioMulti = new IoMulti(this._ios);
+      await this._ioMulti.init();
+      await this._ioMulti.isReady();
+
+      this._bsMulti = new BsMulti(this._bss);
+      await this._bsMulti.init();
+
+      this._logger.info('Server', 'Multis rebuilt successfully');
+    } catch (error) {
+      /* v8 ignore start -- @preserve */
+      this._logger.error('Server', 'Failed to rebuild multis', error);
+      throw error;
+    }
+    /* v8 ignore stop -- @preserve */
   }
 
   /**
    * Recreates servers and reattaches sockets.
    */
   private async _refreshServers() {
-    (this._ioServer as any)._io = this._ioMulti;
-    (this._bsServer as any)._bs = this._bsMulti;
+    this._logger.info('Server', 'Refreshing servers', {
+      pendingSockets: this._pendingSockets.length,
+    });
 
-    for (const pending of this._pendingSockets) {
-      await this._ioServer.addSocket(pending.ioDown);
-      await this._bsServer.addSocket(pending.bsDown);
+    try {
+      (this._ioServer as any)._io = this._ioMulti;
+      (this._bsServer as any)._bs = this._bsMulti;
+
+      for (const pending of this._pendingSockets) {
+        await this._ioServer.addSocket(pending.ioDown);
+        await this._bsServer.addSocket(pending.bsDown);
+      }
+
+      this._pendingSockets = [];
+
+      this._logger.info('Server', 'Servers refreshed successfully');
+    } catch (error) {
+      /* v8 ignore start -- @preserve */
+      this._logger.error('Server', 'Failed to refresh servers', error);
+      throw error;
     }
-
-    this._pendingSockets = [];
+    /* v8 ignore stop -- @preserve */
   }
 
   /**
@@ -344,11 +471,20 @@ export class Server extends BaseNode {
    */
   private _queueRefresh() {
     if (!this._refreshPromise) {
+      this._logger.info('Server', 'Queuing refresh');
+
       this._refreshPromise = Promise.resolve()
         .then(async () => {
           await this._rebuildMultis();
           await this._refreshServers();
         })
+        .catch(
+          /* v8 ignore next -- @preserve */
+          (error) => {
+            this._logger.error('Server', 'Queued refresh failed', error);
+            throw error;
+          },
+        )
         .finally(() => {
           this._refreshPromise = undefined;
         });
