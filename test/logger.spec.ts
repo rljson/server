@@ -44,9 +44,9 @@ describe('Logger implementations', () => {
       const logger = new ConsoleLogger();
       const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
       logger.info('Server', 'initialized', { port: 3000 });
-      expect(spy).toHaveBeenCalledWith('[INFO] [Server] initialized', {
-        port: 3000,
-      });
+      expect(spy).toHaveBeenCalledWith(
+        '[INFO] [Server] initialized {"port":3000}',
+      );
       spy.mockRestore();
     });
 
@@ -54,7 +54,7 @@ describe('Logger implementations', () => {
       const logger = new ConsoleLogger();
       const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
       logger.info('Server', 'ready');
-      expect(spy).toHaveBeenCalledWith('[INFO] [Server] ready', '');
+      expect(spy).toHaveBeenCalledWith('[INFO] [Server] ready');
       spy.mockRestore();
     });
 
@@ -62,9 +62,9 @@ describe('Logger implementations', () => {
       const logger = new ConsoleLogger();
       const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       logger.warn('Server', 'duplicate ref', { ref: 'abc' });
-      expect(spy).toHaveBeenCalledWith('[WARN] [Server] duplicate ref', {
-        ref: 'abc',
-      });
+      expect(spy).toHaveBeenCalledWith(
+        '[WARN] [Server] duplicate ref {"ref":"abc"}',
+      );
       spy.mockRestore();
     });
 
@@ -72,7 +72,7 @@ describe('Logger implementations', () => {
       const logger = new ConsoleLogger();
       const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       logger.warn('Server', 'something');
-      expect(spy).toHaveBeenCalledWith('[WARN] [Server] something', '');
+      expect(spy).toHaveBeenCalledWith('[WARN] [Server] something');
       spy.mockRestore();
     });
 
@@ -81,9 +81,9 @@ describe('Logger implementations', () => {
       const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const err = new Error('fail');
       logger.error('Client', 'init failed', err, { step: 'io' });
-      expect(spy).toHaveBeenCalledWith('[ERROR] [Client] init failed', err, {
-        step: 'io',
-      });
+      expect(spy).toHaveBeenCalledWith(
+        `[ERROR] [Client] init failed ${err} {"step":"io"}`,
+      );
       spy.mockRestore();
     });
 
@@ -91,7 +91,7 @@ describe('Logger implementations', () => {
       const logger = new ConsoleLogger();
       const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
       logger.error('Client', 'init failed');
-      expect(spy).toHaveBeenCalledWith('[ERROR] [Client] init failed', '', '');
+      expect(spy).toHaveBeenCalledWith('[ERROR] [Client] init failed');
       spy.mockRestore();
     });
 
@@ -100,14 +100,14 @@ describe('Logger implementations', () => {
       const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
       logger.traffic('in', 'Server', '/route', { ref: 'abc' });
-      expect(spy).toHaveBeenCalledWith('[TRAFFIC] ⬅ [Server] /route', {
-        ref: 'abc',
-      });
+      expect(spy).toHaveBeenCalledWith(
+        '[TRAFFIC] ⬅ [Server] /route {"ref":"abc"}',
+      );
 
       logger.traffic('out', 'Server', '/route', { ref: 'abc' });
-      expect(spy).toHaveBeenCalledWith('[TRAFFIC] ➡ [Server] /route', {
-        ref: 'abc',
-      });
+      expect(spy).toHaveBeenCalledWith(
+        '[TRAFFIC] ➡ [Server] /route {"ref":"abc"}',
+      );
 
       spy.mockRestore();
     });
@@ -116,7 +116,7 @@ describe('Logger implementations', () => {
       const logger = new ConsoleLogger();
       const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
       logger.traffic('in', 'Server', '/route');
-      expect(spy).toHaveBeenCalledWith('[TRAFFIC] ⬅ [Server] /route', '');
+      expect(spy).toHaveBeenCalledWith('[TRAFFIC] ⬅ [Server] /route');
       spy.mockRestore();
     });
   });

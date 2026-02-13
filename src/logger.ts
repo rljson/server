@@ -76,14 +76,19 @@ export class NoopLogger implements ServerLogger {
 // .............................................................................
 /**
  * Logs all events to console. Useful for development and debugging.
+ * Data is serialized inline as compact JSON for single-line output.
  */
 export class ConsoleLogger implements ServerLogger {
+  private _fmt(data?: Record<string, unknown>): string {
+    return data ? ' ' + JSON.stringify(data) : '';
+  }
+
   info(source: string, message: string, data?: Record<string, unknown>): void {
-    console.log(`[INFO] [${source}] ${message}`, data ?? '');
+    console.log(`[INFO] [${source}] ${message}${this._fmt(data)}`);
   }
 
   warn(source: string, message: string, data?: Record<string, unknown>): void {
-    console.warn(`[WARN] [${source}] ${message}`, data ?? '');
+    console.warn(`[WARN] [${source}] ${message}${this._fmt(data)}`);
   }
 
   error(
@@ -92,7 +97,8 @@ export class ConsoleLogger implements ServerLogger {
     error?: unknown,
     data?: Record<string, unknown>,
   ): void {
-    console.error(`[ERROR] [${source}] ${message}`, error ?? '', data ?? '');
+    const errStr = error ? ` ${error}` : '';
+    console.error(`[ERROR] [${source}] ${message}${errStr}${this._fmt(data)}`);
   }
 
   traffic(
@@ -102,7 +108,7 @@ export class ConsoleLogger implements ServerLogger {
     data?: Record<string, unknown>,
   ): void {
     const arrow = direction === 'in' ? '⬅' : '➡';
-    console.log(`[TRAFFIC] ${arrow} [${source}] ${event}`, data ?? '');
+    console.log(`[TRAFFIC] ${arrow} [${source}] ${event}${this._fmt(data)}`);
   }
 }
 
