@@ -1186,6 +1186,66 @@ interface ServerLogger {
 
 **Production recommendation:** Use `FilteredLogger` wrapping your framework's logger, filtering to `['error', 'warn']` levels. Enable `traffic` level only for debugging multicast issues.
 
+## Sync Protocol (opt-in hardening)
+
+The server supports an optional sync protocol that provides production-grade guarantees on top of the basic multicast mechanism. Enabled by passing `syncConfig` in `ServerOptions`.
+
+### Architecture
+
+```text
+     Client A (Connector)                Server                    Client B (Connector)
+     ────────────────────                ──────                    ────────────────────
+     send(ref) →
+       enriches payload:
+       {o, r, c?, t?, seq?, p?}
+                            ────emit(route)───►
+                                                ┌─ append to ref log
+                                                ├─ setup ACK collection
+                                                ├─ forward to Client B  ──emit(route)──►
+                                                │                                        processIncoming()
+                                                │                                        ◄──ackClient──
+                                                ├─ collect ackClient
+                                                ├─ emit aggregated ACK
+                            ◄───ack────────────┘
+```
+
+### Ref log (ring buffer)
+
+The server maintains a bounded ring buffer of recent `ConnectorPayload` entries. When the buffer exceeds `refLogSize` (default: 1000), the oldest entry is dropped. The ref log serves as the data source for gap-fill responses.
+
+### ACK aggregation
+
+When `requireAck` is enabled:
+
+1. **Before broadcast**: The server registers `ackClient` listeners on all receiver sockets.
+2. **During broadcast**: Payloads are forwarded to all other clients.
+3. **After broadcast**: The server waits for individual `ackClient` events from each receiver.
+4. **On completion or timeout**: An aggregated `AckPayload` is emitted back to the sender on the `ack` event.
+
+The ACK includes `receivedBy` (count of confirmed receivers) and `totalClients` (total receiver count). If all receivers confirm, `ok: true`; if timeout fires first, `ok: false`.
+
+### Gap-fill responder
+
+When `causalOrdering` is enabled:
+
+1. The server listens for `gapfill:req` events from each client.
+2. On request, it filters the ref log for payloads with `seq > afterSeq`.
+3. The matching payloads are sent back on the `gapfill:res` event.
+
+### Event registration lifecycle
+
+- `_multicastRefs()` sets up all sync listeners (ref, ackClient, gapFillReq) per client.
+- `_removeAllListeners()` tears down all sync listeners (route, ackClient, gapFillReq).
+- `addSocket()` and `removeSocket()` trigger rebuild of all listeners.
+- `tearDown()` clears the ref log in addition to existing cleanup.
+
+### Client-side integration
+
+The `Client` class accepts `syncConfig`, `clientIdentity`, and `peerInitTimeoutMs` in `ClientOptions`.
+
+- **`peerInitTimeoutMs`** (default 30 s, 0 = disable): Guards `IoPeer` and `BsPeer` initialization during `init()` with a `Promise.race`-based timeout. If the server is unreachable, `init()` rejects cleanly instead of hanging indefinitely. Uses the same `_withTimeout()` pattern as the server.
+- **`syncConfig`** + **`clientIdentity`**: When a route is provided, these are passed through to the `Connector` constructor, activating enriched payloads (sequence numbers, causal ordering, client identity) on the client side.
+
 ## Future Considerations
 
 - **Write replication**: Automatically sync writes to server

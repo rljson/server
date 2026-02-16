@@ -212,7 +212,7 @@ The same pattern is used for Bs (blob storage).
 - `Server.addSocket()` batches refreshes to reduce rebuild overhead when multiple sockets connect.
 - Multicast uses `__origin` markers plus a two-generation ref set to prevent echo loops. Stale refs are automatically evicted (configurable via `refEvictionIntervalMs`).
 - Disconnected sockets are auto-detected and cleaned up — dead peers are removed and multis rebuilt.
-- Peer initialization is guarded by a configurable timeout (`peerInitTimeoutMs`, default 30 s) to prevent `addSocket()` from hanging on unresponsive clients.
+- Peer initialization is guarded by a configurable timeout (`peerInitTimeoutMs`, default 30 s) on both server and client. On the server it prevents `addSocket()` from hanging on unresponsive clients; on the client it prevents `init()` from hanging when the server is unreachable.
 - Logging is opt-in via `{ logger }` options. Use `ConsoleLogger` for development, `BufferedLogger` for testing, `FilteredLogger` for production. Default is `NoopLogger` (zero overhead).
 
 ## Logging
@@ -314,6 +314,97 @@ const server = new Server(route, io, bs, {
 | `logger`                | NoopLogger | Structured logger for lifecycle, traffic, and error events.                                                                             |
 | `refEvictionIntervalMs` | 60 000     | Two-generation sweep interval for multicast ref dedup. Refs older than two intervals are forgotten, preventing unbounded memory growth. |
 | `peerInitTimeoutMs`     | 30 000     | Maximum time `addSocket()` waits for a peer to initialize. Prevents hanging on unresponsive clients.                                    |
+| `syncConfig`            | undefined  | Sync protocol configuration (see below). Enables ACK aggregation, gap-fill, and enriched payloads.                                      |
+| `refLogSize`            | 1 000      | Maximum number of recent payloads retained in the ref log for gap-fill responses.                                                        |
+| `ackTimeoutMs`          | 10 000     | Timeout for collecting individual client ACKs before emitting the aggregated ACK. Falls back to `syncConfig.ackTimeoutMs`.               |
+
+## Client options
+
+`ClientOptions` configures the client:
+
+```ts
+const client = new Client(socket, io, bs, route, {
+  logger: new ConsoleLogger(),     // Structured logging (default: NoopLogger)
+  peerInitTimeoutMs: 30_000,       // Peer handshake timeout (default: 30 s, 0 = disable)
+  syncConfig,                      // Sync protocol config (default: undefined)
+  clientIdentity: 'my-client-id',  // Stable client identity (default: auto-generated)
+});
+```
+
+| Option              | Default    | Description                                                                                                                             |
+| ------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `logger`            | NoopLogger | Structured logger for lifecycle, traffic, and error events.                                                                             |
+| `peerInitTimeoutMs` | 30 000     | Maximum time `init()` waits for Io/Bs peers to initialize. Prevents hanging when the server is unreachable. Set to 0 to disable.        |
+| `syncConfig`        | undefined  | Sync protocol configuration (see below). Passed through to the Connector for enriched payloads.                                         |
+| `clientIdentity`    | undefined  | Stable client identity passed to the Connector. Auto-generated when `syncConfig.includeClientIdentity` is true and this is omitted.     |
+
+## Sync protocol
+
+The sync protocol is **opt-in** and backward-compatible. When `syncConfig` is provided to the server (and/or client), the system activates enriched payload forwarding, ACK aggregation, and gap-fill support.
+
+### Enabling sync
+
+```ts
+import { Server, Client, ConsoleLogger } from '@rljson/server';
+import type { SyncConfig } from '@rljson/server';
+
+const syncConfig: SyncConfig = {
+  causalOrdering: true,        // Attach seq numbers, detect gaps, serve gap-fill
+  requireAck: true,            // Collect client ACKs, emit aggregated AckPayload
+  includeClientIdentity: true, // Attach stable ClientId and timestamp to payloads
+  ackTimeoutMs: 5_000,         // Per-ref ACK timeout (default: 10 s)
+};
+
+// Server — enables ref log, ACK aggregation, gap-fill responder
+const server = new Server(route, io, bs, { syncConfig });
+await server.init();
+
+// Client — passes SyncConfig to the Connector for enriched payloads
+const client = new Client(socket, localIo, localBs, route, { syncConfig });
+await client.init();
+```
+
+### What each flag does
+
+| Flag                    | Server effect                                    | Client (Connector) effect                            |
+| ----------------------- | ------------------------------------------------ | ---------------------------------------------------- |
+| `causalOrdering`        | Stores payloads in ref log; responds to gap-fill | Attaches `seq` + `p`; detects gaps; requests gap-fill |
+| `requireAck`            | Collects per-client ACKs; emits aggregated ACK   | Awaits ACK via `sendWithAck()`; emits client ACK     |
+| `includeClientIdentity` | Forwards `c` and `t` transparently               | Attaches stable `ClientId` and wall-clock timestamp   |
+| `ackTimeoutMs`          | Controls server-side ACK collection timeout       | Controls client-side ACK wait timeout                 |
+
+### ACK flow
+
+```text
+Client A ──emit(ref)──► Server ──forward──► Client B, C
+                        Server ◄──ackClient── Client B
+                        Server ◄──ackClient── Client C
+Client A ◄──ack──────── Server (ok: true, receivedBy: 2, totalClients: 2)
+```
+
+If not all clients ACK within the timeout, the server emits a partial ACK (`ok: false`).
+
+### Gap-fill flow
+
+```text
+Client B detects seq gap (expected 6, got 8)
+Client B ──gapfill:req──► Server (afterSeq: 5)
+Client B ◄──gapfill:res── Server (refs with seq 6, 7)
+```
+
+The server maintains a bounded ref log (ring buffer) of recent payloads. When a client detects a sequence gap, it requests the missing refs. The server filters the ref log and responds with matching entries.
+
+### Sync event names
+
+All sync events are route-specific, generated by `syncEvents(route)`:
+
+| Event                  | Direction       | Purpose                                |
+| ---------------------- | --------------- | -------------------------------------- |
+| `${route}`             | Bidirectional   | Ref broadcast (existing)               |
+| `${route}:ack`         | Server → Client | Aggregated delivery acknowledgment      |
+| `${route}:ack:client`  | Client → Server | Individual client receipt confirmation  |
+| `${route}:gapfill:req` | Client → Server | Request missing refs after detected gap |
+| `${route}:gapfill:res` | Server → Client | Supply missing refs from ref log        |
 
 ## Lifecycle management
 

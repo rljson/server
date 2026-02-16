@@ -5,7 +5,6 @@
 // found in the LICENSE file in the root of this package.
 
 import { Bs, BsMem, BsMulti, BsMultiBs, BsPeer, BsServer } from '@rljson/bs';
-import { ConnectorPayload } from '@rljson/db';
 import {
   Io,
   IoMem,
@@ -16,7 +15,16 @@ import {
   Socket,
   SocketMock,
 } from '@rljson/io';
-import { Route } from '@rljson/rljson';
+import {
+  AckPayload,
+  ConnectorPayload,
+  GapFillRequest,
+  GapFillResponse,
+  Route,
+  SyncConfig,
+  SyncEventNames,
+  syncEvents,
+} from '@rljson/rljson';
 
 import { BaseNode } from './base-node.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
@@ -48,6 +56,25 @@ export interface ServerOptions {
    * Defaults to 30 000 (30 s). Set to 0 to disable the timeout.
    */
   peerInitTimeoutMs?: number;
+
+  /**
+   * Sync protocol configuration. When provided, the server activates
+   * ACK aggregation, gap-fill response, and enriched payload forwarding.
+   */
+  syncConfig?: SyncConfig;
+
+  /**
+   * Maximum number of recent payloads to retain in the ref log
+   * for gap-fill responses. Defaults to 1000.
+   */
+  refLogSize?: number;
+
+  /**
+   * Timeout in milliseconds for collecting individual client ACKs
+   * before emitting the aggregated AckPayload back to the sender.
+   * Defaults to the SyncConfig's ackTimeoutMs (or 10 000 ms).
+   */
+  ackTimeoutMs?: number;
 }
 
 // .............................................................................
@@ -97,6 +124,13 @@ export class Server extends BaseNode {
   // Cleanup callbacks for socket disconnect listeners (clientId → cleanup fn)
   private _disconnectCleanups: Map<string, () => void> = new Map();
 
+  // Sync protocol state
+  private _syncConfig: SyncConfig | undefined;
+  private _events: SyncEventNames | undefined;
+  private _refLog: ConnectorPayload[] = [];
+  private _refLogSize: number;
+  private _ackTimeoutMs: number;
+
   private _tornDown = false;
 
   constructor(
@@ -110,6 +144,15 @@ export class Server extends BaseNode {
 
     this._logger = options?.logger ?? noopLogger;
     this._peerInitTimeoutMs = options?.peerInitTimeoutMs ?? 30_000;
+
+    // Sync protocol initialization
+    this._syncConfig = options?.syncConfig;
+    this._refLogSize = options?.refLogSize ?? 1000;
+    this._ackTimeoutMs =
+      options?.ackTimeoutMs ?? options?.syncConfig?.ackTimeoutMs ?? 10_000;
+    if (this._syncConfig) {
+      this._events = syncEvents(this._route.flat);
+    }
 
     this._logger.info('Server', 'Constructing server', {
       route: this._route.flat,
@@ -256,13 +299,18 @@ export class Server extends BaseNode {
   private _removeAllListeners() {
     for (const { ioUp } of this._clients.values()) {
       ioUp.removeAllListeners(this._route.flat);
+      if (this._events) {
+        ioUp.removeAllListeners(this._events.gapFillReq);
+        ioUp.removeAllListeners(this._events.ackClient);
+      }
     }
   }
 
   // ...........................................................................
   /**
    * Broadcasts incoming payloads from any client to all other connected clients.
-   * Ensures the sender is filtered out when broadcasting.
+   * Enriched with ref log, ACK aggregation, and gap-fill support when
+   * syncConfig is provided.
    */
   private _multicastRefs = () => {
     for (const [clientIdA, { ioUp: socketA }] of this._clients.entries()) {
@@ -301,6 +349,21 @@ export class Server extends BaseNode {
           return;
         }
 
+        // Append to ref log (ring buffer) for gap-fill
+        if (this._syncConfig) {
+          this._appendToRefLog(payload);
+        }
+
+        // Count receivers (all OTHER clients)
+        let receiverCount = 0;
+
+        // Set up ACK collection BEFORE broadcasting (so synchronous
+        // ackClient events from receivers are captured).
+        let ackCollector: (() => void) | undefined;
+        if (this._syncConfig?.requireAck && this._events) {
+          ackCollector = this._setupAckCollection(clientIdA, ref);
+        }
+
         // Broadcast to all OTHER clients (filter out the sender)
         for (const [
           clientIdB,
@@ -319,9 +382,20 @@ export class Server extends BaseNode {
             });
 
             socketB.emit(this._route.flat, forwarded);
+            receiverCount++;
           }
         }
+
+        // If no receivers and ACK was set up, trigger immediate finish
+        if (ackCollector && receiverCount === 0) {
+          ackCollector();
+        }
       });
+
+      // Register gap-fill listener for this client
+      if (this._syncConfig?.causalOrdering && this._events) {
+        this._registerGapFillListener(clientIdA, socketA);
+      }
     }
   };
 
@@ -355,6 +429,149 @@ export class Server extends BaseNode {
    */
   get clients() {
     return this._clients;
+  }
+
+  /**
+   * Returns the sync configuration, if any.
+   */
+  get syncConfig(): SyncConfig | undefined {
+    return this._syncConfig;
+  }
+
+  /**
+   * Returns the typed sync event names, if sync is active.
+   */
+  get events(): SyncEventNames | undefined {
+    return this._events;
+  }
+
+  /**
+   * Returns the current ref log contents (for diagnostics / testing).
+   */
+  get refLog(): readonly ConnectorPayload[] {
+    return this._refLog;
+  }
+
+  // ...........................................................................
+  // Sync protocol private methods
+  // ...........................................................................
+
+  /**
+   * Appends a payload to the bounded ref log (ring buffer).
+   * Drops the oldest entry when the log exceeds `_refLogSize`.
+   * @param payload - The ConnectorPayload to append.
+   */
+  private _appendToRefLog(payload: ConnectorPayload) {
+    this._refLog.push(payload);
+    if (this._refLog.length > this._refLogSize) {
+      this._refLog.shift();
+    }
+  }
+
+  /**
+   * Sets up ACK collection listeners before broadcast.
+   * Returns a cleanup function that emits an immediate ACK
+   * (used when there are no receivers).
+   * @param senderClientId - The internal client ID of the sender.
+   * @param ref - The ref being acknowledged.
+   * @returns A function to call for immediate ACK (zero receivers).
+   */
+  private _setupAckCollection(senderClientId: string, ref: string): () => void {
+    const senderEntry = this._clients.get(senderClientId);
+    /* v8 ignore if -- @preserve */
+    if (!senderEntry || !this._events) return () => {};
+
+    const totalClients = this._clients.size - 1; // exclude sender
+
+    let acksReceived = 0;
+    let finished = false;
+    const ackHandlers: Map<string, (ack: { r: string }) => void> = new Map();
+
+    const finish = (ok: boolean) => {
+      /* v8 ignore if -- @preserve */
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      // Remove individual ACK listeners
+      for (const [cId, handler] of ackHandlers.entries()) {
+        const clientEntry = this._clients.get(cId);
+        /* v8 ignore if -- @preserve */
+        if (clientEntry) {
+          clientEntry.ioUp.off(this._events!.ackClient, handler);
+        }
+      }
+      ackHandlers.clear();
+
+      const ack: AckPayload = {
+        r: ref,
+        ok,
+        receivedBy: acksReceived,
+        totalClients,
+      };
+      senderEntry.ioDown.emit(this._events!.ack, ack);
+    };
+
+    // Timeout fallback
+    const timeout = setTimeout(() => {
+      finish(false);
+    }, this._ackTimeoutMs);
+
+    // Listen for ackClient from each receiver
+    for (const [clientId, { ioUp }] of this._clients.entries()) {
+      if (clientId === senderClientId) continue;
+
+      const handler = (clientAck: { r: string }) => {
+        if (clientAck.r !== ref) return;
+        acksReceived++;
+        if (acksReceived >= totalClients) {
+          finish(true);
+        }
+      };
+
+      ioUp.on(this._events.ackClient, handler);
+      ackHandlers.set(clientId, handler);
+    }
+
+    // Return a function for the zero-receivers case
+    return () => {
+      finish(true);
+    };
+  }
+
+  /**
+   * Registers a gap-fill request listener for a specific client socket.
+   * @param clientId - The internal client ID.
+   * @param socket - The upstream socket to listen on.
+   */
+  private _registerGapFillListener(
+    clientId: string,
+    socket: SocketWithClientId,
+  ) {
+    /* v8 ignore if -- @preserve */
+    if (!this._events) return;
+
+    socket.on(this._events.gapFillReq, (req: GapFillRequest) => {
+      this._logger.info('Server.GapFill', 'Gap-fill request received', {
+        from: clientId,
+        afterSeq: req.afterSeq,
+      });
+
+      const refs = this._refLog.filter(
+        (p) => p.seq != null && p.seq > req.afterSeq,
+      );
+
+      const res: GapFillResponse = {
+        route: req.route,
+        refs,
+      };
+
+      // Respond on the same client's ioDown
+      const clientEntry = this._clients.get(clientId);
+      /* v8 ignore if -- @preserve */
+      if (clientEntry) {
+        clientEntry.ioDown.emit(this._events!.gapFillRes, res);
+      }
+    });
   }
 
   /**
@@ -622,6 +839,9 @@ export class Server extends BaseNode {
     // Clear ref tracking
     this._multicastedRefsCurrent.clear();
     this._multicastedRefsPrevious.clear();
+
+    // Clear ref log
+    this._refLog = [];
 
     this._tornDown = true;
 

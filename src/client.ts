@@ -7,7 +7,7 @@
 import { Bs, BsMulti, BsMultiBs, BsPeer, BsPeerBridge } from '@rljson/bs';
 import { Connector, Db } from '@rljson/db';
 import { Io, IoMulti, IoMultiIo, IoPeer, IoPeerBridge } from '@rljson/io';
-import { Route } from '@rljson/rljson';
+import { ClientId, Route, SyncConfig } from '@rljson/rljson';
 
 import { BaseNode } from './base-node.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
@@ -23,6 +23,27 @@ import {
 export interface ClientOptions {
   /** Logger instance for monitoring (defaults to NoopLogger). */
   logger?: ServerLogger;
+
+  /**
+   * Sync protocol configuration. When provided, the Connector created
+   * by the client will use enriched payloads (sequence numbers, causal
+   * ordering, ACK support, client identity).
+   */
+  syncConfig?: SyncConfig;
+
+  /**
+   * Stable client identity. When provided, this identity is passed
+   * to the Connector. When omitted but `syncConfig.includeClientIdentity`
+   * is true, a new identity is auto-generated.
+   */
+  clientIdentity?: ClientId;
+
+  /**
+   * Timeout in milliseconds for peer initialization during init().
+   * If an Io or Bs peer does not respond within this window, init()
+   * rejects. Defaults to 30 000 (30 s). Set to 0 to disable the timeout.
+   */
+  peerInitTimeoutMs?: number;
 }
 
 export class Client extends BaseNode {
@@ -36,6 +57,9 @@ export class Client extends BaseNode {
   private _connector?: Connector;
 
   private _logger: ServerLogger;
+  private _syncConfig?: SyncConfig;
+  private _clientIdentity?: ClientId;
+  private _peerInitTimeoutMs: number;
 
   // ...........................................................................
   /**
@@ -57,6 +81,9 @@ export class Client extends BaseNode {
     super(_localIo);
 
     this._logger = options?.logger ?? noopLogger;
+    this._syncConfig = options?.syncConfig;
+    this._clientIdentity = options?.clientIdentity;
+    this._peerInitTimeoutMs = options?.peerInitTimeoutMs ?? 30_000;
 
     this._logger.info('Client', 'Constructing client', {
       hasRoute: !!this._route,
@@ -183,7 +210,13 @@ export class Client extends BaseNode {
 
     this._db = new Db(this._ioMulti!);
     const socket = normalizeSocketBundle(this._socketToServer);
-    this._connector = new Connector(this._db, this._route!, socket.ioUp);
+    this._connector = new Connector(
+      this._db,
+      this._route!,
+      socket.ioUp,
+      this._syncConfig,
+      this._clientIdentity,
+    );
 
     this._logger.info('Client', 'Db and Connector created');
   }
@@ -287,8 +320,10 @@ export class Client extends BaseNode {
     this._logger.info('Client.Io', 'Creating Io peer (downstream)');
     try {
       const ioPeer = new IoPeer(socket);
-      await ioPeer.init();
-      await ioPeer.isReady();
+      await this._withTimeout(
+        ioPeer.init().then(() => ioPeer.isReady()),
+        'IoPeer init',
+      );
       this._logger.info('Client.Io', 'Io peer created (downstream)');
       return ioPeer;
     } catch (error) {
@@ -311,7 +346,7 @@ export class Client extends BaseNode {
     this._logger.info('Client.Bs', 'Creating Bs peer (downstream)');
     try {
       const bsPeer = new BsPeer(socket);
-      await bsPeer.init();
+      await this._withTimeout(bsPeer.init(), 'BsPeer init');
       this._logger.info('Client.Bs', 'Bs peer created (downstream)');
       return bsPeer;
     } catch (error) {
@@ -324,5 +359,38 @@ export class Client extends BaseNode {
       throw error;
     }
     /* v8 ignore stop -- @preserve */
+  }
+
+  /**
+   * Returns the configured peer init timeout in milliseconds.
+   */
+  get peerInitTimeoutMs(): number {
+    return this._peerInitTimeoutMs;
+  }
+
+  // ...........................................................................
+  /**
+   * Races a promise against a timeout. Resolves/rejects with the original
+   * promise outcome if it settles first, or rejects with a timeout error.
+   * @param promise - The promise to race.
+   * @param label - Human-readable label for timeout error messages.
+   */
+  private _withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+    const ms = this._peerInitTimeoutMs;
+    if (ms <= 0) return promise;
+
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        /* v8 ignore next -- @preserve */
+        () => reject(new Error(`Timeout after ${ms}ms: ${label}`)),
+        ms,
+      );
+    });
+
+    return Promise.race([promise, timeout]).finally(
+      /* v8 ignore next -- @preserve */
+      () => clearTimeout(timer),
+    );
   }
 }
