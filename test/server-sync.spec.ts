@@ -691,4 +691,49 @@ describe('Server sync protocol', () => {
       vi.useRealTimers();
     });
   });
+
+  // =========================================================================
+  describe('Client tearDown calls connector.teardown()', () => {
+    it('should call connector.teardown() during client tearDown', async () => {
+      const route = Route.fromFlat('teardownConnector');
+
+      const io = new IoMem();
+      await io.init();
+      const bs = new BsMem();
+
+      const socket = new SocketMock();
+      socket.connect();
+
+      const client = new Client(socket, io, bs, route);
+      await client.init();
+
+      const connector = client.connector!;
+      expect(connector).toBeDefined();
+      expect(connector.isListening).toBe(true);
+
+      await client.tearDown();
+
+      // Connector should have been torn down
+      expect(connector.isListening).toBe(false);
+      expect(client.connector).toBeUndefined();
+    });
+
+    it('should handle tearDown gracefully when no connector exists', async () => {
+      const io = new IoMem();
+      await io.init();
+      const bs = new BsMem();
+
+      const socket = new SocketMock();
+      socket.connect();
+
+      // Create client without route — no connector
+      const client = new Client(socket, io, bs);
+      await client.init();
+
+      expect(client.connector).toBeUndefined();
+
+      // Should not throw
+      await client.tearDown();
+    });
+  });
 });

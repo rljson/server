@@ -144,6 +144,9 @@ export class Client extends BaseNode {
       this._ioMulti.close();
     }
 
+    // Tear down connector (removes socket listeners and Db observers)
+    this._connector?.teardown();
+
     // Clear Bs layers (BsMulti has no close() yet — clear references so GC
     // can reclaim the inner BsPeer and BsPeerBridge instances).
     this._bsMultiBss = [];
