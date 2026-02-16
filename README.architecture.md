@@ -1276,6 +1276,7 @@ All event names are route-specific, derived by `syncEvents(route)` from `@rljson
 | `requireAck`            | _(no extra fields)_            | + `ack`, `ack:client`          |
 | `includeClientIdentity` | + `c`, `t`                     | _(no extra events)_            |
 | All flags combined      | `o`, `r`, `c`, `t`, `seq`, `p` | All 5 events                   |
+| `maxDedupSetSize`       | _(Connector-only setting)_     | _(no events)_                  |
 
 #### ClientId format
 
@@ -1317,6 +1318,7 @@ The `Client` class accepts `syncConfig`, `clientIdentity`, and `peerInitTimeoutM
 
 - **`peerInitTimeoutMs`** (default 30 s, 0 = disable): Guards `IoPeer` and `BsPeer` initialization during `init()` with a `Promise.race`-based timeout. If the server is unreachable, `init()` rejects cleanly instead of hanging indefinitely. Uses the same `_withTimeout()` pattern as the server.
 - **`syncConfig`** + **`clientIdentity`**: When a route is provided, these are passed through to the `Connector` constructor, activating enriched payloads (sequence numbers, causal ordering, client identity) on the client side.
+- **`tearDown()`**: Calls `connector.teardown()` to remove all socket listeners before clearing internal references. This prevents leaked listeners that would keep the socket alive after the client is disposed.
 
 ## Future Considerations
 

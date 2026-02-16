@@ -353,6 +353,7 @@ const syncConfig: SyncConfig = {
   requireAck: true,            // Collect client ACKs, emit aggregated AckPayload
   includeClientIdentity: true, // Attach stable ClientId and timestamp to payloads
   ackTimeoutMs: 5_000,         // Per-ref ACK timeout (default: 10 s)
+  maxDedupSetSize: 10_000,     // Max refs per dedup generation (default: 10 000)
 };
 
 // Server — enables ref log, ACK aggregation, gap-fill responder
@@ -366,12 +367,13 @@ await client.init();
 
 ### What each flag does
 
-| Flag                    | Server effect                                    | Client (Connector) effect                             |
-| ----------------------- | ------------------------------------------------ | ----------------------------------------------------- |
-| `causalOrdering`        | Stores payloads in ref log; responds to gap-fill | Attaches `seq` + `p`; detects gaps; requests gap-fill |
-| `requireAck`            | Collects per-client ACKs; emits aggregated ACK   | Awaits ACK via `sendWithAck()`; emits client ACK      |
-| `includeClientIdentity` | Forwards `c` and `t` transparently               | Attaches stable `ClientId` and wall-clock timestamp   |
-| `ackTimeoutMs`          | Controls server-side ACK collection timeout      | Controls client-side ACK wait timeout                 |
+| Flag                    | Server effect                                    | Client (Connector) effect                                    |
+| ----------------------- | ------------------------------------------------ | ------------------------------------------------------------ |
+| `causalOrdering`        | Stores payloads in ref log; responds to gap-fill | Attaches `seq` + `p`; detects gaps; requests gap-fill        |
+| `requireAck`            | Collects per-client ACKs; emits aggregated ACK   | Awaits ACK via `sendWithAck()`; emits client ACK             |
+| `includeClientIdentity` | Forwards `c` and `t` transparently               | Attaches stable `ClientId` and wall-clock timestamp          |
+| `ackTimeoutMs`          | Controls server-side ACK collection timeout      | Controls client-side ACK wait timeout                        |
+| `maxDedupSetSize`       | —                                                | Caps dedup set size per generation (two-generation eviction) |
 
 ### ACK flow
 
@@ -531,7 +533,8 @@ console.log(server.isTornDown); // true
 
 // Client
 await client.tearDown();
-// Closes IoMulti, clears Bs references, resets Db/Connector.
+// Calls connector.teardown() (removes socket listeners),
+// closes IoMulti, clears Bs references, resets Db/Connector.
 ```
 
 ### Removing a client
