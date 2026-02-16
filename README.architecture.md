@@ -1209,6 +1209,78 @@ The server supports an optional sync protocol that provides production-grade gua
                             ◄───ack────────────┘
 ```
 
+### Wire format reference
+
+All sync payloads are JSON objects. The types are defined in `@rljson/rljson` (Layer 0) and used unchanged across all layers.
+
+#### ConnectorPayload (bidirectional, event: `${route}`)
+
+The main wire message between Connector and Server. Two required fields provide backward compatibility; optional fields activate based on `SyncConfig` flags.
+
+| Field   | Type                    | Required | Activated by            | Purpose                                              |
+| ------- | ----------------------- | -------- | ----------------------- | ---------------------------------------------------- |
+| `r`     | `string`                | ✅        | always                  | The ref (InsertHistory timeId) being announced       |
+| `o`     | `string`                | ✅        | always                  | Ephemeral origin of the sender (self-echo filtering) |
+| `c`     | `ClientId`              | ❌        | `includeClientIdentity` | Stable client identity (survives reconnections)      |
+| `t`     | `number`                | ❌        | `includeClientIdentity` | Client-side wall-clock timestamp (ms since epoch)    |
+| `seq`   | `number`                | ❌        | `causalOrdering`        | Monotonic counter per (client, route) pair           |
+| `p`     | `InsertHistoryTimeId[]` | ❌        | `causalOrdering`        | Causal predecessor timeIds                           |
+| `cksum` | `string`                | ❌        | —                       | Content checksum for ACK verification                |
+
+Minimal payload (no SyncConfig): `{ o: "...", r: "..." }`
+
+Full payload (all flags): `{ o, r, c, t, seq, p }`
+
+#### AckPayload (Server → Client, event: `${route}:ack`)
+
+| Field          | Type      | Required | Purpose                                                       |
+| -------------- | --------- | -------- | ------------------------------------------------------------- |
+| `r`            | `string`  | ✅        | The ref being acknowledged                                    |
+| `ok`           | `boolean` | ✅        | `true` if all clients confirmed; `false` on timeout / partial |
+| `receivedBy`   | `number`  | ❌        | Count of clients that confirmed receipt                       |
+| `totalClients` | `number`  | ❌        | Total receiver clients at broadcast time                      |
+
+#### GapFillRequest (Client → Server, event: `${route}:gapfill:req`)
+
+| Field         | Type                  | Required | Purpose                                    |
+| ------------- | --------------------- | -------- | ------------------------------------------ |
+| `route`       | `string`              | ✅        | The route for which refs are missing       |
+| `afterSeq`    | `number`              | ✅        | Last seq the client successfully processed |
+| `afterTimeId` | `InsertHistoryTimeId` | ❌        | Alternative anchor if seq unavailable      |
+
+#### GapFillResponse (Server → Client, event: `${route}:gapfill:res`)
+
+| Field   | Type                 | Required | Purpose                                         |
+| ------- | -------------------- | -------- | ----------------------------------------------- |
+| `route` | `string`             | ✅        | The route this response corresponds to          |
+| `refs`  | `ConnectorPayload[]` | ✅        | Ordered list of missing payloads (oldest first) |
+
+#### Event name derivation
+
+All event names are route-specific, derived by `syncEvents(route)` from `@rljson/rljson`:
+
+| Property     | Derived name             | Direction       |
+| ------------ | ------------------------ | --------------- |
+| `ref`        | `"${route}"`             | Bidirectional   |
+| `ack`        | `"${route}:ack"`         | Server → Client |
+| `ackClient`  | `"${route}:ack:client"`  | Client → Server |
+| `gapFillReq` | `"${route}:gapfill:req"` | Client → Server |
+| `gapFillRes` | `"${route}:gapfill:res"` | Server → Client |
+
+#### SyncConfig flag activation matrix
+
+| SyncConfig flag         | Payload fields activated       | Events activated               |
+| ----------------------- | ------------------------------ | ------------------------------ |
+| _(none / default)_      | `o`, `r`                       | `${route}` only                |
+| `causalOrdering`        | + `seq`, `p`                   | + `gapfill:req`, `gapfill:res` |
+| `requireAck`            | _(no extra fields)_            | + `ack`, `ack:client`          |
+| `includeClientIdentity` | + `c`, `t`                     | _(no extra events)_            |
+| All flags combined      | `o`, `r`, `c`, `t`, `seq`, `p` | All 5 events                   |
+
+#### ClientId format
+
+A `ClientId` is a `"client_"` prefix followed by a 12-character nanoid (e.g. `client_V1StGXR8_Z5j`). Unlike the ephemeral `origin` (which changes per Connector instantiation), a `ClientId` persists across reconnections and should be stored by the application.
+
 ### Ref log (ring buffer)
 
 The server maintains a bounded ring buffer of recent `ConnectorPayload` entries. When the buffer exceeds `refLogSize` (default: 1000), the oldest entry is dropped. The ref log serves as the data source for gap-fill responses.

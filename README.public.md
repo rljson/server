@@ -315,8 +315,8 @@ const server = new Server(route, io, bs, {
 | `refEvictionIntervalMs` | 60 000     | Two-generation sweep interval for multicast ref dedup. Refs older than two intervals are forgotten, preventing unbounded memory growth. |
 | `peerInitTimeoutMs`     | 30 000     | Maximum time `addSocket()` waits for a peer to initialize. Prevents hanging on unresponsive clients.                                    |
 | `syncConfig`            | undefined  | Sync protocol configuration (see below). Enables ACK aggregation, gap-fill, and enriched payloads.                                      |
-| `refLogSize`            | 1 000      | Maximum number of recent payloads retained in the ref log for gap-fill responses.                                                        |
-| `ackTimeoutMs`          | 10 000     | Timeout for collecting individual client ACKs before emitting the aggregated ACK. Falls back to `syncConfig.ackTimeoutMs`.               |
+| `refLogSize`            | 1 000      | Maximum number of recent payloads retained in the ref log for gap-fill responses.                                                       |
+| `ackTimeoutMs`          | 10 000     | Timeout for collecting individual client ACKs before emitting the aggregated ACK. Falls back to `syncConfig.ackTimeoutMs`.              |
 
 ## Client options
 
@@ -331,12 +331,12 @@ const client = new Client(socket, io, bs, route, {
 });
 ```
 
-| Option              | Default    | Description                                                                                                                             |
-| ------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `logger`            | NoopLogger | Structured logger for lifecycle, traffic, and error events.                                                                             |
-| `peerInitTimeoutMs` | 30 000     | Maximum time `init()` waits for Io/Bs peers to initialize. Prevents hanging when the server is unreachable. Set to 0 to disable.        |
-| `syncConfig`        | undefined  | Sync protocol configuration (see below). Passed through to the Connector for enriched payloads.                                         |
-| `clientIdentity`    | undefined  | Stable client identity passed to the Connector. Auto-generated when `syncConfig.includeClientIdentity` is true and this is omitted.     |
+| Option              | Default    | Description                                                                                                                         |
+| ------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `logger`            | NoopLogger | Structured logger for lifecycle, traffic, and error events.                                                                         |
+| `peerInitTimeoutMs` | 30 000     | Maximum time `init()` waits for Io/Bs peers to initialize. Prevents hanging when the server is unreachable. Set to 0 to disable.    |
+| `syncConfig`        | undefined  | Sync protocol configuration (see below). Passed through to the Connector for enriched payloads.                                     |
+| `clientIdentity`    | undefined  | Stable client identity passed to the Connector. Auto-generated when `syncConfig.includeClientIdentity` is true and this is omitted. |
 
 ## Sync protocol
 
@@ -366,12 +366,12 @@ await client.init();
 
 ### What each flag does
 
-| Flag                    | Server effect                                    | Client (Connector) effect                            |
-| ----------------------- | ------------------------------------------------ | ---------------------------------------------------- |
+| Flag                    | Server effect                                    | Client (Connector) effect                             |
+| ----------------------- | ------------------------------------------------ | ----------------------------------------------------- |
 | `causalOrdering`        | Stores payloads in ref log; responds to gap-fill | Attaches `seq` + `p`; detects gaps; requests gap-fill |
-| `requireAck`            | Collects per-client ACKs; emits aggregated ACK   | Awaits ACK via `sendWithAck()`; emits client ACK     |
+| `requireAck`            | Collects per-client ACKs; emits aggregated ACK   | Awaits ACK via `sendWithAck()`; emits client ACK      |
 | `includeClientIdentity` | Forwards `c` and `t` transparently               | Attaches stable `ClientId` and wall-clock timestamp   |
-| `ackTimeoutMs`          | Controls server-side ACK collection timeout       | Controls client-side ACK wait timeout                 |
+| `ackTimeoutMs`          | Controls server-side ACK collection timeout      | Controls client-side ACK wait timeout                 |
 
 ### ACK flow
 
@@ -398,13 +398,126 @@ The server maintains a bounded ref log (ring buffer) of recent payloads. When a 
 
 All sync events are route-specific, generated by `syncEvents(route)`:
 
-| Event                  | Direction       | Purpose                                |
-| ---------------------- | --------------- | -------------------------------------- |
-| `${route}`             | Bidirectional   | Ref broadcast (existing)               |
+| Event                  | Direction       | Purpose                                 |
+| ---------------------- | --------------- | --------------------------------------- |
+| `${route}`             | Bidirectional   | Ref broadcast (existing)                |
 | `${route}:ack`         | Server → Client | Aggregated delivery acknowledgment      |
 | `${route}:ack:client`  | Client → Server | Individual client receipt confirmation  |
 | `${route}:gapfill:req` | Client → Server | Request missing refs after detected gap |
 | `${route}:gapfill:res` | Server → Client | Supply missing refs from ref log        |
+
+### Wire format reference
+
+All payloads are JSON objects transmitted via socket events. The two required fields (`o`, `r`) provide backward-compatible self-echo filtering and ref identification. All other fields activate only when the corresponding `SyncConfig` flags are set.
+
+#### ConnectorPayload
+
+The main message transmitted between Connector and Server. Sent on event `${route}`.
+
+| Field   | Type                    | Required | Activated by            | Purpose                                              |
+| ------- | ----------------------- | -------- | ----------------------- | ---------------------------------------------------- |
+| `r`     | `string`                | ✅        | always                  | The ref (InsertHistory timeId) being announced       |
+| `o`     | `string`                | ✅        | always                  | Ephemeral origin of the sender (self-echo filtering) |
+| `c`     | `ClientId`              | ❌        | `includeClientIdentity` | Stable client identity (survives reconnections)      |
+| `t`     | `number`                | ❌        | `includeClientIdentity` | Client-side wall-clock timestamp (ms since epoch)    |
+| `seq`   | `number`                | ❌        | `causalOrdering`        | Monotonic counter per (client, route) pair           |
+| `p`     | `InsertHistoryTimeId[]` | ❌        | `causalOrdering`        | Causal predecessor timeIds                           |
+| `cksum` | `string`                | ❌        | —                       | Content checksum for ACK verification                |
+
+**Minimal** (backward-compatible, no SyncConfig):
+
+```json
+{ "o": "1700000000000:AbCd", "r": "1700000000001:EfGh" }
+```
+
+**Fully populated** (all SyncConfig flags enabled):
+
+```json
+{
+  "o": "1700000000000:AbCd",
+  "r": "1700000000001:EfGh",
+  "c": "client_V1StGXR8_Z5j",
+  "t": 1700000000001,
+  "seq": 42,
+  "p": ["1700000000000:XyZw"]
+}
+```
+
+#### AckPayload
+
+Server → Client acknowledgment. Sent on event `${route}:ack` after the server has collected individual client ACKs (or after a timeout).
+
+| Field          | Type      | Required | Purpose                                                       |
+| -------------- | --------- | -------- | ------------------------------------------------------------- |
+| `r`            | `string`  | ✅        | The ref being acknowledged                                    |
+| `ok`           | `boolean` | ✅        | `true` if all clients confirmed; `false` on timeout / partial |
+| `receivedBy`   | `number`  | ❌        | Count of clients that confirmed receipt                       |
+| `totalClients` | `number`  | ❌        | Total receiver clients at broadcast time                      |
+
+**Full ACK example:**
+
+```json
+{ "r": "1700000000001:EfGh", "ok": true, "receivedBy": 3, "totalClients": 3 }
+```
+
+**Partial / timed-out ACK:**
+
+```json
+{ "r": "1700000000001:EfGh", "ok": false, "receivedBy": 1, "totalClients": 3 }
+```
+
+#### GapFillRequest
+
+Client → Server request for missing refs. Sent on event `${route}:gapfill:req` when a Connector detects a sequence gap.
+
+| Field         | Type                  | Required | Purpose                                                |
+| ------------- | --------------------- | -------- | ------------------------------------------------------ |
+| `route`       | `string`              | ✅        | The route for which refs are missing                   |
+| `afterSeq`    | `number`              | ✅        | Last sequence number the client successfully processed |
+| `afterTimeId` | `InsertHistoryTimeId` | ❌        | Alternative anchor if sequence numbers are unavailable |
+
+```json
+{ "route": "/sharedTree", "afterSeq": 5, "afterTimeId": "1700000000000:AbCd" }
+```
+
+#### GapFillResponse
+
+Server → Client response containing missing refs. Sent on event `${route}:gapfill:res`, ordered chronologically (oldest first).
+
+| Field   | Type                 | Required | Purpose                                         |
+| ------- | -------------------- | -------- | ----------------------------------------------- |
+| `route` | `string`             | ✅        | The route this response corresponds to          |
+| `refs`  | `ConnectorPayload[]` | ✅        | Ordered list of missing payloads (oldest first) |
+
+```json
+{
+  "route": "/sharedTree",
+  "refs": [
+    { "o": "1700000000000:AbCd", "r": "1700000000006:MnOp", "seq": 6 },
+    { "o": "1700000000000:AbCd", "r": "1700000000007:QrSt", "seq": 7 }
+  ]
+}
+```
+
+#### SyncConfig flag → field activation summary
+
+| SyncConfig flag         | Payload fields activated       | Events activated               |
+| ----------------------- | ------------------------------ | ------------------------------ |
+| _(none / default)_      | `o`, `r`                       | `${route}` only                |
+| `causalOrdering`        | + `seq`, `p`                   | + `gapfill:req`, `gapfill:res` |
+| `requireAck`            | _(no extra fields)_            | + `ack`, `ack:client`          |
+| `includeClientIdentity` | + `c`, `t`                     | _(no extra events)_            |
+| All flags combined      | `o`, `r`, `c`, `t`, `seq`, `p` | All 5 events                   |
+
+#### ClientId format
+
+A `ClientId` is a 12-character [nanoid](https://github.com/ai/nanoid) prefixed with `"client_"` for easy identification in logs:
+
+```
+client_V1StGXR8_Z5j
+```
+
+Unlike a Connector's ephemeral `origin` (which changes on every instantiation), a `ClientId` should be generated once and stored (e.g. in localStorage) so it persists across reconnections.
 
 ## Lifecycle management
 
