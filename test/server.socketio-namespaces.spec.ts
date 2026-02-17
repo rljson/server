@@ -57,7 +57,7 @@ const wrapGetBlobStream = (bs: { getBlob: any; getBlobStream: any }) => {
 describe('[Socket.IO namespaces] Data Storage (Io) Integration', () => {
   const clientCount = 3;
   const cakeKey = 'ioTestCake';
-  const route = Route.fromFlat(`${cakeKey}EditHistory`);
+  const route = Route.fromFlat(cakeKey);
 
   let harness: Awaited<ReturnType<typeof createNamespaceHarness>>;
 

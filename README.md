@@ -13,6 +13,10 @@ Local-first, pull-by-reference server layer for Rljson. Clients keep writes loca
 - Writes stay local; reads cascade: local ➜ server ➜ peers
 - References (hashes) flow; data is pulled on demand
 - Server aggregates sockets and multicasts refs, but only stores what you explicitly import
+- Graceful lifecycle: `tearDown()` for both Server and Client, automatic disconnect cleanup, `removeSocket()` for manual removal
+- Configurable production defaults: ref eviction interval, peer init timeout (server and client)
+- Structured logging via injectable `ServerLogger` (NoopLogger default, ConsoleLogger, BufferedLogger, FilteredLogger included)
+- **Sync protocol**: Optional ACK aggregation, causal ordering with gap-fill, enriched payload forwarding via `SyncConfig`
 
 ## Quick start
 
@@ -49,11 +53,15 @@ import { BsMem } from '@rljson/bs';
 import { IoMem } from '@rljson/io';
 import { Client, SocketIoBridge } from '@rljson/server';
 
-const client = new Client(new SocketIoBridge(clientSocket), new IoMem(), new BsMem());
+// Pass the same route as the server to get Db and Connector automatically
+const route = Route.fromFlat('my.app');
+const client = new Client(new SocketIoBridge(clientSocket), new IoMem(), new BsMem(), route);
 await client.init();
 
-const io = client.io; // IoMulti merged interface
-const bs = client.bs; // BsMulti merged interface
+const io = client.io;               // IoMulti merged interface
+const bs = client.bs;               // BsMulti merged interface
+const db = client.db;               // Db (available when route provided)
+const connector = client.connector; // Connector (available when route provided)
 ```
 
 Run tests and lint:

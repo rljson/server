@@ -167,9 +167,14 @@ The `Server` class acts as a central coordination point that:
 
 **Lifecycle and controls:**
 
-- `addSocket()` attaches a stable `__clientId`, builds `IoPeer`/`BsPeer`, queues them, rebuilds multis once, and refreshes servers in a batch.
-- Multicast uses `__origin` markers plus `_multicastedRefs` to avoid echo loops and duplicate ref forwarding.
+- `addSocket()` attaches a stable `__clientId`, builds `IoPeer`/`BsPeer` (guarded by `peerInitTimeoutMs`), queues them, rebuilds multis once, refreshes servers in a batch, and registers an auto-disconnect handler.
+- `removeSocket(clientId)` removes a client’s listeners and peers, rebuilds multis, and re-establishes multicast for remaining clients.
+- `tearDown()` stops the eviction timer, removes all listeners/disconnect handlers, clears clients, closes IoMulti, and resets all internal state.
+- Multicast uses `__origin` markers plus a **two-generation ref set** (`_multicastedRefsCurrent` / `_multicastedRefsPrevious`) to avoid echo loops and duplicate ref forwarding. Refs are evicted on a configurable interval (`refEvictionIntervalMs`, default 60 s) to prevent unbounded memory growth.
 - Pending sockets are refreshed together so multiple joins trigger a single multi rebuild.
+- All lifecycle events, errors, and traffic are logged via the injected `ServerLogger` (defaults to `NoopLogger`).
+- Traffic logging captures inbound refs from clients and outbound multicasts with `from`/`to` client IDs.
+- Disconnected sockets are auto-detected: a `'disconnect'` listener triggers `removeSocket()`, cleaning up dead peers and rebuilding multis.
 
 ### 3. Multi-Layer Priority System
 
@@ -637,9 +642,9 @@ await server.createTables({ withInsertHistory: [cakeCfg] });
 await clientA.createTables({ withInsertHistory: [cakeCfg] });
 await clientB.createTables({ withInsertHistory: [cakeCfg] });
 
-// Create Db instances
-const dbA = new Db(clientA.io!);
-const dbB = new Db(clientB.io!);
+// When route was passed to Client constructor, Db is available directly:
+const dbA = clientA.db!;
+const dbB = clientB.db!;
 
 // Client A: Insert data (stores locally)
 const route = Route.fromFlat('carCake');
@@ -708,8 +713,9 @@ await server.createTables({ withInsertHistory: [treeCfg] });
 await clientA.createTables({ withInsertHistory: [treeCfg] });
 await clientB.createTables({ withInsertHistory: [treeCfg] });
 
-const dbA = new Db(clientA.io!);
-const dbB = new Db(clientB.io!);
+// When route was passed to Client constructor, Db is available directly:
+const dbA = clientA.db!;
+const dbB = clientB.db!;
 
 // Client A: Create tree from object
 const projectData = {
@@ -991,11 +997,27 @@ Application configuration distribution:
 ### Client Initialization
 
 ```typescript
-const client = new Client(socket, localIo, localBs);
-await client.init(); // Sets up IoMulti and BsMulti
+// With route: Db and Connector are created automatically during init()
+const client = new Client(socket, localIo, localBs, route);
+await client.init(); // Sets up IoMulti, BsMulti, Db, and Connector
 await client.ready(); // Waits for IoMulti to be ready
 
-const db = new Db(client.io!); // Create Db on top of IoMulti
+const db = client.db!;             // Db wrapping IoMulti
+const connector = client.connector!; // Connector wired to route + socket
+
+// With logging:
+import { BufferedLogger } from '@rljson/server';
+const logger = new BufferedLogger();
+const client = new Client(socket, localIo, localBs, route, { logger });
+await client.init();
+// logger.entries now contains lifecycle events:
+//   Constructing client, Initializing client, Setting up Io multi,
+//   Io peer bridge started, Io multi ready, Setting up Bs multi, ...
+
+// Without route (legacy): only IoMulti and BsMulti are created
+const client = new Client(socket, localIo, localBs);
+await client.init();
+const db = new Db(client.io!); // Caller creates Db manually
 ```
 
 ### Server Initialization
@@ -1018,10 +1040,12 @@ When `server.addSocket(socket)` is called:
 4. **Refresh servers**: Update IoServer/BsServer with new multis
 5. **Setup multicast**: Register listeners for route broadcasting
 
+Each step is logged at `info` level. Errors in any step are logged at `error` level and re-thrown.
+
 ### Teardown
 
 ```typescript
-await client.tearDown(); // Closes IoMulti, clears state
+await client.tearDown(); // Closes IoMulti, clears Db, Connector, and all state
 ```
 
 ## Testing Patterns
@@ -1116,6 +1140,214 @@ await expect(dbB.get(route, {})).rejects.toThrow();
 - **@rljson/db**: Db operations (insert, get, join, etc.)
 - **@rljson/rljson**: Data structures (Route, TableCfg, etc.)
 
+## Observability
+
+### Structured Logging
+
+Both `Server` and `Client` accept an optional `ServerLogger` via their options parameter. The logger is called at every significant lifecycle point, error boundary, and network traffic event.
+
+**Logger interface:**
+
+```typescript
+interface ServerLogger {
+  info(source: string, message: string, data?: Record<string, unknown>): void;
+  warn(source: string, message: string, data?: Record<string, unknown>): void;
+  error(source: string, message: string, error?: unknown, data?: Record<string, unknown>): void;
+  traffic(direction: 'in' | 'out', source: string, event: string, data?: Record<string, unknown>): void;
+}
+```
+
+**What gets logged:**
+
+| Phase           | Source                    | Level   | Events                                      |
+| --------------- | ------------------------- | ------- | ------------------------------------------- |
+| Construction    | `Server` / `Client`       | info    | Route, options                              |
+| Initialization  | `Server` / `Client`       | info    | Start, success                              |
+| Io/Bs setup     | `Client.Io` / `Client.Bs` | info    | Multi creation, peer bridges, peer creation |
+| Peer creation   | `Server.Io` / `Server.Bs` | info    | Per-client peer setup                       |
+| Multi rebuild   | `Server`                  | info    | Peer count, rebuild success                 |
+| Server refresh  | `Server`                  | info    | Pending socket count, completion            |
+| Multicast in    | `Server.Multicast`        | traffic | Ref, sender clientId                        |
+| Multicast out   | `Server.Multicast`        | traffic | Ref, sender clientId, receiver clientId     |
+| Duplicate ref   | `Server.Multicast`        | warn    | Ref, sender                                 |
+| Loop prevention | `Server.Multicast`        | warn    | Ref, origin, sender                         |
+| Any failure     | Various                   | error   | Error object, context data                  |
+| TearDown        | `Client`                  | info    | Start, completion                           |
+| Socket removal  | `Server`                  | info    | Removing, rebuilding multis, removal done   |
+| Server tearDown | `Server`                  | info    | Tearing down, timer stop, completion        |
+| Disconnect      | `Server`                  | info    | Client disconnected, auto-removal           |
+
+**Built-in implementations:**
+
+- `NoopLogger` — zero overhead, used by default
+- `ConsoleLogger` — `console.log`/`warn`/`error` with formatted prefixes
+- `BufferedLogger` — in-memory array with `byLevel()`, `bySource()`, `clear()` helpers
+- `FilteredLogger` — wraps another logger, filters by `levels` and/or `sources`
+
+**Production recommendation:** Use `FilteredLogger` wrapping your framework's logger, filtering to `['error', 'warn']` levels. Enable `traffic` level only for debugging multicast issues.
+
+## Sync Protocol (opt-in hardening)
+
+The server supports an optional sync protocol that provides production-grade guarantees on top of the basic multicast mechanism. Enabled by passing `syncConfig` in `ServerOptions`.
+
+### Architecture
+
+```text
+     Client A (Connector)                Server                    Client B (Connector)
+     ────────────────────                ──────                    ────────────────────
+     send(ref) →
+       enriches payload:
+       {o, r, c?, t?, seq?, p?}
+                            ────emit(route)───►
+                                                ┌─ append to ref log
+                                                ├─ setup ACK collection
+                                                ├─ forward to Client B  ──emit(route)──►
+                                                │                                        processIncoming()
+                                                │                                        ◄──ackClient──
+                                                ├─ collect ackClient
+                                                ├─ emit aggregated ACK
+                            ◄───ack────────────┘
+```
+
+### Wire format reference
+
+All sync payloads are JSON objects. The types are defined in `@rljson/rljson` (Layer 0) and used unchanged across all layers.
+
+#### ConnectorPayload (bidirectional, event: `${route}`)
+
+The main wire message between Connector and Server. Two required fields provide backward compatibility; optional fields activate based on `SyncConfig` flags.
+
+| Field   | Type                    | Required | Activated by            | Purpose                                              |
+| ------- | ----------------------- | -------- | ----------------------- | ---------------------------------------------------- |
+| `r`     | `string`                | ✅        | always                  | The ref (InsertHistory timeId) being announced       |
+| `o`     | `string`                | ✅        | always                  | Ephemeral origin of the sender (self-echo filtering) |
+| `c`     | `ClientId`              | ❌        | `includeClientIdentity` | Stable client identity (survives reconnections)      |
+| `t`     | `number`                | ❌        | `includeClientIdentity` | Client-side wall-clock timestamp (ms since epoch)    |
+| `seq`   | `number`                | ❌        | `causalOrdering`        | Monotonic counter per (client, route) pair           |
+| `p`     | `InsertHistoryTimeId[]` | ❌        | `causalOrdering`        | Causal predecessor timeIds                           |
+| `cksum` | `string`                | ❌        | —                       | Content checksum for ACK verification                |
+
+Minimal payload (no SyncConfig): `{ o: "...", r: "..." }`
+
+Full payload (all flags): `{ o, r, c, t, seq, p }`
+
+#### AckPayload (Server → Client, event: `${route}:ack`)
+
+| Field          | Type      | Required | Purpose                                                       |
+| -------------- | --------- | -------- | ------------------------------------------------------------- |
+| `r`            | `string`  | ✅        | The ref being acknowledged                                    |
+| `ok`           | `boolean` | ✅        | `true` if all clients confirmed; `false` on timeout / partial |
+| `receivedBy`   | `number`  | ❌        | Count of clients that confirmed receipt                       |
+| `totalClients` | `number`  | ❌        | Total receiver clients at broadcast time                      |
+
+#### GapFillRequest (Client → Server, event: `${route}:gapfill:req`)
+
+| Field         | Type                  | Required | Purpose                                    |
+| ------------- | --------------------- | -------- | ------------------------------------------ |
+| `route`       | `string`              | ✅        | The route for which refs are missing       |
+| `afterSeq`    | `number`              | ✅        | Last seq the client successfully processed |
+| `afterTimeId` | `InsertHistoryTimeId` | ❌        | Alternative anchor if seq unavailable      |
+
+#### GapFillResponse (Server → Client, event: `${route}:gapfill:res`)
+
+| Field   | Type                 | Required | Purpose                                         |
+| ------- | -------------------- | -------- | ----------------------------------------------- |
+| `route` | `string`             | ✅        | The route this response corresponds to          |
+| `refs`  | `ConnectorPayload[]` | ✅        | Ordered list of missing payloads (oldest first) |
+
+#### Event name derivation
+
+All event names are route-specific, derived by `syncEvents(route)` from `@rljson/rljson`:
+
+| Property     | Derived name             | Direction       |
+| ------------ | ------------------------ | --------------- |
+| `ref`        | `"${route}"`             | Bidirectional   |
+| `ack`        | `"${route}:ack"`         | Server → Client |
+| `ackClient`  | `"${route}:ack:client"`  | Client → Server |
+| `gapFillReq` | `"${route}:gapfill:req"` | Client → Server |
+| `gapFillRes` | `"${route}:gapfill:res"` | Server → Client |
+| `bootstrap`  | `"${route}:bootstrap"`   | Server → Client |
+
+#### SyncConfig flag activation matrix
+
+| SyncConfig flag         | Payload fields activated       | Events activated               |
+| ----------------------- | ------------------------------ | ------------------------------ |
+| _(none / default)_      | `o`, `r`                       | `${route}` only                |
+| `causalOrdering`        | + `seq`, `p`                   | + `gapfill:req`, `gapfill:res` |
+| `requireAck`            | _(no extra fields)_            | + `ack`, `ack:client`          |
+| `includeClientIdentity` | + `c`, `t`                     | _(no extra events)_            |
+| All flags combined      | `o`, `r`, `c`, `t`, `seq`, `p` | All 6 events                   |
+| `maxDedupSetSize`       | _(Connector-only setting)_     | _(no events)_                  |
+| `bootstrapHeartbeatMs`  | _(no extra fields)_            | + `bootstrap` (periodic)       |
+
+#### ClientId format
+
+A `ClientId` is a `"client_"` prefix followed by a 12-character nanoid (e.g. `client_V1StGXR8_Z5j`). Unlike the ephemeral `origin` (which changes per Connector instantiation), a `ClientId` persists across reconnections and should be stored by the application.
+
+### Ref log (ring buffer)
+
+The server maintains a bounded ring buffer of recent `ConnectorPayload` entries. When the buffer exceeds `refLogSize` (default: 1000), the oldest entry is dropped. The ref log serves as the data source for gap-fill responses.
+
+### ACK aggregation
+
+When `requireAck` is enabled:
+
+1. **Before broadcast**: The server registers `ackClient` listeners on all receiver sockets.
+2. **During broadcast**: Payloads are forwarded to all other clients.
+3. **After broadcast**: The server waits for individual `ackClient` events from each receiver.
+4. **On completion or timeout**: An aggregated `AckPayload` is emitted back to the sender on the `ack` event.
+
+The ACK includes `receivedBy` (count of confirmed receivers) and `totalClients` (total receiver count). If all receivers confirm, `ok: true`; if timeout fires first, `ok: false`.
+
+### Gap-fill responder
+
+When `causalOrdering` is enabled:
+
+1. The server listens for `gapfill:req` events from each client.
+2. On request, it filters the ref log for payloads with `seq > afterSeq`.
+3. The matching payloads are sent back on the `gapfill:res` event.
+
+### Bootstrap (late joiner support)
+
+The server tracks the most recent ref seen on `_latestRef` (updated in `_multicastRefs` on every broadcast). This enables two mechanisms:
+
+**Immediate bootstrap on connect:**
+
+When `addSocket()` completes, the server calls `_sendBootstrap(ioDown)` which emits a `ConnectorPayload` with `o: '__server__'` and `r: _latestRef` on the `${route}:bootstrap` event. The Connector's `_registerBootstrapHandler()` feeds this into `_processIncoming()`, triggering listen callbacks and applying dedup automatically.
+
+**Periodic heartbeat (optional):**
+
+When `bootstrapHeartbeatMs > 0` in `SyncConfig`, `_startBootstrapHeartbeat()` starts an interval timer that calls `_broadcastBootstrapHeartbeat()` to emit the latest ref to all connected clients. The timer calls `.unref()` so it doesn't keep the process alive. `tearDown()` clears the timer.
+
+```text
+   addSocket(socketB)
+       │
+       ├─ setup IoPeer, BsPeer, multicast listeners
+       ├─ _sendBootstrap(ioDown)  →  emit(bootstrap, { o: '__server__', r: latestRef })
+       └─ _startBootstrapHeartbeat()  →  setInterval(broadcastBootstrapHeartbeat, ms)
+```
+
+**Design decisions:**
+
+- `_events` is always initialized (even without `syncConfig`) because bootstrap needs event names regardless of sync config
+- Bootstrap uses a dedicated event (`${route}:bootstrap`) rather than the main `${route}` event to avoid interfering with multicast payload processing
+- The `'__server__'` origin ensures no Connector treats bootstrap as a self-echo
+
+### Event registration lifecycle
+
+- `_multicastRefs()` sets up all sync listeners (ref, ackClient, gapFillReq) per client.
+- `_removeAllListeners()` tears down all sync listeners (route, ackClient, gapFillReq).
+- `addSocket()` and `removeSocket()` trigger rebuild of all listeners.
+- `tearDown()` clears the ref log in addition to existing cleanup.
+
+### Client-side integration
+
+The `Client` class accepts `syncConfig`, `clientIdentity`, and `peerInitTimeoutMs` in `ClientOptions`.
+
+- **`peerInitTimeoutMs`** (default 30 s, 0 = disable): Guards `IoPeer` and `BsPeer` initialization during `init()` with a `Promise.race`-based timeout. If the server is unreachable, `init()` rejects cleanly instead of hanging indefinitely. Uses the same `_withTimeout()` pattern as the server.
+- **`syncConfig`** + **`clientIdentity`**: When a route is provided, these are passed through to the `Connector` constructor, activating enriched payloads (sequence numbers, causal ordering, client identity) on the client side.
+- **`tearDown()`**: Calls `connector.tearDown()` to remove all socket listeners before clearing internal references. This prevents leaked listeners that would keep the socket alive after the client is disposed.
+
 ## Future Considerations
 
 - **Write replication**: Automatically sync writes to server
@@ -1123,3 +1355,7 @@ await expect(dbB.get(route, {})).rejects.toThrow();
 - **Change detection**: Notify on data changes
 - **Batch operations**: Optimize bulk transfers
 - **Compression**: Reduce network payload size
+- **Authentication hooks**: Verify client identity in `addSocket()`
+- **Connection health introspection**: Query connected client state, connection time, etc.
+- **Backpressure / rate limiting**: Protect against misbehaving clients flooding multicast
+- **Metrics / counters**: Numeric counters (connected clients, refs/sec) for monitoring dashboards
