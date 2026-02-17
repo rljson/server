@@ -474,7 +474,7 @@ describe('Sync protocol end-to-end', () => {
 
       // C's connector auto-ACKs (built-in behavior).
       // Tear down C's connector so it won't ACK anymore. B still will.
-      setup.connectorC!.teardown();
+      setup.connectorC!.tearDown();
 
       const ackPromise = setup.connectorA
         .sendWithAck('ref-partial-ack')

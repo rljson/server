@@ -693,8 +693,8 @@ describe('Server sync protocol', () => {
   });
 
   // =========================================================================
-  describe('Client tearDown calls connector.teardown()', () => {
-    it('should call connector.teardown() during client tearDown', async () => {
+  describe('Client tearDown calls connector.tearDown()', () => {
+    it('should call connector.tearDown() during client tearDown', async () => {
       const route = Route.fromFlat('teardownConnector');
 
       const io = new IoMem();

@@ -533,7 +533,7 @@ console.log(server.isTornDown); // true
 
 // Client
 await client.tearDown();
-// Calls connector.teardown() (removes socket listeners),
+// Calls connector.tearDown() (removes socket listeners),
 // closes IoMulti, clears Bs references, resets Db/Connector.
 ```
 
