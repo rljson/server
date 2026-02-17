@@ -1266,6 +1266,7 @@ All event names are route-specific, derived by `syncEvents(route)` from `@rljson
 | `ackClient`  | `"${route}:ack:client"`  | Client → Server |
 | `gapFillReq` | `"${route}:gapfill:req"` | Client → Server |
 | `gapFillRes` | `"${route}:gapfill:res"` | Server → Client |
+| `bootstrap`  | `"${route}:bootstrap"`   | Server → Client |
 
 #### SyncConfig flag activation matrix
 
@@ -1275,8 +1276,9 @@ All event names are route-specific, derived by `syncEvents(route)` from `@rljson
 | `causalOrdering`        | + `seq`, `p`                   | + `gapfill:req`, `gapfill:res` |
 | `requireAck`            | _(no extra fields)_            | + `ack`, `ack:client`          |
 | `includeClientIdentity` | + `c`, `t`                     | _(no extra events)_            |
-| All flags combined      | `o`, `r`, `c`, `t`, `seq`, `p` | All 5 events                   |
+| All flags combined      | `o`, `r`, `c`, `t`, `seq`, `p` | All 6 events                   |
 | `maxDedupSetSize`       | _(Connector-only setting)_     | _(no events)_                  |
+| `bootstrapHeartbeatMs`  | _(no extra fields)_            | + `bootstrap` (periodic)       |
 
 #### ClientId format
 
@@ -1304,6 +1306,32 @@ When `causalOrdering` is enabled:
 1. The server listens for `gapfill:req` events from each client.
 2. On request, it filters the ref log for payloads with `seq > afterSeq`.
 3. The matching payloads are sent back on the `gapfill:res` event.
+
+### Bootstrap (late joiner support)
+
+The server tracks the most recent ref seen on `_latestRef` (updated in `_multicastRefs` on every broadcast). This enables two mechanisms:
+
+**Immediate bootstrap on connect:**
+
+When `addSocket()` completes, the server calls `_sendBootstrap(ioDown)` which emits a `ConnectorPayload` with `o: '__server__'` and `r: _latestRef` on the `${route}:bootstrap` event. The Connector's `_registerBootstrapHandler()` feeds this into `_processIncoming()`, triggering listen callbacks and applying dedup automatically.
+
+**Periodic heartbeat (optional):**
+
+When `bootstrapHeartbeatMs > 0` in `SyncConfig`, `_startBootstrapHeartbeat()` starts an interval timer that calls `_broadcastBootstrapHeartbeat()` to emit the latest ref to all connected clients. The timer calls `.unref()` so it doesn't keep the process alive. `tearDown()` clears the timer.
+
+```text
+   addSocket(socketB)
+       │
+       ├─ setup IoPeer, BsPeer, multicast listeners
+       ├─ _sendBootstrap(ioDown)  →  emit(bootstrap, { o: '__server__', r: latestRef })
+       └─ _startBootstrapHeartbeat()  →  setInterval(broadcastBootstrapHeartbeat, ms)
+```
+
+**Design decisions:**
+
+- `_events` is always initialized (even without `syncConfig`) because bootstrap needs event names regardless of sync config
+- Bootstrap uses a dedicated event (`${route}:bootstrap`) rather than the main `${route}` event to avoid interfering with multicast payload processing
+- The `'__server__'` origin ensures no Connector treats bootstrap as a self-echo
 
 ### Event registration lifecycle
 

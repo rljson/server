@@ -126,10 +126,14 @@ export class Server extends BaseNode {
 
   // Sync protocol state
   private _syncConfig: SyncConfig | undefined;
-  private _events: SyncEventNames | undefined;
+  private _events: SyncEventNames;
   private _refLog: ConnectorPayload[] = [];
   private _refLogSize: number;
   private _ackTimeoutMs: number;
+
+  // Bootstrap state
+  private _latestRef: string | undefined;
+  private _bootstrapHeartbeatTimer?: ReturnType<typeof setInterval>;
 
   private _tornDown = false;
 
@@ -150,9 +154,8 @@ export class Server extends BaseNode {
     this._refLogSize = options?.refLogSize ?? 1000;
     this._ackTimeoutMs =
       options?.ackTimeoutMs ?? options?.syncConfig?.ackTimeoutMs ?? 10_000;
-    if (this._syncConfig) {
-      this._events = syncEvents(this._route.flat);
-    }
+    // Always create event names — bootstrap needs them even without full syncConfig
+    this._events = syncEvents(this._route.flat);
 
     this._logger.info('Server', 'Constructing server', {
       route: this._route.flat,
@@ -276,6 +279,12 @@ export class Server extends BaseNode {
       // Auto-cleanup on socket disconnect
       this._registerDisconnectHandler(clientId, ioUp);
 
+      // Bootstrap: send latest ref to the new client
+      this._sendBootstrap(ioDown);
+
+      // Start heartbeat timer if configured and not already running
+      this._startBootstrapHeartbeat();
+
       this._logger.info('Server', 'Client socket added successfully', {
         clientId,
         totalClients: this._clients.size,
@@ -299,10 +308,8 @@ export class Server extends BaseNode {
   private _removeAllListeners() {
     for (const { ioUp } of this._clients.values()) {
       ioUp.removeAllListeners(this._route.flat);
-      if (this._events) {
-        ioUp.removeAllListeners(this._events.gapFillReq);
-        ioUp.removeAllListeners(this._events.ackClient);
-      }
+      ioUp.removeAllListeners(this._events.gapFillReq);
+      ioUp.removeAllListeners(this._events.ackClient);
     }
   }
 
@@ -336,6 +343,9 @@ export class Server extends BaseNode {
         }
         this._multicastedRefsCurrent.add(ref);
 
+        // Track latest ref for bootstrap
+        this._latestRef = ref;
+
         const p = payload as any;
 
         // If payload already has an origin, it was forwarded by the wire and should not be re-forwarded.
@@ -360,7 +370,7 @@ export class Server extends BaseNode {
         // Set up ACK collection BEFORE broadcasting (so synchronous
         // ackClient events from receivers are captured).
         let ackCollector: (() => void) | undefined;
-        if (this._syncConfig?.requireAck && this._events) {
+        if (this._syncConfig?.requireAck) {
           ackCollector = this._setupAckCollection(clientIdA, ref);
         }
 
@@ -393,7 +403,7 @@ export class Server extends BaseNode {
       });
 
       // Register gap-fill listener for this client
-      if (this._syncConfig?.causalOrdering && this._events) {
+      if (this._syncConfig?.causalOrdering) {
         this._registerGapFillListener(clientIdA, socketA);
       }
     }
@@ -439,9 +449,9 @@ export class Server extends BaseNode {
   }
 
   /**
-   * Returns the typed sync event names, if sync is active.
+   * Returns the typed sync event names.
    */
-  get events(): SyncEventNames | undefined {
+  get events(): SyncEventNames {
     return this._events;
   }
 
@@ -450,6 +460,13 @@ export class Server extends BaseNode {
    */
   get refLog(): readonly ConnectorPayload[] {
     return this._refLog;
+  }
+
+  /**
+   * Returns the latest ref tracked by the server (for bootstrap / diagnostics).
+   */
+  get latestRef(): string | undefined {
+    return this._latestRef;
   }
 
   // ...........................................................................
@@ -468,6 +485,73 @@ export class Server extends BaseNode {
     }
   }
 
+  // ...........................................................................
+  // Bootstrap methods
+  // ...........................................................................
+
+  /**
+   * Sends the latest ref to a specific client socket as a bootstrap message.
+   * If no ref has been seen yet, this is a no-op.
+   * @param ioDown - The downstream socket to send the bootstrap message on.
+   */
+  private _sendBootstrap(ioDown: SocketWithClientId) {
+    if (!this._latestRef) return;
+
+    const payload: ConnectorPayload = {
+      o: '__server__',
+      r: this._latestRef,
+    };
+
+    this._logger.info('Server.Bootstrap', 'Sending bootstrap ref', {
+      ref: this._latestRef,
+      to: ioDown.__clientId,
+    });
+
+    ioDown.emit(this._events.bootstrap, payload);
+  }
+
+  /**
+   * Broadcasts the latest ref to all connected clients as a heartbeat.
+   * Each client's dedup pipeline will filter out refs it already has.
+   */
+  private _broadcastBootstrapHeartbeat() {
+    /* v8 ignore if -- @preserve */
+    if (!this._latestRef) return;
+
+    const payload: ConnectorPayload = {
+      o: '__server__',
+      r: this._latestRef,
+    };
+
+    this._logger.info('Server.Bootstrap', 'Heartbeat broadcast', {
+      ref: this._latestRef,
+      clientCount: this._clients.size,
+    });
+
+    for (const { ioDown } of this._clients.values()) {
+      ioDown.emit(this._events.bootstrap, payload);
+    }
+  }
+
+  /**
+   * Starts the periodic bootstrap heartbeat timer if configured
+   * and not already running.
+   */
+  private _startBootstrapHeartbeat() {
+    const ms = this._syncConfig?.bootstrapHeartbeatMs;
+    if (!ms || ms <= 0 || this._bootstrapHeartbeatTimer) return;
+
+    this._bootstrapHeartbeatTimer = setInterval(() => {
+      this._broadcastBootstrapHeartbeat();
+    }, ms);
+    // Don't let the timer keep the process alive
+    this._bootstrapHeartbeatTimer.unref();
+
+    this._logger.info('Server.Bootstrap', 'Heartbeat timer started', {
+      intervalMs: ms,
+    });
+  }
+
   /**
    * Sets up ACK collection listeners before broadcast.
    * Returns a cleanup function that emits an immediate ACK
@@ -479,7 +563,7 @@ export class Server extends BaseNode {
   private _setupAckCollection(senderClientId: string, ref: string): () => void {
     const senderEntry = this._clients.get(senderClientId);
     /* v8 ignore if -- @preserve */
-    if (!senderEntry || !this._events) return () => {};
+    if (!senderEntry) return () => {};
 
     const totalClients = this._clients.size - 1; // exclude sender
 
@@ -497,7 +581,7 @@ export class Server extends BaseNode {
         const clientEntry = this._clients.get(cId);
         /* v8 ignore if -- @preserve */
         if (clientEntry) {
-          clientEntry.ioUp.off(this._events!.ackClient, handler);
+          clientEntry.ioUp.off(this._events.ackClient, handler);
         }
       }
       ackHandlers.clear();
@@ -508,7 +592,7 @@ export class Server extends BaseNode {
         receivedBy: acksReceived,
         totalClients,
       };
-      senderEntry.ioDown.emit(this._events!.ack, ack);
+      senderEntry.ioDown.emit(this._events.ack, ack);
     };
 
     // Timeout fallback
@@ -547,9 +631,6 @@ export class Server extends BaseNode {
     clientId: string,
     socket: SocketWithClientId,
   ) {
-    /* v8 ignore if -- @preserve */
-    if (!this._events) return;
-
     socket.on(this._events.gapFillReq, (req: GapFillRequest) => {
       this._logger.info('Server.GapFill', 'Gap-fill request received', {
         from: clientId,
@@ -569,7 +650,7 @@ export class Server extends BaseNode {
       const clientEntry = this._clients.get(clientId);
       /* v8 ignore if -- @preserve */
       if (clientEntry) {
-        clientEntry.ioDown.emit(this._events!.gapFillRes, res);
+        clientEntry.ioDown.emit(this._events.gapFillRes, res);
       }
     });
   }
@@ -813,6 +894,12 @@ export class Server extends BaseNode {
       this._refEvictionTimer = undefined;
     }
 
+    // Stop bootstrap heartbeat timer
+    if (this._bootstrapHeartbeatTimer) {
+      clearInterval(this._bootstrapHeartbeatTimer);
+      this._bootstrapHeartbeatTimer = undefined;
+    }
+
     // Remove all multicast listeners
     this._removeAllListeners();
 
@@ -842,6 +929,9 @@ export class Server extends BaseNode {
 
     // Clear ref log
     this._refLog = [];
+
+    // Clear bootstrap state
+    this._latestRef = undefined;
 
     this._tornDown = true;
 

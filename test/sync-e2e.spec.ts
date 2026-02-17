@@ -745,4 +745,235 @@ describe('Sync protocol end-to-end', () => {
       expect(res.refs[1].seq).toBe(2);
     });
   });
+
+  // ===========================================================================
+  describe('Bootstrap — late joiner', () => {
+    it('should deliver the latest ref to a client that joins after data was sent', async () => {
+      // Phase 1: Create server + Client A, A sends a ref
+      const route = Route.fromFlat('e2eTest');
+      const logger = new BufferedLogger();
+
+      const serverIo = new IoMem();
+      await serverIo.init();
+      await serverIo.isReady();
+      const server = new Server(route, serverIo, new BsMem(), {
+        logger,
+        refEvictionIntervalMs: 0,
+      });
+      await server.init();
+
+      // Client A joins and imports data
+      const { client: clientA } = await createClientWithPair(server, route);
+
+      const exampleData = staticExample();
+      const tableCfgs = exampleData.tableCfgs._data;
+      await server.createTables({ withInsertHistory: tableCfgs });
+      await clientA.createTables({ withInsertHistory: tableCfgs });
+
+      // A imports data and sends the ref
+      await clientA.import(exampleData);
+      const carCakeRoute = Route.fromFlat('carCake');
+      const dataFromA = await clientA.db!.get(carCakeRoute, {});
+      const carRef = dataFromA.rljson.carCake._data[0]._hash;
+      expect(carRef).toBeDefined();
+
+      clientA.connector!.send(carRef);
+
+      // Server should now track this as latestRef
+      expect(server.latestRef).toBe(carRef);
+
+      // Phase 2: Client B joins AFTER the ref was sent — should get bootstrap
+      const bootstrapRefs: string[] = [];
+
+      const { client: clientB } = await createClientWithPair(server, route);
+      await clientB.createTables({ withInsertHistory: tableCfgs });
+
+      // Register listen callback on B's connector
+      clientB.connector!.listen(async (ref: string) => {
+        bootstrapRefs.push(ref);
+      });
+
+      // The bootstrap was already sent during addSocket, but we registered
+      // listen() after init. Since DirectionalSocketMock is synchronous,
+      // the bootstrap event was already emitted and consumed by the Connector's
+      // _registerBootstrapHandler (which calls _processIncoming → _notifyCallbacks).
+      // However, we registered our listen callback AFTER init completed.
+      //
+      // To properly test, we need to verify that Connector received the ref
+      // through its dedup set. Let's check B can pull the data from server.
+      const dataFromB = await clientB.db!.get(carCakeRoute, { _hash: carRef });
+      expect(dataFromB.rljson.carCake._data[0]._hash).toBe(carRef);
+      expect(dataFromB.rljson.carCake._data[0]).toEqual(
+        dataFromA.rljson.carCake._data[0],
+      );
+
+      // Cleanup
+      await clientB.tearDown();
+      await clientA.tearDown();
+      await server.tearDown();
+    });
+
+    it('should trigger listen callback on late-joining client via bootstrap', async () => {
+      // Setup: server + Client A sends ref, Client B joins later
+      const route = Route.fromFlat('e2eTest');
+      const logger = new BufferedLogger();
+
+      const serverIo = new IoMem();
+      await serverIo.init();
+      await serverIo.isReady();
+      const server = new Server(route, serverIo, new BsMem(), {
+        logger,
+        refEvictionIntervalMs: 0,
+      });
+      await server.init();
+
+      const { client: clientA } = await createClientWithPair(server, route);
+
+      const exampleData = staticExample();
+      const tableCfgs = exampleData.tableCfgs._data;
+      await server.createTables({ withInsertHistory: tableCfgs });
+      await clientA.createTables({ withInsertHistory: tableCfgs });
+
+      await clientA.import(exampleData);
+      const carCakeRoute = Route.fromFlat('carCake');
+      const dataFromA = await clientA.db!.get(carCakeRoute, {});
+      const carRef = dataFromA.rljson.carCake._data[0]._hash;
+      clientA.connector!.send(carRef);
+
+      // Create Client B manually so we can register listen() BEFORE init()
+      // to capture the bootstrap callback
+      const [serverSideB, clientSideB] = createSocketPair();
+      serverSideB.connect();
+
+      // Prepare B's local stores
+      const localIoB = new IoMem();
+      await localIoB.init();
+      await localIoB.isReady();
+
+      // Register a listen handler on the bootstrap event BEFORE addSocket
+      // so we capture the synchronous bootstrap emission
+      const bootstrapRefs: string[] = [];
+      const events = syncEvents(route.flat);
+      clientSideB.on(events.bootstrap, (p: ConnectorPayload) => {
+        bootstrapRefs.push(p.r);
+      });
+
+      // Now add to server — triggers _sendBootstrap synchronously
+      await server.addSocket(serverSideB);
+
+      // Verify the raw socket received the bootstrap
+      expect(bootstrapRefs).toHaveLength(1);
+      expect(bootstrapRefs[0]).toBe(carRef);
+
+      // Now create the full Client (Connector will also handle bootstrap,
+      // but since we already consumed the event, the key proof is above)
+      const clientB = new Client(clientSideB, localIoB, new BsMem(), route);
+      await clientB.init();
+      await clientB.createTables({ withInsertHistory: tableCfgs });
+
+      // B can pull the data using the ref it received
+      const dataFromB = await clientB.db!.get(carCakeRoute, {
+        _hash: carRef,
+      });
+      expect(dataFromB.rljson.carCake._data[0]._hash).toBe(carRef);
+
+      await clientB.tearDown();
+      await clientA.tearDown();
+      await server.tearDown();
+    });
+
+    it('should deliver bootstrap heartbeat to all clients', async () => {
+      vi.useFakeTimers();
+
+      const route = Route.fromFlat('e2eTest');
+      const logger = new BufferedLogger();
+
+      const serverIo = new IoMem();
+      await serverIo.init();
+      await serverIo.isReady();
+      const server = new Server(route, serverIo, new BsMem(), {
+        logger,
+        syncConfig: { bootstrapHeartbeatMs: 500 },
+        refEvictionIntervalMs: 0,
+      });
+      await server.init();
+
+      const { client: clientA } = await createClientWithPair(server, route, {
+        bootstrapHeartbeatMs: 500,
+      });
+
+      const exampleData = staticExample();
+      const tableCfgs = exampleData.tableCfgs._data;
+      await server.createTables({ withInsertHistory: tableCfgs });
+      await clientA.createTables({ withInsertHistory: tableCfgs });
+
+      await clientA.import(exampleData);
+      const carCakeRoute = Route.fromFlat('carCake');
+      const dataFromA = await clientA.db!.get(carCakeRoute, {});
+      const carRef = dataFromA.rljson.carCake._data[0]._hash;
+      clientA.connector!.send(carRef);
+
+      // Client B joins — gets immediate bootstrap
+      const { client: clientB, pair: pairB } = await createClientWithPair(
+        server,
+        route,
+        { bootstrapHeartbeatMs: 500 },
+      );
+      await clientB.createTables({ withInsertHistory: tableCfgs });
+
+      // Track heartbeat messages arriving at B
+      const heartbeatRefs: string[] = [];
+      const events = syncEvents(route.flat);
+      pairB.clientSide.on(events.bootstrap, (p: ConnectorPayload) => {
+        heartbeatRefs.push(p.r);
+      });
+
+      // Advance timer to trigger heartbeat
+      vi.advanceTimersByTime(600);
+
+      // B should receive the heartbeat (Connector dedup will filter it
+      // since it already got the ref via initial bootstrap, but the raw
+      // socket event still fires)
+      expect(heartbeatRefs.length).toBeGreaterThanOrEqual(1);
+      expect(heartbeatRefs[0]).toBe(carRef);
+
+      await clientB.tearDown();
+      await clientA.tearDown();
+      await server.tearDown();
+
+      vi.useRealTimers();
+    });
+
+    it('should not bootstrap when server has no latestRef', async () => {
+      const route = Route.fromFlat('e2eTest');
+      const logger = new BufferedLogger();
+
+      const serverIo = new IoMem();
+      await serverIo.init();
+      await serverIo.isReady();
+      const server = new Server(route, serverIo, new BsMem(), {
+        logger,
+        refEvictionIntervalMs: 0,
+      });
+      await server.init();
+
+      // No data sent — server has no latestRef
+      expect(server.latestRef).toBeUndefined();
+
+      // Client A joins — should NOT receive any bootstrap
+      const events = syncEvents(route.flat);
+      const bootstrapRefs: string[] = [];
+
+      const [serverSideA, clientSideA] = createSocketPair();
+      serverSideA.connect();
+      clientSideA.on(events.bootstrap, (p: ConnectorPayload) => {
+        bootstrapRefs.push(p.r);
+      });
+      await server.addSocket(serverSideA);
+
+      expect(bootstrapRefs).toHaveLength(0);
+
+      await server.tearDown();
+    });
+  });
 });

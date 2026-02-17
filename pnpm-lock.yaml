@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@rljson/db': link:../rljson-db
+  '@rljson/rljson': link:../rljson-rljson
+
 importers:
 
   .:
@@ -12,8 +16,8 @@ importers:
         specifier: ^0.0.20
         version: 0.0.20
       '@rljson/db':
-        specifier: ^0.0.13
-        version: 0.0.13
+        specifier: link:../rljson-db
+        version: link:../rljson-db
       '@rljson/hash':
         specifier: ^0.0.18
         version: 0.0.18
@@ -24,8 +28,8 @@ importers:
         specifier: ^0.0.23
         version: 0.0.23
       '@rljson/rljson':
-        specifier: ^0.0.75
-        version: 0.0.75
+        specifier: link:../rljson-rljson
+        version: link:../rljson-rljson
     devDependencies:
       '@types/node':
         specifier: ^25.2.3
@@ -401,10 +405,6 @@ packages:
     resolution: {integrity: sha512-MvuL+pi9CdlZY96okXt1mQrBprS2Ejje6qM4VPDzcEuKzyLCm/5iyjYPRCfIwS9FhYqY8tCMDvrLVAbH1bZndQ==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/db@0.0.13':
-    resolution: {integrity: sha512-cHo8/MaIXxGo9a1EZdbcBiIuSWjUtiYC6S1jQ2/haprVBZlxISwEbG61kVrVjD3wIbDdMDjWobyqI3nF3xSKqQ==}
-    engines: {node: '>=22.14.0'}
-
   '@rljson/hash@0.0.16':
     resolution: {integrity: sha512-RbMQUEP4uhSTVArvRRXR73bXyQRbghuYzhzQiJyDyTsyFJiDbEcSKEyU1VYbJ3PPEu6HUklRx6ieZC0kPGDEcQ==}
     engines: {node: '>=22.14.0'}
@@ -427,14 +427,6 @@ packages:
 
   '@rljson/json@0.0.23':
     resolution: {integrity: sha512-ViYo8zx0z/SomjpS2f+xK+tS7HTwZI1HzRarHpXO3spVjpaF+GKCa7HgDXoV/Wc+zsliDzo8wz7S5NFb0yZaow==}
-    engines: {node: '>=22.14.0'}
-
-  '@rljson/rljson@0.0.55':
-    resolution: {integrity: sha512-anRhE21B5VEqTlDjcJy3ce7yrTZ/hwPN3C4YQCd1FnFfJZI4mjhlnygvCBhSR9WDLnIAxDFERFBt20f57PVBsQ==}
-    engines: {node: '>=22.14.0'}
-
-  '@rljson/rljson@0.0.75':
-    resolution: {integrity: sha512-WyUdMDsNMEeAyiP7XjUwIl/Xy442YB3ZP75pcK7Ijn3LLAdp4a+vD87nAVUW0udsM1kSGYchxt1pHfGWv8F8dQ==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/validate@0.0.11':
@@ -1146,9 +1138,6 @@ packages:
     resolution: {integrity: sha512-YsGpe3WHLK8ZYi4tWDg2Jy3ebRz2rXowDxnld4bkQB00cc/1Zw9AWnC0i9ztDJitivtQvaI9KaLyKrc+hBW0yg==}
     engines: {node: '>=8'}
 
-  filtrex@3.1.0:
-    resolution: {integrity: sha512-mHzZ2wUISETF1OaEcNRiGz1ljuIV8c/C9td9qyAZ+wTwigkAk5RO9YrCxQKk5H9v7joDRFIBik9U5RTK9eXZ/A==}
-
   find-up@5.0.0:
     resolution: {integrity: sha512-78/PXT1wlLLDgTzDs7sjq9hzz0vXD+zn+7wypEe4fXQxCmdmqfGsEPQxmiCSQI3ajFV91bVSsvNtrJRiW6nGng==}
     engines: {node: '>=10'}
@@ -1433,11 +1422,6 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  nanoid@5.1.6:
-    resolution: {integrity: sha512-c7+7RQ+dMB5dPwwCp4ee1/iV/q2P6aK1mTZcfr1BTuVlyW9hJYiMPybJCcnBlQtuSmTIWNeazm/zqNoZSSElBg==}
-    engines: {node: ^18 || >=20}
-    hasBin: true
-
   natural-compare@1.4.0:
     resolution: {integrity: sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw==}
 
@@ -1455,10 +1439,6 @@ packages:
 
   object-deep-merge@2.0.0:
     resolution: {integrity: sha512-3DC3UMpeffLTHiuXSy/UG4NOIYTLlY9u3V82+djSCLYClWobZiS4ivYzpIUWrRY/nfsJ8cWsKyG3QfyLePmhvg==}
-
-  object-traversal@1.0.1:
-    resolution: {integrity: sha512-aLXtM9kbcG/ePyZfB45B0FrIdu1yy3udQjIVmp2IVl2np52dBK5ZZBhdyUKFT6neCutwDhCW/kQ+e/0K5n/Jhw==}
-    engines: {node: '>=10'}
 
   obug@2.1.1:
     resolution: {integrity: sha512-uTqF9MuPraAQ+IsnPf366RG4cP9RtUi7MLO1N3KEc+wb0a6yKpeL0lmk2IB1jY5KHPAlTc6T/JRdC/YqxHNwkQ==}
@@ -1584,9 +1564,6 @@ packages:
 
   run-parallel@1.2.0:
     resolution: {integrity: sha512-5l4VyZR86LZ/lDxZTR6jqL8AFE2S0IFLMP26AbjsLVADxHdhB/c0GUsH+y39UfCi3dzz8OlQuPmnaJOMoDHQBA==}
-
-  rxjs@7.8.2:
-    resolution: {integrity: sha512-dhKf903U/PQZY6boNNtAGdWbG85WAbjT/1xYoZIC7FAY0yWapOBQVsVrDl58W86//e1VpMNBtRV4MaXfdMySFA==}
 
   semver@7.5.4:
     resolution: {integrity: sha512-1bCSESV6Pv+i21Hvpxp3Dx+pSD8lIPt8uVjRrxAUt/nbswYc+tK6Y2btiULjd4+fnq15PX+nqQDC7Oft7WkwcA==}
@@ -2184,18 +2161,7 @@ snapshots:
     dependencies:
       '@rljson/hash': 0.0.18
       '@rljson/json': 0.0.23
-      '@rljson/rljson': 0.0.75
-
-  '@rljson/db@0.0.13':
-    dependencies:
-      '@rljson/hash': 0.0.18
-      '@rljson/io': 0.0.65
-      '@rljson/json': 0.0.23
-      '@rljson/rljson': 0.0.75
-      '@rljson/validate': 0.0.11
-      filtrex: 3.1.0
-      object-traversal: 1.0.1
-      rxjs: 7.8.2
+      '@rljson/rljson': link:../rljson-rljson
 
   '@rljson/hash@0.0.16':
     dependencies:
@@ -2214,7 +2180,7 @@ snapshots:
       '@rljson/hash': 0.0.18
       '@rljson/is-ready': 0.0.17
       '@rljson/json': 0.0.23
-      '@rljson/rljson': 0.0.75
+      '@rljson/rljson': link:../rljson-rljson
       '@rljson/validate': 0.0.11
 
   '@rljson/is-ready@0.0.17': {}
@@ -2223,22 +2189,11 @@ snapshots:
 
   '@rljson/json@0.0.23': {}
 
-  '@rljson/rljson@0.0.55':
-    dependencies:
-      '@rljson/hash': 0.0.16
-      '@rljson/json': 0.0.21
-
-  '@rljson/rljson@0.0.75':
-    dependencies:
-      '@rljson/hash': 0.0.18
-      '@rljson/json': 0.0.23
-      nanoid: 5.1.6
-
   '@rljson/validate@0.0.11':
     dependencies:
       '@rljson/hash': 0.0.16
       '@rljson/json': 0.0.21
-      '@rljson/rljson': 0.0.55
+      '@rljson/rljson': link:../rljson-rljson
 
   '@rollup/pluginutils@5.3.0(rollup@4.57.1)':
     dependencies:
@@ -3022,8 +2977,6 @@ snapshots:
     dependencies:
       to-regex-range: 5.0.1
 
-  filtrex@3.1.0: {}
-
   find-up@5.0.0:
     dependencies:
       locate-path: 6.0.0
@@ -3286,8 +3239,6 @@ snapshots:
 
   nanoid@3.3.11: {}
 
-  nanoid@5.1.6: {}
-
   natural-compare@1.4.0: {}
 
   negotiator@0.6.3: {}
@@ -3301,8 +3252,6 @@ snapshots:
   object-assign@4.1.1: {}
 
   object-deep-merge@2.0.0: {}
-
-  object-traversal@1.0.1: {}
 
   obug@2.1.1: {}
 
@@ -3448,10 +3397,6 @@ snapshots:
   run-parallel@1.2.0:
     dependencies:
       queue-microtask: 1.2.3
-
-  rxjs@7.8.2:
-    dependencies:
-      tslib: 2.8.1
 
   semver@7.5.4:
     dependencies:

@@ -75,14 +75,14 @@ describe('Server sync protocol', () => {
 
       expect(server.syncConfig).toEqual(syncConfig);
       expect(server.events).toBeDefined();
-      expect(server.events!.ref).toBe(route.flat);
-      expect(server.events!.ack).toBe(`${route.flat}:ack`);
-      expect(server.events!.ackClient).toBe(`${route.flat}:ack:client`);
-      expect(server.events!.gapFillReq).toBe(`${route.flat}:gapfill:req`);
-      expect(server.events!.gapFillRes).toBe(`${route.flat}:gapfill:res`);
+      expect(server.events.ref).toBe(route.flat);
+      expect(server.events.ack).toBe(`${route.flat}:ack`);
+      expect(server.events.ackClient).toBe(`${route.flat}:ack:client`);
+      expect(server.events.gapFillReq).toBe(`${route.flat}:gapfill:req`);
+      expect(server.events.gapFillRes).toBe(`${route.flat}:gapfill:res`);
     });
 
-    it('should have undefined syncConfig/events when not provided', async () => {
+    it('should have undefined syncConfig but still have events when not provided', async () => {
       const route = Route.fromFlat('noSyncCfg');
       const io = new IoMem();
       await io.init();
@@ -91,7 +91,9 @@ describe('Server sync protocol', () => {
       await server.init();
 
       expect(server.syncConfig).toBeUndefined();
-      expect(server.events).toBeUndefined();
+      // events is always defined (needed for bootstrap)
+      expect(server.events).toBeDefined();
+      expect(server.events.ref).toBe(route.flat);
     });
   });
 
@@ -734,6 +736,181 @@ describe('Server sync protocol', () => {
 
       // Should not throw
       await client.tearDown();
+    });
+  });
+
+  // =========================================================================
+  describe('Bootstrap (late joiner catch-up)', () => {
+    it('should send latest ref to a new client on addSocket', async () => {
+      const route = Route.fromFlat('bootstrapTest');
+      const syncConfig: SyncConfig = {
+        causalOrdering: true,
+        requireAck: true,
+      };
+      const result = await createSyncServer(route, syncConfig);
+      server = result.server;
+      const events = syncEvents(route.flat);
+
+      // Add first client and send a ref
+      const socketA = await addClient(server);
+      const refPayload: ConnectorPayload = { o: 'originA', r: 'ref-abc' };
+      socketA.emit(route.flat, refPayload);
+
+      // Server should now track latestRef
+      expect(server.latestRef).toBe('ref-abc');
+
+      // Add second client — should receive bootstrap
+      const socketB = new SocketMock();
+      socketB.connect();
+
+      const bootstrapReceived: ConnectorPayload[] = [];
+      socketB.on(events.bootstrap, (p: ConnectorPayload) => {
+        bootstrapReceived.push(p);
+      });
+
+      await server.addSocket(socketB);
+
+      expect(bootstrapReceived).toHaveLength(1);
+      expect(bootstrapReceived[0].r).toBe('ref-abc');
+      expect(bootstrapReceived[0].o).toBe('__server__');
+    });
+
+    it('should not send bootstrap when no ref has been seen', async () => {
+      const route = Route.fromFlat('bootstrapEmpty');
+      const result = await createSyncServer(route, {});
+      server = result.server;
+      const events = syncEvents(route.flat);
+
+      expect(server.latestRef).toBeUndefined();
+
+      const socketA = new SocketMock();
+      socketA.connect();
+
+      const bootstrapReceived: ConnectorPayload[] = [];
+      socketA.on(events.bootstrap, (p: ConnectorPayload) => {
+        bootstrapReceived.push(p);
+      });
+
+      await server.addSocket(socketA);
+
+      // No ref seen yet — no bootstrap
+      expect(bootstrapReceived).toHaveLength(0);
+    });
+
+    it('should track the most recent ref as latestRef', async () => {
+      const route = Route.fromFlat('bootstrapLatest');
+      const syncConfig: SyncConfig = { causalOrdering: true };
+      const result = await createSyncServer(route, syncConfig);
+      server = result.server;
+
+      const socketA = await addClient(server);
+
+      socketA.emit(route.flat, { o: 'originA', r: 'ref-1' });
+      expect(server.latestRef).toBe('ref-1');
+
+      socketA.emit(route.flat, { o: 'originA', r: 'ref-2' });
+      expect(server.latestRef).toBe('ref-2');
+
+      socketA.emit(route.flat, { o: 'originA', r: 'ref-3' });
+      expect(server.latestRef).toBe('ref-3');
+    });
+
+    it('should broadcast heartbeat to all clients when configured', async () => {
+      const route = Route.fromFlat('bootstrapHeartbeat');
+      const syncConfig: SyncConfig = { bootstrapHeartbeatMs: 50 };
+      const result = await createSyncServer(route, syncConfig);
+      server = result.server;
+      const events = syncEvents(route.flat);
+
+      // Add client and send a ref
+      const socketA = await addClient(server);
+      socketA.emit(route.flat, { o: 'originA', r: 'heartbeat-ref' });
+
+      // Add second client
+      const socketB = await addClient(server);
+
+      const heartbeatsA: ConnectorPayload[] = [];
+      const heartbeatsB: ConnectorPayload[] = [];
+      socketA.on(events.bootstrap, (p: ConnectorPayload) =>
+        heartbeatsA.push(p),
+      );
+      socketB.on(events.bootstrap, (p: ConnectorPayload) =>
+        heartbeatsB.push(p),
+      );
+
+      // Wait for at least one heartbeat interval
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      // Both clients should have received heartbeat(s)
+      expect(heartbeatsA.length).toBeGreaterThanOrEqual(1);
+      expect(heartbeatsB.length).toBeGreaterThanOrEqual(1);
+      expect(heartbeatsA[0].r).toBe('heartbeat-ref');
+      expect(heartbeatsB[0].r).toBe('heartbeat-ref');
+    });
+
+    it('should not start heartbeat when bootstrapHeartbeatMs is not set', async () => {
+      const route = Route.fromFlat('noHeartbeat');
+      const syncConfig: SyncConfig = { causalOrdering: true };
+      const result = await createSyncServer(route, syncConfig);
+      server = result.server;
+      const events = syncEvents(route.flat);
+
+      const socketA = await addClient(server);
+      socketA.emit(route.flat, { o: 'originA', r: 'some-ref' });
+
+      const heartbeats: ConnectorPayload[] = [];
+      socketA.on(events.bootstrap, (p: ConnectorPayload) => heartbeats.push(p));
+
+      // Wait — no heartbeat should fire
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(heartbeats).toHaveLength(0);
+    });
+
+    it('should clear latestRef and stop heartbeat on tearDown', async () => {
+      const route = Route.fromFlat('bootstrapTearDown');
+      const syncConfig: SyncConfig = { bootstrapHeartbeatMs: 50 };
+      const result = await createSyncServer(route, syncConfig);
+      server = result.server;
+
+      const socketA = await addClient(server);
+      socketA.emit(route.flat, { o: 'originA', r: 'pre-teardown' });
+
+      expect(server.latestRef).toBe('pre-teardown');
+
+      await server.tearDown();
+
+      expect(server.latestRef).toBeUndefined();
+    });
+
+    it('should work without syncConfig (bootstrap always active)', async () => {
+      const route = Route.fromFlat('bootstrapNoSync');
+      const io = new IoMem();
+      await io.init();
+      const bs = new BsMem();
+      server = new Server(route, io, bs, { refEvictionIntervalMs: 0 });
+      await server.init();
+      const events = syncEvents(route.flat);
+
+      // Add first client and send a ref
+      const socketA = await addClient(server);
+      socketA.emit(route.flat, { o: 'originA', r: 'no-sync-ref' });
+
+      expect(server.latestRef).toBe('no-sync-ref');
+
+      // Add second client — should receive bootstrap even without syncConfig
+      const socketB = new SocketMock();
+      socketB.connect();
+
+      const bootstrapReceived: ConnectorPayload[] = [];
+      socketB.on(events.bootstrap, (p: ConnectorPayload) => {
+        bootstrapReceived.push(p);
+      });
+
+      await server.addSocket(socketB);
+
+      expect(bootstrapReceived).toHaveLength(1);
+      expect(bootstrapReceived[0].r).toBe('no-sync-ref');
     });
   });
 });
