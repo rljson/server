@@ -913,4 +913,133 @@ describe('Server sync protocol', () => {
       expect(bootstrapReceived[0].r).toBe('no-sync-ref');
     });
   });
+
+  // =========================================================================
+  describe('refLogSize getter', () => {
+    it('should expose the default refLogSize', async () => {
+      const route = Route.fromFlat('refLogSizeDefault');
+      const result = await createSyncServer(route, { requireAck: true });
+      server = result.server;
+
+      expect(server.refLogSize).toBe(1000);
+    });
+
+    it('should expose a custom refLogSize', async () => {
+      const route = Route.fromFlat('refLogSizeCustom');
+      const result = await createSyncServer(
+        route,
+        { requireAck: true },
+        { refLogSize: 42 },
+      );
+      server = result.server;
+
+      expect(server.refLogSize).toBe(42);
+    });
+  });
+
+  // =========================================================================
+  describe('disableLocalCache', () => {
+    it('should default to false (local cache enabled)', async () => {
+      const route = Route.fromFlat('localCacheDefault');
+      const result = await createSyncServer(route, { requireAck: true });
+      server = result.server;
+
+      expect(server.isLocalCacheDisabled).toBe(false);
+    });
+
+    it('should disable local cache when option is true', async () => {
+      const route = Route.fromFlat('localCacheDisabled');
+      const io = new IoMem();
+      await io.init();
+      const bs = new BsMem();
+      const logger = new BufferedLogger();
+
+      server = new Server(route, io, bs, {
+        logger,
+        syncConfig: { requireAck: true },
+        refEvictionIntervalMs: 0,
+        disableLocalCache: true,
+      });
+      await server.init();
+
+      expect(server.isLocalCacheDisabled).toBe(true);
+    });
+
+    it('should still relay refs between clients when local cache is disabled', async () => {
+      const route = Route.fromFlat('localCacheRelay');
+      const io = new IoMem();
+      await io.init();
+      const bs = new BsMem();
+
+      server = new Server(route, io, bs, {
+        syncConfig: { requireAck: true },
+        refEvictionIntervalMs: 0,
+        disableLocalCache: true,
+      });
+      await server.init();
+
+      const socketA = await addClient(server);
+      const socketB = await addClient(server);
+
+      const received: ConnectorPayload[] = [];
+      socketB.on(route.flat, (p: ConnectorPayload) => received.push(p));
+
+      socketA.emit(route.flat, { o: 'origin-A', r: 'relay-ref' });
+
+      expect(received).toHaveLength(1);
+      expect(received[0].r).toBe('relay-ref');
+    });
+
+    it('should still populate ref log when local cache is disabled', async () => {
+      const route = Route.fromFlat('localCacheRefLog');
+      const io = new IoMem();
+      await io.init();
+      const bs = new BsMem();
+
+      server = new Server(route, io, bs, {
+        syncConfig: { requireAck: true },
+        refEvictionIntervalMs: 0,
+        disableLocalCache: true,
+      });
+      await server.init();
+
+      const socketA = await addClient(server);
+      await addClient(server);
+
+      socketA.emit(route.flat, { o: 'origin-A', r: 'ref-1' });
+      socketA.emit(route.flat, { o: 'origin-A', r: 'ref-2' });
+
+      expect(server.refLog).toHaveLength(2);
+      expect(server.refLog[0].r).toBe('ref-1');
+      expect(server.refLog[1].r).toBe('ref-2');
+    });
+
+    it('should still send bootstrap when local cache is disabled', async () => {
+      const route = Route.fromFlat('localCacheBoot');
+      const events = syncEvents(route.flat);
+      const io = new IoMem();
+      await io.init();
+      const bs = new BsMem();
+
+      server = new Server(route, io, bs, {
+        syncConfig: { requireAck: true },
+        refEvictionIntervalMs: 0,
+        disableLocalCache: true,
+      });
+      await server.init();
+
+      const socketA = await addClient(server);
+      socketA.emit(route.flat, { o: 'origin-A', r: 'boot-ref' });
+
+      // Add a second client — should get bootstrap
+      const socketB = new SocketMock();
+      socketB.connect();
+      const bootstraps: ConnectorPayload[] = [];
+      socketB.on(events.bootstrap, (p: ConnectorPayload) => bootstraps.push(p));
+      await server.addSocket(socketB);
+
+      expect(bootstraps).toHaveLength(1);
+      expect(bootstraps[0].r).toBe('boot-ref');
+    });
+  });
 });
