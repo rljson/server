@@ -75,6 +75,15 @@ export interface ServerOptions {
    * Defaults to the SyncConfig's ackTimeoutMs (or 10 000 ms).
    */
   ackTimeoutMs?: number;
+
+  /**
+   * When true, the server's IoMulti and BsMulti will NOT include a local
+   * in-memory cache (IoMem / BsMem). The server will only read data from
+   * connected client peers. Useful when the server should act as a pure
+   * relay without caching any data locally.
+   * Defaults to false (local cache enabled).
+   */
+  disableLocalCache?: boolean;
 }
 
 // .............................................................................
@@ -131,6 +140,9 @@ export class Server extends BaseNode {
   private _refLogSize: number;
   private _ackTimeoutMs: number;
 
+  // Local cache toggle
+  private _disableLocalCache: boolean;
+
   // Bootstrap state
   private _latestRef: string | undefined;
   private _bootstrapHeartbeatTimer?: ReturnType<typeof setInterval>;
@@ -148,6 +160,7 @@ export class Server extends BaseNode {
 
     this._logger = options?.logger ?? noopLogger;
     this._peerInitTimeoutMs = options?.peerInitTimeoutMs ?? 30_000;
+    this._disableLocalCache = options?.disableLocalCache ?? false;
 
     // Sync protocol initialization
     this._syncConfig = options?.syncConfig;
@@ -173,26 +186,31 @@ export class Server extends BaseNode {
       this._refEvictionTimer.unref();
     }
 
-    const ioMultiIoLocal = {
-      io: this._localIo,
-      dump: true,
-      read: true,
-      write: true,
-      priority: 1,
-    };
-    this._ios.push(ioMultiIoLocal);
+    // Only add local Io/Bs to the multi when local cache is enabled
+    if (!this._disableLocalCache) {
+      const ioMultiIoLocal = {
+        io: this._localIo,
+        dump: true,
+        read: true,
+        write: true,
+        priority: 1,
+      };
+      this._ios.push(ioMultiIoLocal);
+    }
     this._ioMulti = new IoMulti(this._ios);
 
     // Initialize IoServer
     this._ioServer = new IoServer(this._ioMulti);
 
-    const bsMultiBsLocal = {
-      bs: this._localBs,
-      read: true,
-      write: true,
-      priority: 1,
-    };
-    this._bss.push(bsMultiBsLocal);
+    if (!this._disableLocalCache) {
+      const bsMultiBsLocal = {
+        bs: this._localBs,
+        read: true,
+        write: true,
+        priority: 1,
+      };
+      this._bss.push(bsMultiBsLocal);
+    }
     this._bsMulti = new BsMulti(this._bss);
 
     // Initialize BsServer
@@ -456,10 +474,24 @@ export class Server extends BaseNode {
   }
 
   /**
+   * Returns the configured maximum ref log size.
+   */
+  get refLogSize(): number {
+    return this._refLogSize;
+  }
+
+  /**
    * Returns the current ref log contents (for diagnostics / testing).
    */
   get refLog(): readonly ConnectorPayload[] {
     return this._refLog;
+  }
+
+  /**
+   * Returns whether the local cache is disabled.
+   */
+  get isLocalCacheDisabled(): boolean {
+    return this._disableLocalCache;
   }
 
   /**

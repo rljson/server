@@ -6,7 +6,12 @@
 
 import { BsMem } from '@rljson/bs';
 import { Connector, Db, staticExample } from '@rljson/db';
-import { createSocketPair, DirectionalSocketMock, IoMem } from '@rljson/io';
+import {
+  createSocketPair,
+  DirectionalSocketMock,
+  IoMem,
+  IoMulti,
+} from '@rljson/io';
 import {
   AckPayload,
   ConnectorPayload,
@@ -974,6 +979,91 @@ describe('Sync protocol end-to-end', () => {
       expect(bootstrapRefs).toHaveLength(0);
 
       await server.tearDown();
+    });
+  });
+
+  // ===========================================================================
+  describe('disableLocalCache (data flow)', () => {
+    it('should allow B to read data from A through server without local cache', async () => {
+      setup = await createE2eSetup(undefined, {
+        serverOpts: { disableLocalCache: true },
+      });
+
+      expect(setup.server.isLocalCacheDisabled).toBe(true);
+
+      // Client A imports data locally
+      const exampleData = staticExample();
+      await setup.clientA.import(exampleData);
+
+      // Get a ref from A's local data
+      const carCakeRoute = Route.fromFlat('carCake');
+      const dataFromA = await setup.dbA.get(carCakeRoute, {});
+      const carRef = dataFromA.rljson.carCake._data[0]._hash;
+      expect(carRef).toBeDefined();
+
+      // B can pull the data by ref even though server has no local cache
+      // (IoMulti → IoPeer → Server IoMulti → IoPeer to A → A's local IoMem)
+      const dataFromB = await setup.dbB.get(carCakeRoute, { _hash: carRef });
+      expect(dataFromB.rljson.carCake._data[0]._hash).toBe(carRef);
+      expect(dataFromB.rljson.carCake._data[0]).toEqual(
+        dataFromA.rljson.carCake._data[0],
+      );
+    });
+
+    it('should have no writable or dumpable io on server when local cache is disabled', async () => {
+      setup = await createE2eSetup(undefined, {
+        serverOpts: { disableLocalCache: true },
+      });
+
+      const ioMulti = setup.server.io as IoMulti;
+      expect(ioMulti.writables).toHaveLength(0);
+      expect(ioMulti.dumpables).toHaveLength(0);
+
+      // Readables should be the IoPeer entries from connected clients
+      expect(ioMulti.readables.length).toBeGreaterThan(0);
+    });
+
+    it('should have local writable and dumpable io when local cache is enabled', async () => {
+      setup = await createE2eSetup();
+
+      expect(setup.server.isLocalCacheDisabled).toBe(false);
+
+      const ioMulti = setup.server.io as IoMulti;
+      expect(ioMulti.writables.length).toBeGreaterThan(0);
+      expect(ioMulti.dumpables.length).toBeGreaterThan(0);
+      expect(ioMulti.readables.length).toBeGreaterThan(0);
+    });
+
+    it('should still multicast refs when local cache is disabled', async () => {
+      setup = await createE2eSetup(
+        { requireAck: true },
+        { serverOpts: { disableLocalCache: true } },
+      );
+
+      // Client A imports data and sends ref
+      const exampleData = staticExample();
+      await setup.clientA.import(exampleData);
+      const carCakeRoute = Route.fromFlat('carCake');
+      const dataFromA = await setup.dbA.get(carCakeRoute, {});
+      const carRef = dataFromA.rljson.carCake._data[0]._hash;
+
+      // Listen for multicast on B
+      const received: ConnectorPayload[] = [];
+      setup.socketB.on(setup.route.flat, (p: ConnectorPayload) => {
+        if (p.o !== setup.connectorB.origin) {
+          received.push(p);
+        }
+      });
+
+      setup.connectorA.send(carRef);
+
+      // B received the ref broadcast
+      expect(received).toHaveLength(1);
+      expect(received[0].r).toBe(carRef);
+
+      // B can also pull the actual data by ref
+      const dataFromB = await setup.dbB.get(carCakeRoute, { _hash: carRef });
+      expect(dataFromB.rljson.carCake._data[0]._hash).toBe(carRef);
     });
   });
 });
