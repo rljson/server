@@ -1,6 +1,6 @@
 {
   "name": "@rljson/server",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "Rljson server description",
   "homepage": "https://github.com/rljson/server",
   "bugs": "https://github.com/rljson/server/issues",
@@ -62,7 +62,9 @@
     "onlyBuiltDependencies": [
       "esbuild"
     ],
-    "overrides": {}
+    "overrides": {
+      "@rljson/rljson": "^0.0.78"
+    }
   },
   "packageManager": "pnpm@10.11.0"
 }

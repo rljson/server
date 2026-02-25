@@ -15,13 +15,13 @@ All comments MUST include `-- @preserve` to survive esbuild transpilation.
 
 **Allowed patterns:**
 
-| Pattern | Meaning |
-|---|---|
-| `/* v8 ignore if -- @preserve */` | Ignore the if-branch |
-| `/* v8 ignore else -- @preserve */` | Ignore the else-branch |
-| `/* v8 ignore next -- @preserve */` | Ignore the next statement/expression |
-| `/* v8 ignore file -- @preserve */` | Ignore the entire file |
-| `/* v8 ignore start -- @preserve */` ... `/* v8 ignore stop -- @preserve */` | Ignore a range of lines |
+| Pattern                                                                      | Meaning                              |
+| ---------------------------------------------------------------------------- | ------------------------------------ |
+| `/* v8 ignore if -- @preserve */`                                            | Ignore the if-branch                 |
+| `/* v8 ignore else -- @preserve */`                                          | Ignore the else-branch               |
+| `/* v8 ignore next -- @preserve */`                                          | Ignore the next statement/expression |
+| `/* v8 ignore file -- @preserve */`                                          | Ignore the entire file               |
+| `/* v8 ignore start -- @preserve */` ... `/* v8 ignore stop -- @preserve */` | Ignore a range of lines              |
 
 **FORBIDDEN patterns (NEVER use):**
 
@@ -143,20 +143,21 @@ pnpm publish 2>&1 | tail -15
 
 Packages MUST be published bottom-up by dependency order. A downstream package can only be published after its upstream dependency is on npm.
 
-| Order | Package          | Depends on                              |
-|-------|------------------|-----------------------------------------|
-| 1     | `@rljson/rljson` | — (Layer 0, no `@rljson` deps)          |
-| 2     | `@rljson/io`     | `@rljson/rljson`                        |
-| 3     | `@rljson/bs`     | `@rljson/rljson`, `@rljson/io`          |
-| 4     | `@rljson/db`     | `@rljson/rljson`, `@rljson/io`          |
-| 5     | `@rljson/server` | `@rljson/rljson`, `@rljson/io`, `@rljson/bs`, `@rljson/db` |
-| 6     | `@rljson/fs-agent` | all of the above                      |
+| Order | Package            | Depends on                                                 |
+| ----- | ------------------ | ---------------------------------------------------------- |
+| 1     | `@rljson/rljson`   | — (Layer 0, no `@rljson` deps)                             |
+| 2     | `@rljson/io`       | `@rljson/rljson`                                           |
+| 3     | `@rljson/bs`       | `@rljson/rljson`, `@rljson/io`                             |
+| 4     | `@rljson/db`       | `@rljson/rljson`, `@rljson/io`                             |
+| 5     | `@rljson/server`   | `@rljson/rljson`, `@rljson/io`, `@rljson/bs`, `@rljson/db` |
+| 6     | `@rljson/fs-agent` | all of the above                                           |
 
 After publishing an upstream package, downstream packages must `pnpm update --latest` to pick up the new version before their own publish.
 
 ## Dependency Pinning (MANDATORY)
 
 - **ESLint**: Pin to `~9.39.2`. ESLint 10+ breaks the build. Never allow `pnpm update --latest` to bump eslint beyond 9.x.
+
   ```jsonc
   // ✅ CORRECT
   "eslint": "~9.39.2"
@@ -164,6 +165,7 @@ After publishing an upstream package, downstream packages must `pnpm update --la
   // ❌ WRONG — will pull in v10 which breaks everything
   "eslint": "^10.0.0"
   ```
+
 - After running `pnpm update --latest`, **always verify** eslint stayed on 9.x: `pnpm ls eslint`.
 
 - **TypeScript**: ESM modules (`"type": "module"`)
