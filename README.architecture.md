@@ -134,6 +134,8 @@ The `Server` class acts as a central coordination point that:
 - Broadcasts notifications between clients
 - Provides read access to its own local storage
 
+**Relay mode (`disableLocalCache: true`):** When the `disableLocalCache` option is set, the server omits the local IoMem/BsMem from its IoMulti/BsMulti stacks. In this mode the server reads all data exclusively from connected client peers, acting as a pure relay without caching any data locally. This is useful for memory-constrained deployments where the server should not retain copies of client data.
+
 **Data Flow Architecture:**
 
 ```text
