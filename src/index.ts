@@ -6,6 +6,8 @@
 
 export { Client } from './client.ts';
 export type { ClientOptions } from './client.ts';
+export { FileLogger } from './file-logger.ts';
+export type { FileLoggerOptions } from './file-logger.ts';
 export {
   BufferedLogger,
   ConsoleLogger,

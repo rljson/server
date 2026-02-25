@@ -93,6 +93,7 @@ This applies to source files AND test files. A change is not complete until all 
 
 - **NEVER commit directly to `main`.** Always work on a feature branch.
 - When proposing commits, provide a commit message, wait for user approval, then commit.
+- **GitKraken MCP tools** (`mcp_gitkraken_git_status`, `mcp_gitkraken_git_add_or_commit`, etc.) may timeout in large workspaces. **Always use `run_in_terminal` with raw git commands** (e.g., `git status --short`, `git add .`, `git commit -am"..."`) instead.
 - **`pnpm link` is acceptable** during development for local cross-repo dependencies.
 - **Before PR/merge**: unlink all local overrides (`git restore package.json pnpm-lock.yaml`, remove `pnpm.overrides`), verify tests still pass with published versions.
 
