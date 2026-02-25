@@ -176,6 +176,7 @@ This is implemented with `IoMulti` and `BsMulti` internally, but the public API 
 - `bs` – Bs interface used by server
 - `clients` – `Map` of connected clients (keyed by internal clientId)
 - `isTornDown` – whether the server has been shut down
+- `isLocalCacheDisabled` – whether local caching is disabled (pure relay mode)
 - `logger` – the `ServerLogger` instance (defaults to `noopLogger`)
 
 ## Example
@@ -306,17 +307,19 @@ const server = new Server(route, io, bs, {
   logger: new ConsoleLogger(),     // Structured logging (default: NoopLogger)
   refEvictionIntervalMs: 60_000,   // Ref dedup sweep interval (default: 60 s, 0 = disable)
   peerInitTimeoutMs: 30_000,       // Peer handshake timeout (default: 30 s, 0 = disable)
+  disableLocalCache: true,         // Pure relay mode — no local Io/Bs cache (default: false)
 });
 ```
 
-| Option                  | Default    | Description                                                                                                                             |
-| ----------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `logger`                | NoopLogger | Structured logger for lifecycle, traffic, and error events.                                                                             |
-| `refEvictionIntervalMs` | 60 000     | Two-generation sweep interval for multicast ref dedup. Refs older than two intervals are forgotten, preventing unbounded memory growth. |
-| `peerInitTimeoutMs`     | 30 000     | Maximum time `addSocket()` waits for a peer to initialize. Prevents hanging on unresponsive clients.                                    |
-| `syncConfig`            | undefined  | Sync protocol configuration (see below). Enables ACK aggregation, gap-fill, and enriched payloads.                                      |
-| `refLogSize`            | 1 000      | Maximum number of recent payloads retained in the ref log for gap-fill responses.                                                       |
-| `ackTimeoutMs`          | 10 000     | Timeout for collecting individual client ACKs before emitting the aggregated ACK. Falls back to `syncConfig.ackTimeoutMs`.              |
+| Option                  | Default    | Description                                                                                                                                                                               |
+| ----------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `logger`                | NoopLogger | Structured logger for lifecycle, traffic, and error events.                                                                                                                               |
+| `refEvictionIntervalMs` | 60 000     | Two-generation sweep interval for multicast ref dedup. Refs older than two intervals are forgotten, preventing unbounded memory growth.                                                   |
+| `peerInitTimeoutMs`     | 30 000     | Maximum time `addSocket()` waits for a peer to initialize. Prevents hanging on unresponsive clients.                                                                                      |
+| `syncConfig`            | undefined  | Sync protocol configuration (see below). Enables ACK aggregation, gap-fill, and enriched payloads.                                                                                        |
+| `refLogSize`            | 1 000      | Maximum number of recent payloads retained in the ref log for gap-fill responses.                                                                                                         |
+| `ackTimeoutMs`          | 10 000     | Timeout for collecting individual client ACKs before emitting the aggregated ACK. Falls back to `syncConfig.ackTimeoutMs`.                                                                |
+| `disableLocalCache`     | false      | When true, the server skips creating local IoMem/BsMem caches. The server acts as a pure relay, reading data only from connected client peers. Useful for memory-constrained deployments. |
 
 ## Client options
 

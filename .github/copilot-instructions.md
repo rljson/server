@@ -127,6 +127,17 @@ pnpm login
 pnpm publish
 ```
 
+**CRITICAL: Always use exactly `pnpm publish` — no flags, no piping.**
+
+```bash
+# ✅ CORRECT
+pnpm publish
+
+# ❌ WRONG — never add flags or pipe output
+pnpm publish --no-git-checks
+pnpm publish 2>&1 | tail -15
+```
+
 ### Cross-repo publish order
 
 Packages MUST be published bottom-up by dependency order. A downstream package can only be published after its upstream dependency is on npm.
