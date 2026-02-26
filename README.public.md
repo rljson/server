@@ -164,6 +164,9 @@ This is implemented with `IoMulti` and `BsMulti` internally, but the public API 
 - `connector` – Connector wired to the route and socket (available when route was provided)
 - `route` – the Route passed to the constructor
 - `logger` – the `ServerLogger` instance (defaults to `noopLogger`)
+- `isConnected` – whether the socket is currently connected (tracks `disconnect`/`connect` events)
+- `onDisconnect(callback)` – registers a callback that fires when the socket disconnects (receives the reason string)
+- `onReconnect(callback)` – registers a callback that fires when the socket reconnects after a previous disconnect
 
 ### Server API
 
@@ -215,6 +218,60 @@ The same pattern is used for Bs (blob storage).
 - Disconnected sockets are auto-detected and cleaned up — dead peers are removed and multis rebuilt.
 - Peer initialization is guarded by a configurable timeout (`peerInitTimeoutMs`, default 30 s) on both server and client. On the server it prevents `addSocket()` from hanging on unresponsive clients; on the client it prevents `init()` from hanging when the server is unreachable.
 - Logging is opt-in via `{ logger }` options. Use `ConsoleLogger` for development, `BufferedLogger` for testing, `FilteredLogger` for production. Default is `NoopLogger` (zero overhead).
+
+## Reconnect handling
+
+The `Client` class tracks socket connection state and provides hooks for upper layers to react to disconnects and reconnections.
+
+### How it works
+
+Socket.IO auto-reconnects at the transport level by default. When the connection drops and is restored:
+
+1. The client-side Socket.IO socket emits `'disconnect'` then (later) `'connect'`.
+2. The `Client` class listens for these events and updates `isConnected`.
+3. Registered `onDisconnect` / `onReconnect` callbacks fire.
+4. The server auto-detects the dropped socket (`removeSocket`) and re-registers the reconnected socket via a new `'connection'` event.
+5. The server sends a bootstrap ref to the reconnected client, triggering a re-sync via the Connector's bootstrap handler.
+
+### Usage
+
+```ts
+import { Client } from '@rljson/server';
+
+const client = new Client(socket, io, bs, route, {
+  logger: new ConsoleLogger(),
+});
+await client.init();
+
+// Track connection state
+console.log(client.isConnected); // true
+
+// React to disconnects
+client.onDisconnect((reason) => {
+  console.warn(`Disconnected: ${reason}`);
+  // Pause user-facing sync indicators, queue local changes, etc.
+});
+
+// React to reconnections
+client.onReconnect(() => {
+  console.info('Reconnected to server');
+  // Resume sync, trigger re-fetch, update UI, etc.
+});
+```
+
+### What survives a reconnect
+
+| Layer             | Survives? | Details                                                           |
+| ----------------- | --------- | ----------------------------------------------------------------- |
+| Socket.IO         | ✅         | Auto-reconnects, reuses the same client-side socket object        |
+| SocketIoBridge    | ✅         | Wraps the same socket — event listeners are preserved             |
+| IoPeer / BsPeer   | ✅         | Listeners remain on the client socket; server re-creates its side |
+| Connector         | ✅         | Listeners remain; server bootstrap re-syncs state                 |
+| IoMulti / BsMulti | ✅         | Multi layers are unaffected; local Io/Bs always available         |
+
+### Cleanup
+
+All connection handlers are cleaned up automatically on `tearDown()`. After tearDown, no callbacks will fire.
 
 ## Logging
 
