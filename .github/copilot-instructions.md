@@ -89,6 +89,8 @@ Uses **pnpm**. Never modify the `scripts` section in `package.json` without expl
 
 This applies to source files AND test files. A change is not complete until all diagnostics are clean.
 
+5. **Update READMEs** — When adding or changing public API, features, or behavior, update the relevant README files (README.public.md, README.architecture.md, etc.). A feature is not complete until its documentation matches.
+
 ## Git Workflow (MANDATORY)
 
 - **NEVER commit directly to `main`.** Always work on a feature branch.

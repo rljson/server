@@ -61,6 +61,12 @@ export class Client extends BaseNode {
   private _clientIdentity?: ClientId;
   private _peerInitTimeoutMs: number;
 
+  // Connection state
+  private _isConnected: boolean = true;
+  private _disconnectCallbacks: Array<(reason: string) => void> = [];
+  private _reconnectCallbacks: Array<() => void> = [];
+  private _connectionCleanup?: () => void;
+
   // ...........................................................................
   /**
    * Creates a Client instance
@@ -106,6 +112,8 @@ export class Client extends BaseNode {
         this._setupDbAndConnector();
       }
 
+      this._registerConnectionHandlers();
+
       await this.ready();
 
       this._logger.info('Client', 'Client initialized successfully', {
@@ -137,6 +145,14 @@ export class Client extends BaseNode {
    */
   async tearDown() {
     this._logger.info('Client', 'Tearing down client');
+
+    // Clean up connection handlers
+    if (this._connectionCleanup) {
+      this._connectionCleanup();
+      this._connectionCleanup = undefined;
+    }
+    this._disconnectCallbacks = [];
+    this._reconnectCallbacks = [];
 
     //Close Io
     /* v8 ignore else -- @preserve */
@@ -203,6 +219,32 @@ export class Client extends BaseNode {
   }
 
   /**
+   * Whether the client is currently connected to the server.
+   * Tracks socket-level connection state via `disconnect` and `connect` events.
+   */
+  get isConnected(): boolean {
+    return this._isConnected;
+  }
+
+  /**
+   * Registers a callback that fires when the socket disconnects.
+   * The callback receives the disconnect reason string.
+   * @param callback - Invoked with the disconnect reason
+   */
+  onDisconnect(callback: (reason: string) => void): void {
+    this._disconnectCallbacks.push(callback);
+  }
+
+  /**
+   * Registers a callback that fires when the socket reconnects
+   * after a previous disconnect.
+   * @param callback - Invoked on reconnection
+   */
+  onReconnect(callback: () => void): void {
+    this._reconnectCallbacks.push(callback);
+  }
+
+  /**
    * Creates Db and Connector from the route and IoMulti.
    * Called during init() when a route was provided.
    */
@@ -222,6 +264,56 @@ export class Client extends BaseNode {
     );
 
     this._logger.info('Client', 'Db and Connector created');
+  }
+
+  /**
+   * Registers socket-level disconnect/connect listeners.
+   * Logs state transitions and invokes registered callbacks.
+   * The `connect` callback only fires on RE-connections (not the initial connect).
+   */
+  private _registerConnectionHandlers() {
+    const sockets = normalizeSocketBundle(this._socketToServer);
+    const socket = sockets.ioUp;
+
+    const disconnectHandler = (...args: unknown[]) => {
+      const reason = typeof args[0] === 'string' ? args[0] : 'unknown';
+      this._isConnected = false;
+      this._logger.warn('Client', 'Disconnected from server', { reason });
+      for (const cb of this._disconnectCallbacks) {
+        /* v8 ignore start -- @preserve */
+        try {
+          cb(reason);
+        } catch {
+          // Ignore callback errors — one faulty callback must not break others
+        }
+        /* v8 ignore stop -- @preserve */
+      }
+    };
+
+    const reconnectHandler = () => {
+      /* v8 ignore else -- @preserve */
+      if (!this._isConnected) {
+        this._isConnected = true;
+        this._logger.info('Client', 'Reconnected to server');
+        for (const cb of this._reconnectCallbacks) {
+          /* v8 ignore start -- @preserve */
+          try {
+            cb();
+          } catch {
+            // Ignore callback errors
+          }
+          /* v8 ignore stop -- @preserve */
+        }
+      }
+    };
+
+    socket.on('disconnect', disconnectHandler);
+    socket.on('connect', reconnectHandler);
+
+    this._connectionCleanup = () => {
+      socket.off('disconnect', disconnectHandler);
+      socket.off('connect', reconnectHandler);
+    };
   }
 
   /**
