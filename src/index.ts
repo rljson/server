@@ -16,11 +16,22 @@ export {
   noopLogger,
 } from './logger.ts';
 export type { LogEntry, ServerLogger } from './logger.ts';
+export { Node } from './node.ts';
+export type {
+  CreateClientTransport,
+  CreateHubTransport,
+  HubTransport,
+  NodeConfig,
+  NodeDeps,
+  NodeEventName,
+  NodeEvents,
+} from './node.ts';
 export { Server } from './server.ts';
 export type { ServerOptions } from './server.ts';
 export { SocketIoBridge } from './socket-io-bridge.ts';
 
 // Re-export sync protocol types from @rljson/rljson for convenience
+export { syncEvents } from '@rljson/rljson';
 export type {
   AckPayload,
   ConnectorPayload,
@@ -29,4 +40,3 @@ export type {
   SyncConfig,
   SyncEventNames,
 } from '@rljson/rljson';
-export { syncEvents } from '@rljson/rljson';

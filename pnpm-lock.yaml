@@ -26,6 +26,9 @@ importers:
       '@rljson/json':
         specifier: ^0.0.23
         version: 0.0.23
+      '@rljson/network':
+        specifier: link:../rljson-network
+        version: link:../rljson-network
       '@rljson/rljson':
         specifier: ^0.0.78
         version: 0.0.78
