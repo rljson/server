@@ -1403,9 +1403,7 @@ describe('Node', () => {
       };
 
       const deps: NodeDeps = {
-        createHubTransport: vi
-          .fn()
-          .mockRejectedValue(new Error('port in use')),
+        createHubTransport: vi.fn().mockRejectedValue(new Error('port in use')),
         createClientTransport: async () => {
           const [, clientSocket] = createSocketPair();
           return clientSocket;
