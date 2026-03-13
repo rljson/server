@@ -60,6 +60,12 @@ export interface NodeDeps {
   createClientTransport: CreateClientTransport;
   /** Options passed to NetworkManager (e.g. mock probe function). */
   networkManagerOptions?: NetworkManagerOptions;
+  /**
+   * Optional factory for application-level agents (e.g. FsAgent).
+   * Called on every `ready` event. The returned handle's `stop()`
+   * is called before the next role transition or on `node.stop()`.
+   */
+  createAgent?: CreateAgent;
 }
 
 /**
@@ -86,10 +92,39 @@ export interface NodeConfig {
 
 // .............................................................................
 
+/**
+ * Context passed to the `ready` event and to {@link CreateAgent}.
+ */
+export interface ReadyContext {
+  /** The node's current role. */
+  role: NodeRole;
+  /** The Client instance (defined when role is `'client'`). */
+  client?: Client;
+  /** The Server instance (defined when role is `'hub'`). */
+  server?: Server;
+  /** The socket used to connect to the hub (defined when role is `'client'`). */
+  socket?: SocketLike;
+}
+
+/**
+ * Handle returned by {@link CreateAgent}.
+ * Node calls `stop()` before every role transition and on `node.stop()`.
+ */
+export interface AgentHandle {
+  stop: () => Promise<void> | void;
+}
+
+/**
+ * Factory called after each role transition to wire application-level agents
+ * (e.g. FsAgent). Return an {@link AgentHandle} whose `stop()` will be called
+ * before the next role transition or when the node stops.
+ */
+export type CreateAgent = (context: ReadyContext) => Promise<AgentHandle>;
+
 /** Events emitted by Node. */
 export interface NodeEvents {
   /** Emitted when the node has assumed its role and is ready. */
-  ready: () => void;
+  ready: (context: ReadyContext) => void;
   /** Emitted when the node's role changes. */
   'role-changed': (event: RoleChangedEvent) => void;
   /** Emitted when the node is stopped. */
@@ -112,10 +147,13 @@ export class Node {
   private _server?: Server;
   private _client?: Client;
   private _hubTransport?: HubTransport;
+  private _clientSocket?: SocketLike;
+  private _agentHandle?: AgentHandle;
   private _ioMem?: IoMem;
   private _bsMem?: BsMem;
   private _role: NodeRole = 'unassigned';
   private _running = false;
+  private _transitioning?: Promise<void>;
   private _listeners = new Map<string, Set<NodeListener>>();
   private readonly _logger: ServerLogger;
 
@@ -175,6 +213,12 @@ export class Node {
     this._running = false;
     this._networkManager.off('role-changed', this._onRoleChanged);
 
+    // Wait for any in-flight role transition to finish
+    if (this._transitioning) {
+      await this._transitioning;
+      this._transitioning = undefined;
+    }
+
     await this._tearDownCurrentRole();
     await this._networkManager.stop();
 
@@ -214,6 +258,11 @@ export class Node {
   /** The Client instance when this node is a client, or undefined. */
   get client(): Client | undefined {
     return this._client;
+  }
+
+  /** The socket used to connect to the hub (defined when role is `'client'`). */
+  get socket(): SocketLike | undefined {
+    return this._clientSocket;
   }
 
   /** Whether the node is currently running. */
@@ -259,7 +308,7 @@ export class Node {
   // Role transitions
   // .........................................................................
 
-  private _onRoleChanged = async (event: RoleChangedEvent): Promise<void> => {
+  private _onRoleChanged = (event: RoleChangedEvent): void => {
     // Unreachable: stop() removes this listener synchronously before
     // any further events can fire from NetworkManager.
     /* v8 ignore if -- @preserve */
@@ -267,9 +316,25 @@ export class Node {
 
     const { current } = event;
 
-    // Unreachable: NetworkManager deduplicates role events internally
-    // (only emits when newRole !== previousRole).
-    /* v8 ignore if -- @preserve */
+    // During rapid role changes, NM may emit a role that matches the
+    // Node's current _role (e.g. client→hub→client fires 'client' while
+    // _role is still 'client' because the hub transition is queued).
+    if (current === this._role) return;
+
+    // Serialize transitions — wait for any in-flight transition to finish
+    // before starting the next one.
+    const prev = this._transitioning ?? Promise.resolve();
+    this._transitioning = prev.then(() => this._performTransition(event));
+  };
+
+  private async _performTransition(event: RoleChangedEvent): Promise<void> {
+    if (!this._running) return;
+
+    const { current } = event;
+
+    // A queued transition becomes stale when an earlier transition in the
+    // queue already established this role (e.g. two hub transitions
+    // queued during rapid flapping — the second is a no-op).
     if (current === this._role) return;
 
     this._logger.info('Node', `Role changing: ${this._role} → ${current}`);
@@ -292,7 +357,7 @@ export class Node {
       default:
         break;
     }
-  };
+  }
 
   private async _becomeHub(): Promise<void> {
     // Re-init IoMem after previous teardown closed it.
@@ -307,14 +372,25 @@ export class Node {
     await this._server.init();
 
     // Start transport to accept incoming connections
-    this._hubTransport = await this._deps.createHubTransport(this._config.port);
-    this._hubTransport.onConnection(async (socket: SocketLike) => {
-      if (!this._server) return;
-      await this._server.addSocket(socket);
-    });
+    try {
+      this._hubTransport = await this._deps.createHubTransport(
+        this._config.port,
+      );
+      this._hubTransport.onConnection(async (socket: SocketLike) => {
+        if (!this._server) return;
+        await this._server.addSocket(socket);
+      });
+      this._logger.info('Node', 'Now hub — accepting connections');
+    } catch (err) {
+      this._logger.error(
+        'Node',
+        `Hub transport failed (no incoming connections): ${err}`,
+      );
+    }
 
-    this._logger.info('Node', 'Now hub — accepting connections');
-    this._emit('ready');
+    const ctx: ReadyContext = { role: 'hub', server: this._server };
+    this._emit('ready', ctx);
+    await this._startAgent(ctx);
   }
 
   private async _becomeClient(): Promise<void> {
@@ -329,7 +405,15 @@ export class Node {
       return;
     }
 
-    const socket = await this._deps.createClientTransport(hubAddress);
+    try {
+      this._clientSocket = await this._deps.createClientTransport(hubAddress);
+    } catch (err) {
+      this._logger.error(
+        'Node',
+        `Client transport to ${hubAddress} failed: ${err}`,
+      );
+      return;
+    }
 
     // Re-init IoMem after previous teardown closed it.
     // Data is preserved — IoMem.close() only sets _isOpen = false.
@@ -337,7 +421,7 @@ export class Node {
     await this._ioMem!.isReady();
 
     this._client = new Client(
-      socket,
+      this._clientSocket,
       this._ioMem!,
       this._bsMem!,
       this._config.route,
@@ -349,7 +433,14 @@ export class Node {
     await this._client.init();
 
     this._logger.info('Node', `Now client — connected to hub ${hubAddress}`);
-    this._emit('ready');
+
+    const ctx: ReadyContext = {
+      role: 'client',
+      client: this._client,
+      socket: this._clientSocket,
+    };
+    this._emit('ready', ctx);
+    await this._startAgent(ctx);
   }
 
   // .........................................................................
@@ -357,6 +448,8 @@ export class Node {
   // .........................................................................
 
   private async _tearDownCurrentRole(): Promise<void> {
+    await this._stopAgent();
+
     if (this._server) {
       await this._server.tearDown();
       this._server = undefined;
@@ -370,6 +463,30 @@ export class Node {
     if (this._client) {
       await this._client.tearDown();
       this._client = undefined;
+    }
+
+    this._clientSocket = undefined;
+  }
+
+  private async _startAgent(ctx: ReadyContext): Promise<void> {
+    if (this._deps.createAgent) {
+      try {
+        this._agentHandle = await this._deps.createAgent(ctx);
+      } catch (err) {
+        this._logger.error('Node', `createAgent failed: ${err}`);
+      }
+    }
+  }
+
+  private async _stopAgent(): Promise<void> {
+    if (this._agentHandle) {
+      const handle = this._agentHandle;
+      this._agentHandle = undefined;
+      try {
+        await handle.stop();
+      } catch (err) {
+        this._logger.error('Node', `Agent stop failed: ${err}`);
+      }
     }
   }
 

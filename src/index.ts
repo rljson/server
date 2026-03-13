@@ -18,6 +18,8 @@ export {
 export type { LogEntry, ServerLogger } from './logger.ts';
 export { Node } from './node.ts';
 export type {
+  AgentHandle,
+  CreateAgent,
   CreateClientTransport,
   CreateHubTransport,
   HubTransport,
@@ -25,6 +27,7 @@ export type {
   NodeDeps,
   NodeEventName,
   NodeEvents,
+  ReadyContext,
 } from './node.ts';
 export { Server } from './server.ts';
 export type { ServerOptions } from './server.ts';

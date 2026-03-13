@@ -662,10 +662,11 @@ const node = new Node(
 await node.start();
 
 // The node auto-discovers peers and assumes a role:
-node.on('ready', () => {
-  console.log(`Role: ${node.role}`); // 'hub' or 'client'
-  console.log(`Io: ${node.io}`);     // IoMulti (from Server or Client)
-  console.log(`Bs: ${node.bs}`);     // BsMulti (from Server or Client)
+node.on('ready', ({ role, client, server, socket }) => {
+  console.log(`Role: ${role}`);          // 'hub' or 'client'
+  console.log(`Server: ${server}`);      // Server instance (hub only)
+  console.log(`Client: ${client}`);      // Client instance (client only)
+  console.log(`Socket: ${socket}`);      // Socket to hub (client only)
 });
 ```
 
@@ -678,6 +679,26 @@ This means:
 - Data written while client survives a transition to hub
 - A re-elected hub still serves all previously stored blobs and tables
 
+### Agent lifecycle
+
+The `createAgent` factory in `NodeDeps` is called on every role transition. The returned `AgentHandle.stop()` is called before the next transition or when the node stops. This is how you wire application-level agents (e.g. `FsAgent`) without creating circular dependencies:
+
+```ts
+const node = new Node(config, {
+  createHubTransport: ...,
+  createClientTransport: ...,
+  createAgent: async ({ role, client, server, socket }) => {
+    // Wire your agent here — called on every role transition
+    const stopSync = await startMySync(role, client, server);
+    return { stop: () => stopSync() };
+  },
+});
+```
+
+The Node serializes transitions — a new transition waits for the previous one to complete, ensuring agents are always stopped cleanly.
+
+Errors in `createAgent` or `agentHandle.stop()` are caught and logged — they never crash the node. Similarly, transport factory failures degrade connectivity but leave the node functional locally.
+
 ### API
 
 | Property / Method     | Description                                           |
@@ -689,6 +710,7 @@ This means:
 | `node.bs`             | BsMulti from active Server or Client                  |
 | `node.server`         | Server instance (when hub), else `undefined`          |
 | `node.client`         | Client instance (when client), else `undefined`       |
+| `node.socket`         | Socket to hub (when client), else `undefined`         |
 | `node.topology`       | Current network topology snapshot                     |
 | `node.on(event, cb)`  | Subscribe to `'ready'`, `'role-changed'`, `'stopped'` |
 | `node.off(event, cb)` | Unsubscribe                                           |

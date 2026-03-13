@@ -14,11 +14,13 @@ import { Route } from '@rljson/rljson';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
+  AgentHandle,
   CreateClientTransport,
   CreateHubTransport,
   HubTransport,
   NodeConfig,
   NodeDeps,
+  ReadyContext,
 } from '../src/node.ts';
 import { Node } from '../src/node.ts';
 import type { SocketLike } from '../src/socket-bundle.ts';
@@ -252,6 +254,20 @@ describe('Node', () => {
       expect(stopped).toHaveBeenCalledOnce();
     });
 
+    it('should expose socket as undefined when not a client', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(4008, join(tempDir, 'n9'));
+      const node = new Node(config, deps);
+
+      expect(node.socket).toBeUndefined();
+
+      await node.start();
+      await becomeHub(node);
+      expect(node.socket).toBeUndefined();
+
+      await node.stop();
+    });
+
     it('should not emit stopped if never started', async () => {
       const deps = createMockDeps();
       const config = createConfig(4004, join(tempDir, 'n5'));
@@ -292,6 +308,30 @@ describe('Node', () => {
       const topology = node.topology;
       expect(topology.domain).toBe('test-domain');
       expect(topology.myRole).toBeDefined();
+      await node.stop();
+    });
+
+    it('should allow restart after stop', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(4013, join(tempDir, 'n11'));
+      const node = new Node(config, deps);
+
+      // First lifecycle
+      await node.start();
+      await becomeHub(node);
+      await node.bs!.setBlob('first run');
+      await node.stop();
+      expect(node.isRunning).toBe(false);
+
+      // Second lifecycle — fresh IoMem/BsMem
+      await node.start();
+      expect(node.isRunning).toBe(true);
+      await becomeHub(node);
+
+      const { blobId } = await node.bs!.setBlob('second run');
+      const { content } = await node.bs!.getBlob(blobId);
+      expect(content.toString()).toBe('second run');
+
       await node.stop();
     });
   });
@@ -611,6 +651,72 @@ describe('Node', () => {
 
       await node.stop();
     });
+
+    it('should serialize rapid role transitions without races', async () => {
+      const callOrder: string[] = [];
+      let agentNum = 0;
+
+      const createAgent = vi.fn(async (ctx: ReadyContext) => {
+        const num = ++agentNum;
+        callOrder.push(`create-${ctx.role}-${num}`);
+        return {
+          stop: async () => {
+            callOrder.push(`stop-${num}`);
+          },
+        };
+      });
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(4033, join(tempDir, 't4'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+      // Static → client, agent #1 created
+      await vi.waitFor(() => expect(createAgent).toHaveBeenCalledTimes(1));
+      expect(node.role).toBe('client');
+
+      const nm = node.networkManager;
+      const myId = nm.getIdentity().nodeId;
+
+      // Fire 3 rapid role changes synchronously:
+      // assignHub → hub (queued as T1)
+      // clearOverride → client (same as _role → skipped by _onRoleChanged)
+      // assignHub → hub (queued as T2, stale when it runs)
+      nm.assignHub(myId);
+      nm.clearOverride();
+      nm.assignHub(myId);
+
+      // Wait for all queued transitions to complete
+      await vi.waitFor(() => expect(node.role).toBe('hub'));
+
+      // Only 2 agent creates: initial client + hub from T1
+      // T2 was discarded as stale (role was already 'hub')
+      expect(createAgent).toHaveBeenCalledTimes(2);
+      expect(callOrder).toEqual([
+        'create-client-1', // Initial via static
+        'stop-1', // Teardown during T1
+        'create-hub-2', // Setup in T1
+        // T2 discarded — no more entries
+      ]);
+
+      await node.stop();
+      expect(callOrder).toEqual([
+        'create-client-1',
+        'stop-1',
+        'create-hub-2',
+        'stop-2', // Agent #2 stopped on node.stop()
+      ]);
+    });
   });
 
   // =========================================================================
@@ -624,7 +730,7 @@ describe('Node', () => {
       const node = new Node(config, deps);
 
       const roleChanged = vi.fn();
-      const ready = vi.fn();
+      const ready = vi.fn<(ctx: ReadyContext) => void>();
       node.on('role-changed', roleChanged);
       node.on('ready', ready);
 
@@ -634,7 +740,46 @@ describe('Node', () => {
       expect(roleChanged).toHaveBeenCalledWith(
         expect.objectContaining({ current: 'hub' }),
       );
-      expect(ready).toHaveBeenCalled();
+      expect(ready).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'hub' }),
+      );
+
+      // Ready context has server but no client for hub role
+      const ctx = ready.mock.calls[0][0];
+      expect(ctx.server).toBeDefined();
+      expect(ctx.client).toBeUndefined();
+      expect(ctx.socket).toBeUndefined();
+
+      await node.stop();
+    });
+
+    it('should deliver ready context with client and socket for client role', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(4045, join(tempDir, 'e6'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      const ready = vi.fn<(ctx: ReadyContext) => void>();
+      node.on('ready', ready);
+
+      await node.start();
+      await vi.waitFor(() => expect(ready).toHaveBeenCalled());
+
+      expect(node.role).toBe('client');
+      const ctx = ready.mock.calls[0][0];
+      expect(ctx.role).toBe('client');
+      expect(ctx.client).toBeDefined();
+      expect(ctx.socket).toBeDefined();
+      expect(ctx.server).toBeUndefined();
+
+      // socket getter matches what was passed to ready
+      expect(node.socket).toBe(ctx.socket);
 
       await node.stop();
     });
@@ -923,6 +1068,425 @@ describe('Node', () => {
 
       await nodeC.stop();
       await nodeA.stop();
+    });
+  });
+
+  // =========================================================================
+  // Agent lifecycle — createAgent factory wiring
+  // =========================================================================
+
+  describe('agent lifecycle', () => {
+    it('should call createAgent on becoming hub', async () => {
+      const agentStop = vi.fn();
+      const createAgent = vi
+        .fn<(ctx: ReadyContext) => Promise<AgentHandle>>()
+        .mockResolvedValue({ stop: agentStop });
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(7000, join(tempDir, 'a1'));
+      const node = new Node(config, deps);
+
+      await node.start();
+      await becomeHub(node);
+
+      expect(createAgent).toHaveBeenCalledOnce();
+      const ctx = createAgent.mock.calls[0][0];
+      expect(ctx.role).toBe('hub');
+      expect(ctx.server).toBeDefined();
+      expect(ctx.client).toBeUndefined();
+
+      await node.stop();
+    });
+
+    it('should call createAgent on becoming client', async () => {
+      const agentStop = vi.fn();
+      const createAgent = vi
+        .fn<(ctx: ReadyContext) => Promise<AgentHandle>>()
+        .mockResolvedValue({ stop: agentStop });
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(7001, join(tempDir, 'a2'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+      await vi.waitFor(() => expect(createAgent).toHaveBeenCalled());
+
+      const ctx = createAgent.mock.calls[0][0];
+      expect(ctx.role).toBe('client');
+      expect(ctx.client).toBeDefined();
+      expect(ctx.socket).toBeDefined();
+      expect(ctx.server).toBeUndefined();
+
+      await node.stop();
+    });
+
+    it('should stop previous agent before role transition', async () => {
+      const callOrder: string[] = [];
+      let agentCallCount = 0;
+
+      const createAgent = vi.fn(async (ctx: ReadyContext) => {
+        const agentNum = ++agentCallCount;
+        callOrder.push(`create-${ctx.role}-${agentNum}`);
+        return {
+          stop: async () => {
+            callOrder.push(`stop-${agentNum}`);
+          },
+        };
+      });
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(7002, join(tempDir, 'a3'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+      // Static → client, agent #1 created
+      await vi.waitFor(() => expect(createAgent).toHaveBeenCalledTimes(1));
+
+      // Override to hub → agent #1 stopped, agent #2 created
+      await becomeHub(node);
+      expect(createAgent).toHaveBeenCalledTimes(2);
+
+      // stop of agent #1 happened BEFORE create of agent #2
+      expect(callOrder).toEqual(['create-client-1', 'stop-1', 'create-hub-2']);
+
+      await node.stop();
+    });
+
+    it('should stop agent when node stops', async () => {
+      const agentStop = vi.fn();
+      const createAgent = vi
+        .fn<(ctx: ReadyContext) => Promise<AgentHandle>>()
+        .mockResolvedValue({ stop: agentStop });
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(7003, join(tempDir, 'a4'));
+      const node = new Node(config, deps);
+
+      await node.start();
+      await becomeHub(node);
+
+      expect(agentStop).not.toHaveBeenCalled();
+
+      await node.stop();
+      expect(agentStop).toHaveBeenCalledOnce();
+    });
+
+    it('should work without createAgent (optional)', async () => {
+      const deps = createMockDeps();
+      // No createAgent — should work fine
+      const config = createConfig(7004, join(tempDir, 'a5'));
+      const node = new Node(config, deps);
+
+      await node.start();
+      await becomeHub(node);
+      await node.stop();
+      // No crash — the test IS that nothing throws
+    });
+
+    it('should create agents through multiple role transitions', async () => {
+      const contexts: ReadyContext[] = [];
+      const stopCalls: number[] = [];
+      let agentNum = 0;
+
+      const createAgent = vi.fn(async (ctx: ReadyContext) => {
+        const num = ++agentNum;
+        contexts.push(ctx);
+        return {
+          stop: async () => {
+            stopCalls.push(num);
+          },
+        };
+      });
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(7005, join(tempDir, 'a6'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+      // → client via static (agent #1)
+      await vi.waitFor(() => expect(createAgent).toHaveBeenCalledTimes(1));
+
+      // → hub (stop #1, create #2)
+      await becomeHub(node);
+
+      // → client (stop #2, create #3)
+      node.networkManager.clearOverride();
+      await vi.waitFor(() => expect(node.role).toBe('client'));
+
+      // → hub again (stop #3, create #4)
+      await becomeHub(node);
+
+      expect(createAgent).toHaveBeenCalledTimes(4);
+      expect(contexts.map((c) => c.role)).toEqual([
+        'client',
+        'hub',
+        'client',
+        'hub',
+      ]);
+      // Each agent was stopped before the next was created
+      expect(stopCalls).toEqual([1, 2, 3]);
+
+      await node.stop();
+      // Agent #4 stopped on node.stop()
+      expect(stopCalls).toEqual([1, 2, 3, 4]);
+    });
+
+    it('should discard stale transition when node stops mid-queue', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(7006, join(tempDir, 'a7'));
+      const node = new Node(config, deps);
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+
+      await node.start();
+      await becomeHub(node);
+      expect(ready).toHaveBeenCalledTimes(1);
+
+      // Trigger a new role change AND call stop immediately.
+      // The queued transition should not execute because _running is false.
+      node.networkManager.assignHub('some-other-node');
+      await node.stop();
+
+      // Only one ready event (from becoming hub) — the queued client
+      // transition was discarded because _running was set to false.
+      expect(ready).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // =========================================================================
+  // Error resilience — boundary errors must not crash the node
+  // =========================================================================
+
+  describe('error resilience', () => {
+    it('should continue functioning when createAgent throws', async () => {
+      const error = vi.fn();
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error,
+        traffic: vi.fn(),
+      };
+
+      const createAgent = vi
+        .fn()
+        .mockRejectedValue(new Error('agent factory broke'));
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(8000, join(tempDir, 'er1'), { logger });
+      const node = new Node(config, deps);
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+
+      await node.start();
+      await becomeHub(node);
+
+      // Ready event still fired despite agent factory throwing
+      expect(ready).toHaveBeenCalledOnce();
+      // Error was logged
+      expect(error).toHaveBeenCalledWith(
+        'Node',
+        expect.stringContaining('createAgent failed'),
+      );
+
+      // Node is fully functional — can still read/write
+      const { blobId } = await node.bs!.setBlob('still works');
+      const { content } = await node.bs!.getBlob(blobId);
+      expect(content.toString()).toBe('still works');
+
+      await node.stop();
+    });
+
+    it('should complete transitions when agent.stop() throws', async () => {
+      const error = vi.fn();
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error,
+        traffic: vi.fn(),
+      };
+
+      let agentCallCount = 0;
+      const createAgent = vi.fn(async () => {
+        agentCallCount++;
+        return {
+          stop: async () => {
+            if (agentCallCount === 1) {
+              throw new Error('stop exploded');
+            }
+          },
+        };
+      });
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(8001, join(tempDir, 'er2'), {
+        logger,
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+      // Static → client, agent #1 created
+      await vi.waitFor(() => expect(createAgent).toHaveBeenCalledTimes(1));
+
+      // Transition to hub — agent #1 stop() throws, but transition continues
+      await becomeHub(node);
+
+      // Agent #2 was created despite agent #1's stop() throwing
+      expect(createAgent).toHaveBeenCalledTimes(2);
+      expect(error).toHaveBeenCalledWith(
+        'Node',
+        expect.stringContaining('Agent stop failed'),
+      );
+
+      // Node is fully functional with new server
+      expect(node.server).toBeDefined();
+
+      await node.stop();
+    });
+
+    it('should emit ready as degraded hub when transport factory throws', async () => {
+      const error = vi.fn();
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error,
+        traffic: vi.fn(),
+      };
+
+      const deps: NodeDeps = {
+        createHubTransport: vi
+          .fn()
+          .mockRejectedValue(new Error('port in use')),
+        createClientTransport: async () => {
+          const [, clientSocket] = createSocketPair();
+          return clientSocket;
+        },
+        networkManagerOptions: { probeFn: mockProbe },
+      };
+      const config = createConfig(8002, join(tempDir, 'er3'), { logger });
+      const node = new Node(config, deps);
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+
+      await node.start();
+      await becomeHub(node);
+
+      // Ready is still emitted — hub works locally, just can't accept connections
+      expect(ready).toHaveBeenCalledOnce();
+      expect(error).toHaveBeenCalledWith(
+        'Node',
+        expect.stringContaining('Hub transport failed'),
+      );
+
+      // Server exists and works locally
+      expect(node.server).toBeDefined();
+      const { blobId } = await node.bs!.setBlob('local data');
+      const { content } = await node.bs!.getBlob(blobId);
+      expect(content.toString()).toBe('local data');
+
+      await node.stop();
+    });
+
+    it('should skip client setup when transport factory throws', async () => {
+      const error = vi.fn();
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error,
+        traffic: vi.fn(),
+      };
+
+      const deps: NodeDeps = {
+        createHubTransport: async () => ({
+          onConnection: () => {},
+          close: async () => {},
+        }),
+        createClientTransport: vi
+          .fn()
+          .mockRejectedValue(new Error('connection refused')),
+        networkManagerOptions: { probeFn: mockProbe },
+      };
+      const config = createConfig(8003, join(tempDir, 'er4'), {
+        logger,
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+
+      await node.start();
+      await vi.waitFor(() => expect(node.role).toBe('client'));
+
+      // No ready event — client was never created
+      expect(ready).not.toHaveBeenCalled();
+      expect(node.client).toBeUndefined();
+      expect(error).toHaveBeenCalledWith(
+        'Node',
+        expect.stringContaining('Client transport'),
+      );
+
+      // Can recover by assigning as hub
+      await becomeHub(node);
+      expect(ready).toHaveBeenCalledOnce();
+      expect(node.server).toBeDefined();
+
+      await node.stop();
     });
   });
 
