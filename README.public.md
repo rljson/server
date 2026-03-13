@@ -637,6 +637,84 @@ await server.removeSocket(clientIds[0]);
 // Automatic: clients are removed when their socket emits 'disconnect'
 ```
 
+## Self-Organizing Node
+
+The `Node` class bridges `@rljson/network` peer discovery with `Server`/`Client` role transitions. Every node runs the same code — on startup it discovers peers, elects a hub, and automatically assumes the correct role.
+
+### Quick start
+
+```ts
+import { Node } from '@rljson/server';
+import { Route } from '@rljson/rljson';
+
+const node = new Node(
+  {
+    domain: 'my-app',
+    port: 3000,
+    route: Route.fromFlat('/sharedTree'),
+  },
+  {
+    createHubTransport: async (port) => { /* start HTTP+Socket.IO server */ },
+    createClientTransport: async (hubAddress) => { /* connect to hub */ },
+  },
+);
+
+await node.start();
+
+// The node auto-discovers peers and assumes a role:
+node.on('ready', ({ role, client, server, socket }) => {
+  console.log(`Role: ${role}`);          // 'hub' or 'client'
+  console.log(`Server: ${server}`);      // Server instance (hub only)
+  console.log(`Client: ${client}`);      // Client instance (client only)
+  console.log(`Socket: ${socket}`);      // Socket to hub (client only)
+});
+```
+
+### Data preservation across role transitions
+
+The `Node` owns a single `IoMem`/`BsMem` pair, created once at `start()` and reused across all role transitions. When a role changes (e.g., hub → client → hub), the underlying storage is re-initialized without losing data — `IoMem.close()` only sets `_isOpen = false`, the data in memory is preserved.
+
+This means:
+- Data written while hub survives a transition to client
+- Data written while client survives a transition to hub
+- A re-elected hub still serves all previously stored blobs and tables
+
+### Agent lifecycle
+
+The `createAgent` factory in `NodeDeps` is called on every role transition. The returned `AgentHandle.stop()` is called before the next transition or when the node stops. This is how you wire application-level agents (e.g. `FsAgent`) without creating circular dependencies:
+
+```ts
+const node = new Node(config, {
+  createHubTransport: ...,
+  createClientTransport: ...,
+  createAgent: async ({ role, client, server, socket }) => {
+    // Wire your agent here — called on every role transition
+    const stopSync = await startMySync(role, client, server);
+    return { stop: () => stopSync() };
+  },
+});
+```
+
+The Node serializes transitions — a new transition waits for the previous one to complete, ensuring agents are always stopped cleanly.
+
+Errors in `createAgent` or `agentHandle.stop()` are caught and logged — they never crash the node. Similarly, transport factory failures degrade connectivity but leave the node functional locally.
+
+### API
+
+| Property / Method     | Description                                           |
+| --------------------- | ----------------------------------------------------- |
+| `node.start()`        | Begin peer discovery and role assignment              |
+| `node.stop()`         | Tear down current role and stop discovery             |
+| `node.role`           | Current role: `'hub'`, `'client'`, or `'unassigned'`  |
+| `node.io`             | IoMulti from active Server or Client                  |
+| `node.bs`             | BsMulti from active Server or Client                  |
+| `node.server`         | Server instance (when hub), else `undefined`          |
+| `node.client`         | Client instance (when client), else `undefined`       |
+| `node.socket`         | Socket to hub (when client), else `undefined`         |
+| `node.topology`       | Current network topology snapshot                     |
+| `node.on(event, cb)`  | Subscribe to `'ready'`, `'role-changed'`, `'stopped'` |
+| `node.off(event, cb)` | Unsubscribe                                           |
+
 ## Architecture Overview
 
 ### Pull-Based Reference Architecture

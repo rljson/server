@@ -77,6 +77,41 @@ In default setups you can reuse a single socket for all four channels; the code 
 
 ## Core Components
 
+### 0. Node (Self-Organizing Orchestrator)
+
+The `Node` class sits above `Server` and `Client`, bridging `@rljson/network` topology events into role transitions. It:
+
+1. **Owns storage**: Creates a single `IoMem`/`BsMem` pair at `start()`, reused across all role transitions. Data survives hub↔client switches because `IoMem.close()` only flips `_isOpen` — the in-memory data is never cleared.
+2. **Reacts to topology**: Subscribes to `NetworkManager`'s `role-changed` event. On `'hub'`, tears down any Client and creates a Server. On `'client'`, tears down any Server and creates a Client.
+3. **Manages transport**: Uses injectable factories (`CreateHubTransport`/`CreateClientTransport`) to create the transport layer, keeping the Node class transport-agnostic.
+4. **Agent lifecycle**: An optional `createAgent` factory in `NodeDeps` is called on every `ready` event. The returned `AgentHandle.stop()` is called before the next role transition. This enables application-level wiring (e.g. FsAgent) without circular dependencies.
+5. **Serialized transitions**: Role transitions are queued — a new `role-changed` event waits for the previous transition to complete before starting. This prevents race conditions between teardown and setup.
+6. **Error resilience**: Errors in user-provided code (agent factories, transport factories) are caught and logged. The node continues functioning — a failed transport degrades connectivity but doesn't crash, a failed agent leaves the node's core intact.
+
+```text
+┌─────────────────────────────────────────┐
+│ Node                                    │
+│  ┌──────┐ ┌──────┐                      │
+│  │IoMem │ │BsMem │ ← owned by Node      │
+│  └──┬───┘ └──┬───┘                      │
+│     │        │                           │
+│  ┌──▼────────▼───┐  ┌────────────────┐  │
+│  │ Server/Client │──│ HubTransport   │  │
+│  │ (role-based)  │  │ or ClientSocket│  │
+│  └───────┬───────┘  └────────────────┘  │
+│          │                               │
+│  ┌───────▼───────┐                       │
+│  │ AgentHandle   │  ← optional, wired    │
+│  │ (e.g. FsAgent)│    via createAgent    │
+│  └───────────────┘                       │
+│     ▲                                    │
+│     │ role-changed                       │
+│  ┌──┴───────────┐                        │
+│  │NetworkManager│                        │
+│  └──────────────┘                        │
+└─────────────────────────────────────────┘
+```
+
 ### 1. Client
 
 The `Client` class provides a unified interface for data access by combining local storage with server storage.
