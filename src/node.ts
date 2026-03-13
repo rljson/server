@@ -112,6 +112,8 @@ export class Node {
   private _server?: Server;
   private _client?: Client;
   private _hubTransport?: HubTransport;
+  private _ioMem?: IoMem;
+  private _bsMem?: BsMem;
   private _role: NodeRole = 'unassigned';
   private _running = false;
   private _listeners = new Map<string, Set<NodeListener>>();
@@ -151,6 +153,12 @@ export class Node {
    */
   async start(): Promise<void> {
     if (this._running) return;
+
+    this._ioMem = new IoMem();
+    await this._ioMem.init();
+    await this._ioMem.isReady();
+
+    this._bsMem = new BsMem();
 
     this._running = true;
     this._networkManager.on('role-changed', this._onRoleChanged);
@@ -287,13 +295,12 @@ export class Node {
   };
 
   private async _becomeHub(): Promise<void> {
-    const ioMem = new IoMem();
-    await ioMem.init();
-    await ioMem.isReady();
+    // Re-init IoMem after previous teardown closed it.
+    // Data is preserved — IoMem.close() only sets _isOpen = false.
+    await this._ioMem!.init();
+    await this._ioMem!.isReady();
 
-    const bsMem = new BsMem();
-
-    this._server = new Server(this._config.route, ioMem, bsMem, {
+    this._server = new Server(this._config.route, this._ioMem!, this._bsMem!, {
       ...this._config.serverOptions,
       logger: this._logger,
     });
@@ -324,16 +331,21 @@ export class Node {
 
     const socket = await this._deps.createClientTransport(hubAddress);
 
-    const ioMem = new IoMem();
-    await ioMem.init();
-    await ioMem.isReady();
+    // Re-init IoMem after previous teardown closed it.
+    // Data is preserved — IoMem.close() only sets _isOpen = false.
+    await this._ioMem!.init();
+    await this._ioMem!.isReady();
 
-    const bsMem = new BsMem();
-
-    this._client = new Client(socket, ioMem, bsMem, this._config.route, {
-      ...this._config.clientOptions,
-      logger: this._logger,
-    });
+    this._client = new Client(
+      socket,
+      this._ioMem!,
+      this._bsMem!,
+      this._config.route,
+      {
+        ...this._config.clientOptions,
+        logger: this._logger,
+      },
+    );
     await this._client.init();
 
     this._logger.info('Node', `Now client — connected to hub ${hubAddress}`);

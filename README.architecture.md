@@ -77,6 +77,33 @@ In default setups you can reuse a single socket for all four channels; the code 
 
 ## Core Components
 
+### 0. Node (Self-Organizing Orchestrator)
+
+The `Node` class sits above `Server` and `Client`, bridging `@rljson/network` topology events into role transitions. It:
+
+1. **Owns storage**: Creates a single `IoMem`/`BsMem` pair at `start()`, reused across all role transitions. Data survives hub↔client switches because `IoMem.close()` only flips `_isOpen` — the in-memory data is never cleared.
+2. **Reacts to topology**: Subscribes to `NetworkManager`'s `role-changed` event. On `'hub'`, tears down any Client and creates a Server. On `'client'`, tears down any Server and creates a Client.
+3. **Manages transport**: Uses injectable factories (`CreateHubTransport`/`CreateClientTransport`) to create the transport layer, keeping the Node class transport-agnostic.
+
+```text
+┌─────────────────────────────────────────┐
+│ Node                                    │
+│  ┌──────┐ ┌──────┐                      │
+│  │IoMem │ │BsMem │ ← owned by Node      │
+│  └──┬───┘ └──┬───┘                      │
+│     │        │                           │
+│  ┌──▼────────▼───┐  ┌────────────────┐  │
+│  │ Server/Client │──│ HubTransport   │  │
+│  │ (role-based)  │  │ or ClientSocket│  │
+│  └───────────────┘  └────────────────┘  │
+│     ▲                                    │
+│     │ role-changed                       │
+│  ┌──┴───────────┐                        │
+│  │NetworkManager│                        │
+│  └──────────────┘                        │
+└─────────────────────────────────────────┘
+```
+
 ### 1. Client
 
 The `Client` class provides a unified interface for data access by combining local storage with server storage.

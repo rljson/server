@@ -717,6 +717,216 @@ describe('Node', () => {
   });
 
   // =========================================================================
+  // Hub migration — data survives role transitions
+  // =========================================================================
+
+  describe('hub migration', () => {
+    it('should preserve blob data when transitioning hub→client', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(6000, join(tempDir, 'hm1'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+
+      // Override to hub
+      await becomeHub(node);
+
+      // Write data while hub
+      const { blobId } = await node.bs!.setBlob('important data');
+      const readBack = await node.bs!.getBlob(blobId);
+      expect(readBack.content.toString()).toBe('important data');
+
+      // Transition hub→client (clear override → static layer takes over)
+      node.networkManager.clearOverride();
+      await vi.waitFor(() => expect(node.role).toBe('client'));
+
+      // Data written as hub is still accessible as client
+      // (same BsMem instance is reused across transitions)
+      const afterTransition = await node.bs!.getBlob(blobId);
+      expect(afterTransition.content.toString()).toBe('important data');
+
+      await node.stop();
+    });
+
+    it('should preserve blob data when transitioning client→hub', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(6001, join(tempDir, 'hm2'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+
+      await node.start();
+      await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+      expect(node.role).toBe('client');
+
+      // Write data while client
+      const { blobId } = await node.bs!.setBlob('client-side data');
+
+      // Transition client→hub
+      await becomeHub(node);
+
+      // Data written as client is still accessible as hub
+      const afterTransition = await node.bs!.getBlob(blobId);
+      expect(afterTransition.content.toString()).toBe('client-side data');
+
+      await node.stop();
+    });
+
+    it('should preserve data across multiple role transitions', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(6002, join(tempDir, 'hm3'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+
+      await node.start();
+      await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+      expect(node.role).toBe('client');
+
+      // Write data as client
+      const { blobId: blob1 } = await node.bs!.setBlob('round 1');
+
+      // client → hub
+      await becomeHub(node);
+      const { blobId: blob2 } = await node.bs!.setBlob('round 2');
+
+      // hub → client
+      node.networkManager.clearOverride();
+      await vi.waitFor(() => expect(node.role).toBe('client'));
+      const { blobId: blob3 } = await node.bs!.setBlob('round 3');
+
+      // client → hub again
+      await becomeHub(node);
+
+      // All three blobs survive all transitions
+      expect((await node.bs!.getBlob(blob1)).content.toString()).toBe(
+        'round 1',
+      );
+      expect((await node.bs!.getBlob(blob2)).content.toString()).toBe(
+        'round 2',
+      );
+      expect((await node.bs!.getBlob(blob3)).content.toString()).toBe(
+        'round 3',
+      );
+
+      await node.stop();
+    });
+
+    it('should allow a new client to read data from the new hub after migration', async () => {
+      // Scenario: Node A is hub, writes data, then becomes client.
+      // Node B becomes the new hub. A new client (Node C) connects to B
+      // and should be able to read data that originated from A.
+      //
+      // We simulate this with two nodes: one transitions hub→client→hub,
+      // then a fresh node connects and reads the preserved data.
+
+      // Use a transport where the hub onConnection callback is updated
+      // as nodes change roles.
+      let currentHubOnConnection: ((socket: SocketLike) => void) | undefined;
+
+      const nodeDeps: NodeDeps = {
+        createHubTransport: async () => ({
+          onConnection: (cb) => {
+            currentHubOnConnection = cb;
+          },
+          close: async () => {
+            currentHubOnConnection = undefined;
+          },
+        }),
+        createClientTransport: async () => {
+          const [serverSocket, clientSocket] = createSocketPair();
+          serverSocket.connect();
+          if (currentHubOnConnection) currentHubOnConnection(serverSocket);
+          return clientSocket;
+        },
+        networkManagerOptions: { probeFn: mockProbe },
+      };
+
+      // Node A: starts as hub, writes data, transitions hub→client→hub
+      const configA = createConfig(6010, join(tempDir, 'hmA'));
+      const nodeA = new Node(configA, nodeDeps);
+
+      await nodeA.start();
+      await becomeHub(nodeA);
+
+      // Write data as hub
+      const { blobId } = await nodeA.bs!.setBlob('surviving data');
+
+      // Transition: hub → client → hub (simulating a re-election cycle)
+      const readyA = vi.fn();
+      nodeA.on('ready', readyA);
+
+      // Use static to force client role
+      nodeA.networkManager.assignHub('some-other-node');
+      await vi.waitFor(() => expect(nodeA.role).toBe('client'));
+
+      // Back to hub (re-elected)
+      await becomeHub(nodeA);
+
+      // Now a fresh node connects as client
+      const clientDeps: NodeDeps = {
+        createHubTransport: async () => ({
+          onConnection: () => {},
+          close: async () => {},
+        }),
+        createClientTransport: async () => {
+          const [serverSocket, clientSocket] = createSocketPair();
+          serverSocket.connect();
+          if (currentHubOnConnection) currentHubOnConnection(serverSocket);
+          return clientSocket;
+        },
+        networkManagerOptions: { probeFn: mockProbe },
+      };
+
+      const configC = createConfig(6011, join(tempDir, 'hmC'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:6010' },
+          probing: { enabled: false },
+        },
+      });
+      const nodeC = new Node(configC, clientDeps);
+
+      const readyC = vi.fn();
+      nodeC.on('ready', readyC);
+      await nodeC.start();
+      await vi.waitFor(() => expect(readyC).toHaveBeenCalled());
+      await vi.waitFor(() => expect(nodeA.server!.clients.size).toBe(1));
+
+      // The client can read data that was written before the migration
+      const result = await nodeC.bs!.getBlob(blobId);
+      expect(result.content.toString()).toBe('surviving data');
+
+      await nodeC.stop();
+      await nodeA.stop();
+    });
+  });
+
+  // =========================================================================
   // Edge cases
   // =========================================================================
 
