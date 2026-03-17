@@ -451,4 +451,105 @@ describe('Server production readiness', () => {
       await server.tearDown();
     });
   });
+
+  // .........................................................................
+  describe('addBroadcastSocket', () => {
+    it('should participate in multicast without IoPeer/BsPeer', async () => {
+      const io = new IoMem();
+      await io.init();
+      const bs = new BsMem();
+      const route = Route.fromFlat('broadcastTest');
+
+      const server = new Server(route, io, bs);
+      await server.init();
+
+      // Add a broadcast-only socket (simulates hub loopback)
+      const broadcastSocket = new SocketMock();
+      broadcastSocket.connect();
+      await server.addBroadcastSocket(broadcastSocket);
+
+      // Add a regular client socket
+      const clientSocket = new SocketMock();
+      clientSocket.connect();
+      await server.addSocket(clientSocket);
+
+      // Verify both are registered
+      expect(server.clients.size).toBe(2);
+
+      // Broadcast socket sends a ref → should arrive on client socket
+      const received: unknown[] = [];
+      clientSocket.on(route.flat, (data: unknown) => {
+        received.push(data);
+      });
+      broadcastSocket.emit(route.flat, { r: 'from-broadcast' });
+      expect(received).toHaveLength(1);
+
+      // Client socket sends a ref → should arrive on broadcast socket
+      const broadcastReceived: unknown[] = [];
+      broadcastSocket.on(route.flat, (data: unknown) => {
+        broadcastReceived.push(data);
+      });
+      clientSocket.emit(route.flat, { r: 'from-client' });
+      expect(broadcastReceived).toHaveLength(1);
+
+      await server.tearDown();
+    });
+
+    it('should not add IoPeer/BsPeer to IoMulti', async () => {
+      const io = new IoMem();
+      await io.init();
+      const bs = new BsMem();
+      const route = Route.fromFlat('noPeerTest');
+
+      const server = new Server(route, io, bs);
+      await server.init();
+
+      // Add broadcast socket — should NOT add any IoPeer to IoMulti
+      const broadcastSocket = new SocketMock();
+      broadcastSocket.connect();
+      await server.addBroadcastSocket(broadcastSocket);
+
+      // Add a regular client — this DOES add an IoPeer
+      const clientSocket = new SocketMock();
+      clientSocket.connect();
+      await server.addSocket(clientSocket);
+
+      // IoMulti should have: IoMem (local cache) + 1 IoPeer (client)
+      // but NOT 2 IoPeers (no broadcast peer)
+      // Verify indirectly: clients map has 2, showing broadcast is registered
+      // for multicast, but since we can't directly inspect _ios length,
+      // we verify the broadcast socket's io field is null
+      const entries = [...server.clients.entries()];
+      const broadcastEntry = entries.find(([k]) => k.startsWith('broadcast_'));
+      expect(broadcastEntry).toBeDefined();
+      expect(broadcastEntry![1].io).toBeNull();
+
+      await server.tearDown();
+    });
+
+    it('removeSocket should handle broadcast-only clients safely', async () => {
+      const io = new IoMem();
+      await io.init();
+      const bs = new BsMem();
+      const route = Route.fromFlat('removeTest');
+
+      const server = new Server(route, io, bs);
+      await server.init();
+
+      const broadcastSocket = new SocketMock();
+      broadcastSocket.connect();
+      await server.addBroadcastSocket(broadcastSocket);
+
+      expect(server.clients.size).toBe(1);
+
+      // Find the broadcast client ID
+      const [clientId] = [...server.clients.keys()];
+
+      // removeSocket should work without errors (null io/bs filtered safely)
+      await server.removeSocket(clientId);
+      expect(server.clients.size).toBe(0);
+
+      await server.tearDown();
+    });
+  });
 });
