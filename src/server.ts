@@ -321,6 +321,67 @@ export class Server extends BaseNode {
 
   // ...........................................................................
   /**
+   * Adds a socket to the multicast ring WITHOUT creating IoPeer/BsPeer.
+   * Use this when the hub needs to participate in the multicast (send and
+   * receive refs) but the server should NOT try to read data from this socket
+   * via IoPeer/BsPeer RPC — because no IoPeerBridge/BsPeerBridge is set up
+   * on the other end.
+   * Typical use case: hub creates a loopback socket pair so its own
+   * Connector can send/receive refs, but the server's IoMulti already has
+   * the hub's data in its local cache (IoMem/BsMem at priority 1).
+   * @param socket - Socket to register for broadcast only.
+   * @returns The server instance.
+   */
+  async addBroadcastSocket(socket: SocketLike) {
+    const sockets = normalizeSocketBundle(socket);
+    const clientId = `broadcast_${this._clients.size}_${Math.random()
+      .toString(36)
+      .slice(2)}`;
+
+    this._logger.info('Server', 'Adding broadcast-only socket', { clientId });
+
+    const ioUp = sockets.ioUp as SocketWithClientId;
+    const ioDown = sockets.ioDown as SocketWithClientId;
+    const bsUp = sockets.bsUp as SocketWithClientId;
+    const bsDown = sockets.bsDown as SocketWithClientId;
+
+    (ioUp as any).__clientId = clientId;
+    (ioDown as any).__clientId = clientId;
+    (bsUp as any).__clientId = clientId;
+    (bsDown as any).__clientId = clientId;
+
+    // Register client entry with null peers — multicast only uses sockets
+    this._clients.set(clientId, {
+      ioUp,
+      ioDown,
+      bsUp,
+      bsDown,
+      io: null as unknown as IoPeer,
+      bs: null as unknown as BsPeer,
+    });
+
+    // No IoPeer/BsPeer creation — the hub reads from IoMulti directly.
+    // No _pendingSockets / _queueRefresh — no IoServer/BsServer registration
+    // needed because the hub doesn't send IoPeer RPC on the loopback.
+
+    this._removeAllListeners();
+    this._multicastRefs();
+
+    this._registerDisconnectHandler(clientId, ioUp);
+
+    this._sendBootstrap(ioDown);
+    this._startBootstrapHeartbeat();
+
+    this._logger.info('Server', 'Broadcast-only socket added', {
+      clientId,
+      totalClients: this._clients.size,
+    });
+
+    return this;
+  }
+
+  // ...........................................................................
+  /**
    * Removes all listeners from all connected clients.
    */
   private _removeAllListeners() {
