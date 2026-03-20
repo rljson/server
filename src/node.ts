@@ -200,6 +200,7 @@ export class Node {
 
     this._running = true;
     this._networkManager.on('role-changed', this._onRoleChanged);
+    this._networkManager.on('hub-changed', this._onHubChanged);
 
     await this._networkManager.start();
   }
@@ -212,6 +213,7 @@ export class Node {
 
     this._running = false;
     this._networkManager.off('role-changed', this._onRoleChanged);
+    this._networkManager.off('hub-changed', this._onHubChanged);
 
     // Wait for any in-flight role transition to finish
     if (this._transitioning) {
@@ -307,6 +309,31 @@ export class Node {
   // .........................................................................
   // Role transitions
   // .........................................................................
+
+  /**
+   * Handle hub-changed while role stays 'client'.
+   * When NetworkManager emits hub-changed but NOT role-changed (because
+   * old role === new role === 'client'), the Node must tear down the old
+   * client connection and reconnect to the new hub.
+   */
+  private _onHubChanged = (): void => {
+    if (!this._running || this._role !== 'client') return;
+
+    // Only act if the NetworkManager still considers us a client.
+    // If a role-changed is also coming, _onRoleChanged will handle it.
+    const topology = this._networkManager.getTopology();
+    /* v8 ignore if -- @preserve */
+    if (topology.myRole !== 'client') return;
+
+    this._logger.info('Node', 'Hub changed while client — reconnecting');
+    /* v8 ignore next -- @preserve */
+    const prev = this._transitioning ?? Promise.resolve();
+    this._transitioning = prev.then(async () => {
+      if (!this._running || this._role !== 'client') return;
+      await this._tearDownCurrentRole();
+      await this._becomeClient();
+    });
+  };
 
   private _onRoleChanged = (event: RoleChangedEvent): void => {
     // Unreachable: stop() removes this listener synchronously before
@@ -465,6 +492,12 @@ export class Node {
       this._client = undefined;
     }
 
+    // Disconnect the client socket to prevent orphaned reconnection loops.
+    // SocketLike may be a plain Socket (has disconnect()) or a
+    // SocketNamespaceBundle (plain object). Guard accordingly.
+    if (this._clientSocket && 'disconnect' in this._clientSocket) {
+      (this._clientSocket as { disconnect: () => void }).disconnect();
+    }
     this._clientSocket = undefined;
   }
 
