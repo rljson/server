@@ -720,6 +720,133 @@ describe('Node', () => {
   });
 
   // =========================================================================
+  // Hub-changed reconnect
+  // =========================================================================
+
+  describe('hub-changed reconnect', () => {
+    it('should reconnect to new hub when hub changes while role stays client', async () => {
+      // When the hub node-id changes but role stays 'client',
+      // the Node must tear down the old connection and reconnect.
+      //
+      // Strategy: node starts as client via static layer.
+      // assignHub('other') triggers hub-changed → teardown → _becomeClient
+      //   fails (address not resolvable). Then clearOverride() triggers
+      //   hub-changed → teardown → _becomeClient succeeds (static address).
+      // Verify createClientTransport is called twice total.
+
+      const createClientSpy = vi.fn();
+      const deps: NodeDeps = {
+        createHubTransport: async () => ({
+          onConnection: () => {},
+          close: async () => {},
+        }),
+        createClientTransport: async (hubAddress: string) => {
+          createClientSpy(hubAddress);
+          const [serverSocket, clientSocket] = createSocketPair();
+          serverSocket.connect();
+          return clientSocket;
+        },
+        networkManagerOptions: { probeFn: mockProbe },
+      };
+
+      const config = createConfig(4070, join(tempDir, 'hcA'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:4070' },
+          probing: { enabled: false },
+        },
+      });
+
+      const node = new Node(config, deps);
+      const ready = vi.fn();
+      node.on('ready', ready);
+      await node.start();
+
+      // Wait for first connection via static layer
+      await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+      expect(createClientSpy).toHaveBeenCalledTimes(1);
+      expect(node.role).toBe('client');
+
+      // assignHub('other') → hub-changed → teardown → _becomeClient fails
+      // (address unresolvable since peer not in table, no ready event).
+      // Wait for that transition to complete before clearing override.
+      node.networkManager.assignHub('some-nonexistent-node');
+      await new Promise((r) => setTimeout(r, 100));
+
+      // clearOverride() → hub-changed again, falls back to static address →
+      // _becomeClient succeeds and emits ready.
+      node.networkManager.clearOverride();
+
+      // Wait for the second successful connection
+      await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(2));
+      expect(createClientSpy).toHaveBeenCalledTimes(2);
+      expect(node.role).toBe('client');
+
+      await node.stop();
+    });
+
+    it('should disconnect old socket during teardown', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(4073, join(tempDir, 'hcD'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+      await node.start();
+
+      // Wait for client to be fully set up (ready fires after _becomeClient)
+      await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+
+      // Capture the socket — now guaranteed to exist
+      const oldSocket = node.socket!;
+      expect(oldSocket.connected).toBe(true);
+
+      // Transition to hub — tears down the client role
+      await becomeHub(node);
+
+      // Old socket should be disconnected
+      expect(oldSocket.disconnected).toBe(true);
+      expect(node.socket).toBeUndefined();
+
+      await node.stop();
+    });
+
+    it('should not reconnect when role also changes', async () => {
+      // When hub-changed AND role-changed fire (e.g. hub→client), the
+      // _onHubChanged handler should skip because _role is not 'client'
+      // at the time hub-changed fires.
+      const deps = createMockDeps();
+      const config = createConfig(4074, join(tempDir, 'hcE'));
+      const node = new Node(config, deps);
+
+      await node.start();
+      await becomeHub(node);
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+
+      // Assign different node → hub-changed fires with _role='hub' (skipped)
+      // + role-changed fires (hub→client) → single transition
+      node.networkManager.assignHub('some-other-node');
+
+      // No static fallback → _becomeClient can't resolve address → no ready
+      // Brief pause to confirm no spurious reconnect
+      await new Promise((r) => setTimeout(r, 100));
+      expect(ready).toHaveBeenCalledTimes(0);
+
+      await node.stop();
+    });
+  });
+
+  // =========================================================================
   // Events
   // =========================================================================
 
