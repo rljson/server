@@ -10,8 +10,41 @@ found in the LICENSE file in the root of this package.
 
 ## Table of contents <!-- omit in toc -->
 
+- [Split-Brain: Clients not reconnecting on hub change (fixed in v0.0.14)](#split-brain-clients-not-reconnecting-on-hub-change-fixed-in-v0014)
 - [Vscode Windows: Debugging is not working](#vscode-windows-debugging-is-not-working)
 - [Test Isolation: Socket.IO event listener accumulation](#test-isolation-socketio-event-listener-accumulation)
+
+## Split-Brain: Clients not reconnecting on hub change (fixed in v0.0.14)
+
+Date: 2026-03-20
+
+**Problem:**
+
+In a 4-node deployment, two nodes simultaneously acted as hub (split-brain). Clients stayed connected to the old hub while a new hub was elected. File sync stopped working because the hub had no real clients.
+
+**Symptoms:**
+
+- E2E Report 17: 23/41 passed, 18 failed
+- Two nodes reporting `role=hub` simultaneously
+- Files written by one hub never appearing on clients
+- File counts diverging between nodes (hub accumulating files, clients stuck)
+
+**Root Cause:**
+
+Two bugs in the `Node` class:
+
+1. **Missing `hub-changed` listener**: Node only subscribed to `role-changed` from NetworkManager. When the hub changed but the node's role stayed `client`, the `role-changed` handler skipped (same role). Clients never reconnected to the new hub.
+
+2. **No socket disconnect on teardown**: `_tearDownCurrentRole()` set `_clientSocket = undefined` without calling `disconnect()`. The orphaned Socket.IO connection kept auto-reconnecting to the old hub (especially with the `socket.connect()` reconnect fix from v0.0.13).
+
+**Solution (v0.0.14):**
+
+1. Added `_onHubChanged` listener that tears down and reconnects when hub changes while role stays `client`
+2. Added explicit `socket.disconnect()` call in `_tearDownCurrentRole()` before clearing the reference
+
+**Validation:**
+
+- E2E Reports 18 & 19: **38/41 passed, 0 failures** on 4-node test lab
 
 ## Vscode Windows: Debugging is not working
 

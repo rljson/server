@@ -86,7 +86,9 @@ The `Node` class sits above `Server` and `Client`, bridging `@rljson/network` to
 3. **Manages transport**: Uses injectable factories (`CreateHubTransport`/`CreateClientTransport`) to create the transport layer, keeping the Node class transport-agnostic.
 4. **Agent lifecycle**: An optional `createAgent` factory in `NodeDeps` is called on every `ready` event. The returned `AgentHandle.stop()` is called before the next role transition. This enables application-level wiring (e.g. FsAgent) without circular dependencies.
 5. **Serialized transitions**: Role transitions are queued — a new `role-changed` event waits for the previous transition to complete before starting. This prevents race conditions between teardown and setup.
-6. **Error resilience**: Errors in user-provided code (agent factories, transport factories) are caught and logged. The node continues functioning — a failed transport degrades connectivity but doesn't crash, a failed agent leaves the node's core intact.
+6. **Hub-changed reconnect** (v0.0.14): Subscribes to `NetworkManager`'s `hub-changed` event in addition to `role-changed`. When the hub changes but the node's role stays `client`, the node tears down its connection and reconnects to the new hub. This prevents split-brain scenarios where clients remain attached to a stale hub.
+7. **Clean socket teardown** (v0.0.14): `_tearDownCurrentRole()` explicitly calls `disconnect()` on client sockets before clearing the reference. This prevents orphaned Socket.IO connections from auto-reconnecting to the old hub.
+8. **Error resilience**: Errors in user-provided code (agent factories, transport factories) are caught and logged. The node continues functioning — a failed transport degrades connectivity but doesn't crash, a failed agent leaves the node's core intact.
 
 ```text
 ┌─────────────────────────────────────────┐

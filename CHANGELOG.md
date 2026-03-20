@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.0.14] — 2026-03-20
+
+### Fixed
+- **Split-brain prevention**: Node now listens to `hub-changed` events from NetworkManager. When the hub changes but the node's role stays `client`, the node tears down the old connection and reconnects to the new hub. Previously, only `role-changed` was handled, so clients would remain connected to the old (stale) hub — causing split-brain where two nodes simultaneously acted as hub.
+- **Socket disconnect on teardown**: `_tearDownCurrentRole()` now calls `disconnect()` on the client socket before clearing the reference. Previously, setting `_clientSocket = undefined` without disconnecting left orphaned Socket.IO connections that kept auto-reconnecting to the old hub.
+
+### Added
+- 3 new tests for hub-changed reconnect behavior (49 total Node tests)
+
+### Validated
+- E2E Reports 18 & 19: **38/41 passed, 0 failures, 3 skipped** (suite timeout) on 4-node Windows test lab (Node v24.14.0)
+- Previous Report 17 showed 23/41 passed with split-brain (two simultaneous hubs) — now fully resolved
+
+## [0.0.13]
+
 ### Added
 - `Node` class for self-organizing topology (Epic 5.1–5.5)
 - Hub/client role transitions driven by `@rljson/network` peer discovery
