@@ -384,6 +384,25 @@ export class Node {
       default:
         break;
     }
+
+    // The async teardown+setup above may have taken long enough for the
+    // NetworkManager to change its mind (e.g. a probe cycle fired during
+    // _becomeClient). If our new role no longer matches the network's
+    // role, self-correct immediately. The staleness guard at the top of
+    // this method prevents infinite recursion.
+    /* v8 ignore if -- @preserve */
+    if (!this._running) return;
+    const networkRole = this._networkManager.getTopology().myRole;
+    if (networkRole !== this._role && networkRole !== 'unassigned') {
+      this._logger.info(
+        'Node',
+        `Reconciling stale role: node=${this._role} → network=${networkRole}`,
+      );
+      await this._performTransition({
+        previous: this._role,
+        current: networkRole,
+      });
+    }
   }
 
   private async _becomeHub(): Promise<void> {

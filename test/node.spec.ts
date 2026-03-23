@@ -717,6 +717,42 @@ describe('Node', () => {
         'stop-2', // Agent #2 stopped on node.stop()
       ]);
     });
+
+    it('should reconcile when NM role diverges during async transition', async () => {
+      // Reproduces the split-brain seen on NB-2510 in E2E: Node finishes
+      // becoming client while NM has already re-elected it as hub. Because
+      // _onRoleChanged guards against no-op (current === this._role), the
+      // intermediate NM event was dropped. The reconciliation at the end
+      // of _performTransition detects the mismatch and self-corrects.
+      const deps = createMockDeps();
+      const config = createConfig(4034, join(tempDir, 't5'));
+      const node = new Node(config, deps);
+      const roleChanged = vi.fn();
+      node.on('role-changed', roleChanged);
+
+      await node.start();
+      await becomeHub(node);
+
+      const nm = node.networkManager;
+      const myId = nm.getIdentity().nodeId;
+      const otherId = 'peer-aaaa-bbbb-cccc-dddddddddddd';
+
+      // Fire two rapid role changes synchronously:
+      // 1. assignHub(other) → NM emits hub→client → queued as T1
+      // 2. assignHub(self) → NM emits client→hub → _onRoleChanged sees
+      //    current='hub' === this._role='hub' → SKIPPED
+      nm.assignHub(otherId);
+      nm.assignHub(myId);
+
+      // T1 runs: tears down hub, becomes client. On completion, the
+      // reconciliation check sees NM.myRole='hub' !== Node._role='client'
+      // and triggers a corrective transition back to hub.
+      await vi.waitFor(() => expect(node.role).toBe('hub'));
+      expect(node.server).toBeDefined();
+      expect(node.client).toBeUndefined();
+
+      await node.stop();
+    });
   });
 
   // =========================================================================
