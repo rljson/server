@@ -153,6 +153,7 @@ export class Node {
   private _bsMem?: BsMem;
   private _role: NodeRole = 'unassigned';
   private _running = false;
+  private _transportReady = false;
   private _transitioning?: Promise<void>;
   private _listeners = new Map<string, Set<NodeListener>>();
   private readonly _logger: ServerLogger;
@@ -212,6 +213,7 @@ export class Node {
     if (!this._running) return;
 
     this._running = false;
+    this._transportReady = false;
     this._networkManager.off('role-changed', this._onRoleChanged);
     this._networkManager.off('hub-changed', this._onHubChanged);
 
@@ -272,6 +274,15 @@ export class Node {
     return this._running;
   }
 
+  /**
+   * Whether the node's transport is fully ready.
+   * `false` during role transitions and before the first transition completes.
+   * `true` only after `_becomeHub()` or `_becomeClient()` has finished.
+   */
+  get isTransportReady(): boolean {
+    return this._transportReady;
+  }
+
   /** The underlying NetworkManager. */
   get networkManager(): NetworkManager {
     return this._networkManager;
@@ -330,6 +341,7 @@ export class Node {
     const prev = this._transitioning ?? Promise.resolve();
     this._transitioning = prev.then(async () => {
       if (!this._running || this._role !== 'client') return;
+      this._transportReady = false;
       await this._tearDownCurrentRole();
       await this._becomeClient();
     });
@@ -363,6 +375,8 @@ export class Node {
     // queue already established this role (e.g. two hub transitions
     // queued during rapid flapping — the second is a no-op).
     if (current === this._role) return;
+
+    this._transportReady = false;
 
     this._logger.info('Node', `Role changing: ${this._role} → ${current}`);
 
@@ -434,6 +448,7 @@ export class Node {
       );
     }
 
+    this._transportReady = true;
     const ctx: ReadyContext = { role: 'hub', server: this._server };
     this._emit('ready', ctx);
     await this._startAgent(ctx);
@@ -480,6 +495,7 @@ export class Node {
 
     this._logger.info('Node', `Now client — connected to hub ${hubAddress}`);
 
+    this._transportReady = true;
     const ctx: ReadyContext = {
       role: 'client',
       client: this._client,

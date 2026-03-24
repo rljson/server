@@ -1730,6 +1730,117 @@ describe('Node', () => {
   });
 
   // =========================================================================
+  // isTransportReady
+  // =========================================================================
+
+  describe('isTransportReady', () => {
+    it('should be false before any role transition', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(4070, join(tempDir, 'tr1'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          probing: { enabled: false },
+          // No static hub — stays unassigned
+        },
+      });
+      const node = new Node(config, deps);
+      expect(node.isTransportReady).toBe(false);
+
+      await node.start();
+      // Still unassigned — no transport
+      expect(node.isTransportReady).toBe(false);
+
+      await node.stop();
+    });
+
+    it('should be true after becoming hub', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(4071, join(tempDir, 'tr2'));
+      const node = new Node(config, deps);
+
+      await node.start();
+      expect(node.isTransportReady).toBe(false);
+
+      await becomeHub(node);
+      expect(node.isTransportReady).toBe(true);
+
+      await node.stop();
+    });
+
+    it('should be true after becoming client', async () => {
+      const { hubDeps, clientDeps } = createTwoNodeTransport();
+      const hubConfig = createConfig(4072, join(tempDir, 'tr3h'));
+      const clientConfig = createConfig(4073, join(tempDir, 'tr3c'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:4072' },
+          probing: { enabled: true },
+        },
+      });
+
+      const hub = new Node(hubConfig, hubDeps);
+      const client = new Node(clientConfig, clientDeps);
+
+      await hub.start();
+      await becomeHub(hub);
+
+      await client.start();
+      await vi.waitFor(() => expect(client.isTransportReady).toBe(true));
+      expect(client.role).toBe('client');
+
+      await client.stop();
+      await hub.stop();
+    });
+
+    it('should be false after stop()', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(4074, join(tempDir, 'tr4'));
+      const node = new Node(config, deps);
+
+      await node.start();
+      await becomeHub(node);
+      expect(node.isTransportReady).toBe(true);
+
+      await node.stop();
+      expect(node.isTransportReady).toBe(false);
+    });
+
+    it('should be false during role transition, true after', async () => {
+      const { hubDeps, clientDeps } = createTwoNodeTransport();
+      const hubConfig = createConfig(4075, join(tempDir, 'tr5h'));
+      const clientConfig = createConfig(4076, join(tempDir, 'tr5c'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:4075' },
+          probing: { enabled: true },
+        },
+      });
+
+      const hub = new Node(hubConfig, hubDeps);
+      const client = new Node(clientConfig, clientDeps);
+
+      await hub.start();
+      await becomeHub(hub);
+
+      await client.start();
+      await vi.waitFor(() => expect(client.isTransportReady).toBe(true));
+
+      // Force client → hub transition — isTransportReady should become
+      // false during transition, then true again.
+      const nm = client.networkManager;
+      nm.assignHub(nm.getIdentity().nodeId);
+      await vi.waitFor(() => expect(client.role).toBe('hub'));
+      expect(client.isTransportReady).toBe(true);
+
+      await client.stop();
+      await hub.stop();
+    });
+  });
+
+  // =========================================================================
   // Logger
   // =========================================================================
 
