@@ -84,6 +84,21 @@ export interface ServerOptions {
    * Defaults to false (local cache enabled).
    */
   disableLocalCache?: boolean;
+
+  /**
+   * Interval in milliseconds for application-level health checks.
+   * The server pings each connected client and prunes those that
+   * do not respond within {@link healthCheckTimeoutMs}.
+   * Defaults to 30 000 (30 s). Set to 0 to disable health checks.
+   */
+  healthCheckIntervalMs?: number;
+
+  /**
+   * Timeout in milliseconds to wait for a health check pong.
+   * Clients that do not respond within this window are pruned.
+   * Defaults to 10 000 (10 s).
+   */
+  healthCheckTimeoutMs?: number;
 }
 
 // .............................................................................
@@ -147,6 +162,11 @@ export class Server extends BaseNode {
   private _latestRef: string | undefined;
   private _bootstrapHeartbeatTimer?: ReturnType<typeof setInterval>;
 
+  // Health check state
+  private _healthCheckIntervalMs: number;
+  private _healthCheckTimeoutMs: number;
+  private _healthCheckTimer?: ReturnType<typeof setInterval>;
+
   private _tornDown = false;
 
   constructor(
@@ -161,6 +181,8 @@ export class Server extends BaseNode {
     this._logger = options?.logger ?? noopLogger;
     this._peerInitTimeoutMs = options?.peerInitTimeoutMs ?? 30_000;
     this._disableLocalCache = options?.disableLocalCache ?? false;
+    this._healthCheckIntervalMs = options?.healthCheckIntervalMs ?? 30_000;
+    this._healthCheckTimeoutMs = options?.healthCheckTimeoutMs ?? 10_000;
 
     // Sync protocol initialization
     this._syncConfig = options?.syncConfig;
@@ -303,6 +325,9 @@ export class Server extends BaseNode {
       // Start heartbeat timer if configured and not already running
       this._startBootstrapHeartbeat();
 
+      // Start application-level health checks
+      this._startHealthChecks();
+
       this._logger.info('Server', 'Client socket added successfully', {
         clientId,
         totalClients: this._clients.size,
@@ -371,6 +396,7 @@ export class Server extends BaseNode {
 
     this._sendBootstrap(ioDown);
     this._startBootstrapHeartbeat();
+    this._startHealthChecks();
 
     this._logger.info('Server', 'Broadcast-only socket added', {
       clientId,
@@ -623,6 +649,71 @@ export class Server extends BaseNode {
 
     for (const { ioDown } of this._clients.values()) {
       ioDown.emit(this._events.bootstrap, payload);
+    }
+  }
+
+  // ...........................................................................
+  // Health checks
+  // ...........................................................................
+
+  /**
+   * Starts the periodic health check timer if not already running.
+   * Each cycle sends a ping to every non-broadcast client and waits
+   * for a pong. Clients that do not respond are pruned.
+   */
+  private _startHealthChecks() {
+    if (this._healthCheckTimer || this._healthCheckIntervalMs <= 0) return;
+
+    this._healthCheckTimer = setInterval(() => {
+      this._runHealthCheck();
+    }, this._healthCheckIntervalMs);
+    this._healthCheckTimer.unref();
+  }
+
+  /**
+   * Sends a health ping to each connected (non-broadcast) client.
+   * If a client does not respond within `_healthCheckTimeoutMs`,
+   * the server force-disconnects and removes it.
+   */
+  private _runHealthCheck() {
+    for (const [clientId, { ioUp, ioDown }] of this._clients.entries()) {
+      // Skip broadcast (hub loopback) sockets — always local
+      if (clientId.startsWith('broadcast_')) continue;
+
+      const nonce = Math.random().toString(36).slice(2);
+      let resolved = false;
+
+      const handler = (payload: { nonce: string }) => {
+        if (payload?.nonce !== nonce) return;
+        resolved = true;
+        ioUp.off('__health:pong', handler);
+        clearTimeout(timer);
+      };
+
+      ioUp.on('__health:pong', handler);
+
+      const timer = setTimeout(() => {
+        /* v8 ignore if -- @preserve */
+        if (resolved) return;
+        ioUp.off('__health:pong', handler);
+        this._logger.warn(
+          'Server.Health',
+          'Client failed health check — pruning',
+          { clientId },
+        );
+
+        // Force-disconnect so the client's transport reconnects
+        /* v8 ignore if -- @preserve */
+        if ('disconnect' in ioUp) {
+          (
+            ioUp as unknown as { disconnect: (close?: boolean) => void }
+          ).disconnect(true);
+        }
+
+        this.removeSocket(clientId);
+      }, this._healthCheckTimeoutMs);
+
+      ioDown.emit('__health:ping', { nonce });
     }
   }
 
@@ -991,6 +1082,12 @@ export class Server extends BaseNode {
     if (this._bootstrapHeartbeatTimer) {
       clearInterval(this._bootstrapHeartbeatTimer);
       this._bootstrapHeartbeatTimer = undefined;
+    }
+
+    // Stop health check timer
+    if (this._healthCheckTimer) {
+      clearInterval(this._healthCheckTimer);
+      this._healthCheckTimer = undefined;
     }
 
     // Remove all multicast listeners
