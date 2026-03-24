@@ -310,9 +310,16 @@ export class Client extends BaseNode {
     socket.on('disconnect', disconnectHandler);
     socket.on('connect', reconnectHandler);
 
+    // Health check auto-responder: echo server pings back immediately
+    const healthHandler = (payload: { nonce: string }) => {
+      sockets.ioUp.emit('__health:pong', { nonce: payload.nonce });
+    };
+    sockets.ioDown.on('__health:ping', healthHandler);
+
     this._connectionCleanup = () => {
       socket.off('disconnect', disconnectHandler);
       socket.off('connect', reconnectHandler);
+      sockets.ioDown.off('__health:ping', healthHandler);
     };
   }
 
