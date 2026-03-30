@@ -1821,6 +1821,80 @@ describe('Node', () => {
 
       await node.stop();
     });
+
+    it('should abort in-flight createClientTransport on hub change', async () => {
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        traffic: vi.fn(),
+      };
+
+      let resolveConnect: ((socket: SocketLike) => void) | undefined;
+      let capturedSignal: AbortSignal | undefined;
+
+      const [serverSock, clientSock] = createSocketPair();
+      serverSock.connect();
+
+      const deps: NodeDeps = {
+        createHubTransport: async () => ({
+          onConnection: () => {},
+          close: async () => {},
+        }),
+        createClientTransport: vi.fn().mockImplementation(
+          async (_addr: string, signal?: AbortSignal) => {
+            capturedSignal = signal;
+            return new Promise<SocketLike>((resolve, reject) => {
+              resolveConnect = resolve;
+              signal?.addEventListener('abort', () => {
+                reject(new Error('aborted'));
+              });
+            });
+          },
+        ),
+        networkManagerOptions: { probeFn: mockProbe },
+      };
+      const config = createConfig(8013, join(tempDir, 'retry-abort'), {
+        logger,
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:8013' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+      await vi.waitFor(() => expect(node.role).toBe('client'));
+
+      // Wait until createClientTransport is called (stuck waiting)
+      await vi.waitFor(() => expect(capturedSignal).toBeDefined());
+      expect(capturedSignal!.aborted).toBe(false);
+
+      // Diagnostic log should have been emitted
+      expect(logger.info).toHaveBeenCalledWith(
+        'Node',
+        expect.stringContaining('_becomeClient attempt'),
+      );
+
+      // Trigger a hub change by becoming hub — this calls _cancelRetry()
+      // which aborts the in-flight createClientTransport
+      const hubStart = Date.now();
+      await becomeHub(node);
+      const hubDuration = Date.now() - hubStart;
+
+      // The abort signal should have been fired
+      expect(capturedSignal!.aborted).toBe(true);
+      // Transition should be fast — not blocked by the 30s transport timeout
+      expect(hubDuration).toBeLessThan(2000);
+      expect(node.role).toBe('hub');
+
+      // Resolve the dangling promise to prevent unhandled rejection
+      resolveConnect?.(clientSock);
+
+      await node.stop();
+    });
   });
 
   // =========================================================================
