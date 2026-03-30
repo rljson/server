@@ -155,6 +155,9 @@ export class Node {
   private _running = false;
   private _transportReady = false;
   private _transitioning?: Promise<void>;
+  private _transitionGen = 0;
+  private _sleepTimer?: ReturnType<typeof setTimeout>;
+  private _sleepResolve?: () => void;
   private _listeners = new Map<string, Set<NodeListener>>();
   private readonly _logger: ServerLogger;
 
@@ -214,6 +217,7 @@ export class Node {
 
     this._running = false;
     this._transportReady = false;
+    this._cancelRetry();
     this._networkManager.off('role-changed', this._onRoleChanged);
     this._networkManager.off('hub-changed', this._onHubChanged);
 
@@ -337,6 +341,8 @@ export class Node {
     if (topology.myRole !== 'client') return;
 
     this._logger.info('Node', 'Hub changed while client — reconnecting');
+    // Cancel any in-flight retry sleep so the old transition finishes fast.
+    this._cancelRetry();
     /* v8 ignore next -- @preserve */
     const prev = this._transitioning ?? Promise.resolve();
     this._transitioning = prev.then(async () => {
@@ -359,6 +365,9 @@ export class Node {
     // Node's current _role (e.g. client→hub→client fires 'client' while
     // _role is still 'client' because the hub transition is queued).
     if (current === this._role) return;
+
+    // Cancel any in-flight retry sleep so the old transition finishes fast.
+    this._cancelRetry();
 
     // Serialize transitions — wait for any in-flight transition to finish
     // before starting the next one.
@@ -455,24 +464,75 @@ export class Node {
   }
 
   private async _becomeClient(): Promise<void> {
-    const topology = this._networkManager.getTopology();
-    const hubAddress = topology.hubAddress;
+    const maxRetries = 5;
+    const gen = this._transitionGen;
 
-    if (!hubAddress) {
-      this._logger.warn(
-        'Node',
-        'Cannot become client: no hub address in topology',
-      );
-      return;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (
+        !this._running ||
+        this._role !== 'client' ||
+        gen !== this._transitionGen
+      )
+        return;
+
+      const topology = this._networkManager.getTopology();
+      const hubAddress = topology.hubAddress;
+
+      if (!hubAddress) {
+        /* v8 ignore else -- @preserve */
+        if (attempt < maxRetries) {
+          const delay = 1000 * 2 ** attempt;
+          this._logger.warn(
+            'Node',
+            `No hub address in topology — retrying in ${delay}ms ` +
+              `(${attempt + 1}/${maxRetries})`,
+          );
+          await this._sleep(delay);
+          continue;
+        }
+        /* v8 ignore start -- @preserve */
+        this._logger.warn(
+          'Node',
+          'Cannot become client: no hub address after all retries',
+        );
+        return;
+        /* v8 ignore stop -- @preserve */
+      }
+
+      try {
+        this._clientSocket = await this._deps.createClientTransport(hubAddress);
+      } catch (err) {
+        /* v8 ignore else -- @preserve */
+        if (attempt < maxRetries) {
+          const delay = 1000 * 2 ** attempt;
+          this._logger.warn(
+            'Node',
+            `Client transport to ${hubAddress} failed: ${err} — ` +
+              `retrying in ${delay}ms (${attempt + 1}/${maxRetries})`,
+          );
+          await this._sleep(delay);
+          continue;
+        }
+        /* v8 ignore start -- @preserve */
+        this._logger.error(
+          'Node',
+          `Client transport to ${hubAddress} failed after all retries: ${err}`,
+        );
+        return;
+        /* v8 ignore stop -- @preserve */
+      }
+
+      // Success — set up the rest of the client stack
+      break;
     }
 
-    try {
-      this._clientSocket = await this._deps.createClientTransport(hubAddress);
-    } catch (err) {
-      this._logger.error(
-        'Node',
-        `Client transport to ${hubAddress} failed: ${err}`,
-      );
+    // Abort if state changed during retries
+    if (
+      !this._running ||
+      this._role !== 'client' ||
+      gen !== this._transitionGen ||
+      !this._clientSocket
+    ) {
       return;
     }
 
@@ -493,7 +553,10 @@ export class Node {
     );
     await this._client.init();
 
-    this._logger.info('Node', `Now client — connected to hub ${hubAddress}`);
+    this._logger.info(
+      'Node',
+      `Now client — connected to hub ${this._networkManager.getTopology().hubAddress}`,
+    );
 
     this._transportReady = true;
     const ctx: ReadyContext = {
@@ -563,6 +626,29 @@ export class Node {
     if (!set) return;
     for (const cb of set) {
       (cb as (...a: unknown[]) => void)(...args);
+    }
+  }
+
+  private _sleep(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this._sleepResolve = resolve;
+      this._sleepTimer = setTimeout(() => {
+        this._sleepTimer = undefined;
+        this._sleepResolve = undefined;
+        resolve();
+      }, ms);
+    });
+  }
+
+  private _cancelRetry(): void {
+    this._transitionGen++;
+    if (this._sleepTimer !== undefined) {
+      clearTimeout(this._sleepTimer);
+      this._sleepTimer = undefined;
+    }
+    if (this._sleepResolve) {
+      this._sleepResolve();
+      this._sleepResolve = undefined;
     }
   }
 }
