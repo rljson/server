@@ -467,10 +467,11 @@ describe('Node', () => {
       await vi.waitFor(() => expect(node.role).toBe('client'));
 
       // No client was created because there's no address to connect to
+      // (retries are cancelled by stop())
       expect(node.client).toBeUndefined();
       expect(warn).toHaveBeenCalledWith(
         'Node',
-        expect.stringContaining('no hub address'),
+        expect.stringContaining('No hub address in topology'),
       );
 
       await node.stop();
@@ -1600,9 +1601,10 @@ describe('Node', () => {
 
     it('should skip client setup when transport factory throws', async () => {
       const error = vi.fn();
+      const warn = vi.fn();
       const logger = {
         info: vi.fn(),
-        warn: vi.fn(),
+        warn,
         error,
         traffic: vi.fn(),
       };
@@ -1634,17 +1636,184 @@ describe('Node', () => {
       await node.start();
       await vi.waitFor(() => expect(node.role).toBe('client'));
 
-      // No ready event — client was never created
+      // No ready event yet — client transport keeps failing, retries pending
       expect(ready).not.toHaveBeenCalled();
       expect(node.client).toBeUndefined();
-      expect(error).toHaveBeenCalledWith(
+      expect(warn).toHaveBeenCalledWith(
         'Node',
         expect.stringContaining('Client transport'),
       );
 
-      // Can recover by assigning as hub
+      // Can recover by assigning as hub (cancels retry loop)
       await becomeHub(node);
       expect(ready).toHaveBeenCalledOnce();
+      expect(node.server).toBeDefined();
+
+      await node.stop();
+    });
+  });
+
+  // =========================================================================
+  // Client retry logic
+  // =========================================================================
+
+  describe('client retry logic', () => {
+    it('should retry and succeed when transport fails then recovers', async () => {
+      const warn = vi.fn();
+      const logger = {
+        info: vi.fn(),
+        warn,
+        error: vi.fn(),
+        traffic: vi.fn(),
+      };
+
+      let callCount = 0;
+      const [serverSock, clientSock] = createSocketPair();
+      serverSock.connect();
+
+      const deps: NodeDeps = {
+        createHubTransport: async () => ({
+          onConnection: () => {},
+          close: async () => {},
+        }),
+        createClientTransport: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount <= 2) throw new Error('not ready yet');
+          return clientSock;
+        }),
+        networkManagerOptions: { probeFn: mockProbe },
+      };
+      const config = createConfig(8010, join(tempDir, 'retry1'), {
+        logger,
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:8010' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+
+      await node.start();
+
+      // Wait for client role and eventually ready (retries succeed on 3rd attempt)
+      await vi.waitFor(() => expect(ready).toHaveBeenCalledOnce(), {
+        timeout: 15_000,
+      });
+
+      expect(node.client).toBeDefined();
+      expect(callCount).toBe(3);
+      // First two attempts logged warnings
+      expect(warn).toHaveBeenCalledWith(
+        'Node',
+        expect.stringContaining('retrying'),
+      );
+
+      await node.stop();
+    });
+
+    it('should cancel retry when stop() is called during sleep', async () => {
+      const warn = vi.fn();
+      const logger = {
+        info: vi.fn(),
+        warn,
+        error: vi.fn(),
+        traffic: vi.fn(),
+      };
+
+      const deps: NodeDeps = {
+        createHubTransport: async () => ({
+          onConnection: () => {},
+          close: async () => {},
+        }),
+        createClientTransport: vi.fn().mockRejectedValue(new Error('refused')),
+        networkManagerOptions: { probeFn: mockProbe },
+      };
+      const config = createConfig(8011, join(tempDir, 'retry2'), {
+        logger,
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:8011' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+      await vi.waitFor(() => expect(node.role).toBe('client'));
+
+      // At least one retry attempt was made
+      await vi.waitFor(() =>
+        expect(warn).toHaveBeenCalledWith(
+          'Node',
+          expect.stringContaining('retrying'),
+        ),
+      );
+
+      // stop() cancels sleep immediately and returns quickly
+      const stopStart = Date.now();
+      await node.stop();
+      const stopDuration = Date.now() - stopStart;
+
+      // stop() should be fast (< 2s), not block for retry delays
+      expect(stopDuration).toBeLessThan(2000);
+      expect(node.client).toBeUndefined();
+    });
+
+    it('should cancel retry when role changes to hub', async () => {
+      const warn = vi.fn();
+      const logger = {
+        info: vi.fn(),
+        warn,
+        error: vi.fn(),
+        traffic: vi.fn(),
+      };
+
+      const deps: NodeDeps = {
+        createHubTransport: async () => ({
+          onConnection: () => {},
+          close: async () => {},
+        }),
+        createClientTransport: vi.fn().mockRejectedValue(new Error('refused')),
+        networkManagerOptions: { probeFn: mockProbe },
+      };
+      const config = createConfig(8012, join(tempDir, 'retry3'), {
+        logger,
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:8012' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+
+      await node.start();
+      await vi.waitFor(() => expect(node.role).toBe('client'));
+
+      // At least one retry attempt
+      await vi.waitFor(() =>
+        expect(warn).toHaveBeenCalledWith(
+          'Node',
+          expect.stringContaining('retrying'),
+        ),
+      );
+
+      // Becoming hub cancels the retry loop quickly
+      const hubStart = Date.now();
+      await becomeHub(node);
+      const hubDuration = Date.now() - hubStart;
+
+      expect(hubDuration).toBeLessThan(2000);
+      expect(ready).toHaveBeenCalledOnce();
+      expect(node.role).toBe('hub');
       expect(node.server).toBeDefined();
 
       await node.stop();
