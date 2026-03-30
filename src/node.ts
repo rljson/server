@@ -450,14 +450,13 @@ export class Node {
         await this._server.addSocket(socket);
       });
       this._logger.info('Node', 'Now hub — accepting connections');
+      this._transportReady = true;
     } catch (err) {
       this._logger.error(
         'Node',
         `Hub transport failed (no incoming connections): ${err}`,
       );
     }
-
-    this._transportReady = true;
     const ctx: ReadyContext = { role: 'hub', server: this._server };
     this._emit('ready', ctx);
     await this._startAgent(ctx);
