@@ -47,8 +47,16 @@ export type CreateHubTransport = (port: number) => Promise<HubTransport>;
 /**
  * Factory that creates a client-side socket to connect to the hub.
  * Called when this node becomes a client.
+ * @param hubAddress - The hub's address in `"ip:port"` format.
+ * @param signal - Optional {@link AbortSignal}. When aborted, the factory
+ *   should disconnect any in-progress socket and reject with an error.
+ *   Implementations that ignore the signal still work — the Node will
+ *   simply wait for the promise to settle before proceeding.
  */
-export type CreateClientTransport = (hubAddress: string) => Promise<SocketLike>;
+export type CreateClientTransport = (
+  hubAddress: string,
+  signal?: AbortSignal,
+) => Promise<SocketLike>;
 
 /**
  * Injectable dependencies for the Node class.
@@ -158,6 +166,7 @@ export class Node {
   private _transitionGen = 0;
   private _sleepTimer?: ReturnType<typeof setTimeout>;
   private _sleepResolve?: () => void;
+  private _connectAbort?: AbortController;
   private _listeners = new Map<string, Set<NodeListener>>();
   private readonly _logger: ServerLogger;
 
@@ -477,6 +486,14 @@ export class Node {
       const topology = this._networkManager.getTopology();
       const hubAddress = topology.hubAddress;
 
+      /* v8 ignore next -- @preserve */
+      this._logger.info(
+        'Node',
+        `_becomeClient attempt ${attempt}/${maxRetries}: ` +
+          `hubAddress=${hubAddress ?? 'null'}, ` +
+          `hubNodeId=${topology.hubNodeId?.slice(0, 8) ?? 'null'}`,
+      );
+
       if (!hubAddress) {
         /* v8 ignore else -- @preserve */
         if (attempt < maxRetries) {
@@ -499,8 +516,17 @@ export class Node {
       }
 
       try {
-        this._clientSocket = await this._deps.createClientTransport(hubAddress);
+        this._connectAbort = new AbortController();
+        this._clientSocket = await this._deps.createClientTransport(
+          hubAddress,
+          this._connectAbort.signal,
+        );
+        this._connectAbort = undefined;
       } catch (err) {
+        this._connectAbort = undefined;
+        // If gen changed while we were connecting, exit immediately.
+        // The new transition will handle reconnection.
+        if (gen !== this._transitionGen) return;
         /* v8 ignore else -- @preserve */
         if (attempt < maxRetries) {
           const delay = 1000 * 2 ** attempt;
@@ -648,6 +674,10 @@ export class Node {
     if (this._sleepResolve) {
       this._sleepResolve();
       this._sleepResolve = undefined;
+    }
+    if (this._connectAbort) {
+      this._connectAbort.abort();
+      this._connectAbort = undefined;
     }
   }
 }
