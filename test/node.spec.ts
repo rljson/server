@@ -1590,6 +1590,9 @@ describe('Node', () => {
         expect.stringContaining('Hub transport failed'),
       );
 
+      // Transport is NOT ready — hub can't accept incoming connections
+      expect(node.isTransportReady).toBe(false);
+
       // Server exists and works locally
       expect(node.server).toBeDefined();
       const { blobId } = await node.bs!.setBlob('local data');
