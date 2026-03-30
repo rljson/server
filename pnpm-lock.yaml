@@ -6,6 +6,7 @@ settings:
 
 overrides:
   '@rljson/rljson': ^0.0.78
+  '@rljson/db': link:../rljson-db
 
 importers:
 
@@ -15,8 +16,8 @@ importers:
         specifier: ^0.0.22
         version: 0.0.22
       '@rljson/db':
-        specifier: ^0.0.15
-        version: 0.0.15
+        specifier: link:../rljson-db
+        version: link:../rljson-db
       '@rljson/hash':
         specifier: ^0.0.18
         version: 0.0.18
@@ -385,10 +386,6 @@ packages:
 
   '@rljson/bs@0.0.22':
     resolution: {integrity: sha512-UQv2gx+uc9TI29VfwGfAhwd0xR8uiEpw+ObRyoshS4ZyyUpgOE3kti4nDffTVkbjNrU18rFqEhumexXs1/2anQ==}
-    engines: {node: '>=22.14.0'}
-
-  '@rljson/db@0.0.15':
-    resolution: {integrity: sha512-A8qelir3vFcqWJaI0DXFbLUU5qkc23G4Nu6GezmIX5ZyLWh8rGDHD5D/x0kdLVN9ga4yaXsMHfeFMdNfTr1JnA==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/hash@0.0.16':
@@ -1085,9 +1082,6 @@ packages:
     resolution: {integrity: sha512-XXTUwCvisa5oacNGRP9SfNtYBNAMi+RPwBFmblZEF7N7swHYQS6/Zfk7SRwx4D5j3CH211YNRco1DEMNVfZCnQ==}
     engines: {node: '>=16.0.0'}
 
-  filtrex@3.1.0:
-    resolution: {integrity: sha512-mHzZ2wUISETF1OaEcNRiGz1ljuIV8c/C9td9qyAZ+wTwigkAk5RO9YrCxQKk5H9v7joDRFIBik9U5RTK9eXZ/A==}
-
   find-up@5.0.0:
     resolution: {integrity: sha512-78/PXT1wlLLDgTzDs7sjq9hzz0vXD+zn+7wypEe4fXQxCmdmqfGsEPQxmiCSQI3ajFV91bVSsvNtrJRiW6nGng==}
     engines: {node: '>=10'}
@@ -1383,10 +1377,6 @@ packages:
   object-deep-merge@2.0.0:
     resolution: {integrity: sha512-3DC3UMpeffLTHiuXSy/UG4NOIYTLlY9u3V82+djSCLYClWobZiS4ivYzpIUWrRY/nfsJ8cWsKyG3QfyLePmhvg==}
 
-  object-traversal@1.0.1:
-    resolution: {integrity: sha512-aLXtM9kbcG/ePyZfB45B0FrIdu1yy3udQjIVmp2IVl2np52dBK5ZZBhdyUKFT6neCutwDhCW/kQ+e/0K5n/Jhw==}
-    engines: {node: '>=10'}
-
   obug@2.1.1:
     resolution: {integrity: sha512-uTqF9MuPraAQ+IsnPf366RG4cP9RtUi7MLO1N3KEc+wb0a6yKpeL0lmk2IB1jY5KHPAlTc6T/JRdC/YqxHNwkQ==}
 
@@ -1497,9 +1487,6 @@ packages:
     resolution: {integrity: sha512-2oMpl67a3zCH9H79LeMcbDhXW/UmWG/y2zuqnF2jQq5uq9TbM9TVyXvA4+t+ne2IIkBdrLpAaRQAvo7YI/Yyeg==}
     engines: {node: '>=18.0.0', npm: '>=8.0.0'}
     hasBin: true
-
-  rxjs@7.8.2:
-    resolution: {integrity: sha512-dhKf903U/PQZY6boNNtAGdWbG85WAbjT/1xYoZIC7FAY0yWapOBQVsVrDl58W86//e1VpMNBtRV4MaXfdMySFA==}
 
   semver@7.5.4:
     resolution: {integrity: sha512-1bCSESV6Pv+i21Hvpxp3Dx+pSD8lIPt8uVjRrxAUt/nbswYc+tK6Y2btiULjd4+fnq15PX+nqQDC7Oft7WkwcA==}
@@ -2076,17 +2063,6 @@ snapshots:
       '@rljson/hash': 0.0.18
       '@rljson/json': 0.0.23
       '@rljson/rljson': 0.0.78
-
-  '@rljson/db@0.0.15':
-    dependencies:
-      '@rljson/hash': 0.0.18
-      '@rljson/io': 0.0.66
-      '@rljson/json': 0.0.23
-      '@rljson/rljson': 0.0.78
-      '@rljson/validate': 0.0.11
-      filtrex: 3.1.0
-      object-traversal: 1.0.1
-      rxjs: 7.8.2
 
   '@rljson/hash@0.0.16':
     dependencies:
@@ -2835,8 +2811,6 @@ snapshots:
     dependencies:
       flat-cache: 4.0.1
 
-  filtrex@3.1.0: {}
-
   find-up@5.0.0:
     dependencies:
       locate-path: 6.0.0
@@ -3106,8 +3080,6 @@ snapshots:
 
   object-deep-merge@2.0.0: {}
 
-  object-traversal@1.0.1: {}
-
   obug@2.1.1: {}
 
   optionator@0.9.4:
@@ -3242,10 +3214,6 @@ snapshots:
       '@rollup/rollup-win32-x64-gnu': 4.59.0
       '@rollup/rollup-win32-x64-msvc': 4.59.0
       fsevents: 2.3.3
-
-  rxjs@7.8.2:
-    dependencies:
-      tslib: 2.8.1
 
   semver@7.5.4:
     dependencies:

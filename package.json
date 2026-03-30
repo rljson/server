@@ -64,7 +64,8 @@
       "esbuild"
     ],
     "overrides": {
-      "@rljson/rljson": "^0.0.78"
+      "@rljson/rljson": "^0.0.78",
+      "@rljson/db": "link:../rljson-db"
     }
   },
   "packageManager": "pnpm@10.11.0"

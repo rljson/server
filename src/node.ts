@@ -167,6 +167,7 @@ export class Node {
   private _sleepTimer?: ReturnType<typeof setTimeout>;
   private _sleepResolve?: () => void;
   private _connectAbort?: AbortController;
+  private _lastKnownRef?: string;
   private _listeners = new Map<string, Set<NodeListener>>();
   private readonly _logger: ServerLogger;
 
@@ -449,6 +450,12 @@ export class Node {
     });
     await this._server.init();
 
+    // Seed the server with the ref from a previous role so that
+    // connecting clients receive a bootstrap immediately.
+    if (this._lastKnownRef) {
+      this._server.seedLatestRef(this._lastKnownRef);
+    }
+
     // Start transport to accept incoming connections
     try {
       this._hubTransport = await this._deps.createHubTransport(
@@ -578,6 +585,12 @@ export class Node {
     );
     await this._client.init();
 
+    // If we have a ref from a previous role, re-send it through the
+    // new Connector so the hub (and other clients) receive the data.
+    if (this._lastKnownRef && this._client.connector) {
+      this._client.connector.send(this._lastKnownRef);
+    }
+
     this._logger.info(
       'Node',
       `Now client — connected to hub ${this._networkManager.getTopology().hubAddress}`,
@@ -599,6 +612,15 @@ export class Node {
 
   private async _tearDownCurrentRole(): Promise<void> {
     await this._stopAgent();
+
+    // Preserve the latest ref so it can be seeded into the next role.
+    // Server.latestRef tracks what was broadcast; Connector.lastSentRef
+    // tracks what this node pushed to the hub.
+    const ref = this._server?.latestRef ?? this._client?.connector?.lastSentRef;
+    /* v8 ignore else -- @preserve */
+    if (ref) {
+      this._lastKnownRef = ref;
+    }
 
     if (this._server) {
       await this._server.tearDown();
