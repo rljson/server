@@ -588,6 +588,17 @@ export class Server extends BaseNode {
     return this._latestRef;
   }
 
+  /**
+   * Seeds the latest ref from an external source (e.g. a previous role's
+   * Connector or Server). This allows bootstrap to work immediately when
+   * clients connect, even if no new writes have arrived yet.
+   * @param ref - The ref to seed as the latest known state.
+   */
+  seedLatestRef(ref: string): void {
+    this._latestRef = ref;
+    this._logger.info('Server', `Seeded latestRef: ${ref.slice(0, 12)}…`);
+  }
+
   // ...........................................................................
   // Sync protocol private methods
   // ...........................................................................

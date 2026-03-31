@@ -1233,6 +1233,72 @@ describe('Node', () => {
       await nodeC.stop();
       await nodeA.stop();
     });
+
+    it('should seed Server.latestRef from _lastKnownRef on client→hub', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(6020, join(tempDir, 'hm-seed1'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+      await node.start();
+      await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+      expect(node.role).toBe('client');
+
+      // Simulate a ref sent by the Connector while client
+      node.client!.connector!.send('test-ref-abc');
+      expect(node.client!.connector!.lastSentRef).toBe('test-ref-abc');
+
+      // Transition client → hub
+      await becomeHub(node);
+
+      // Server should have the ref seeded from the previous client role
+      expect(node.server!.latestRef).toBe('test-ref-abc');
+
+      await node.stop();
+    });
+
+    it('should seed Server.latestRef from _lastKnownRef on hub→client→hub', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(6021, join(tempDir, 'hm-seed2'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+      await becomeHub(node);
+
+      // Seed a ref while hub (simulating a client push)
+      node.server!.seedLatestRef('hub-ref-xyz');
+      expect(node.server!.latestRef).toBe('hub-ref-xyz');
+
+      // hub → client (static layer provides the hub address)
+      node.networkManager.clearOverride();
+      await vi.waitFor(() => expect(node.role).toBe('client'));
+
+      // The Connector should have re-sent the ref from the previous hub
+      expect(node.client!.connector!.lastSentRef).toBe('hub-ref-xyz');
+
+      // client → hub again
+      await becomeHub(node);
+
+      // The new Server should have the seeded ref from the old Server
+      expect(node.server!.latestRef).toBe('hub-ref-xyz');
+
+      await node.stop();
+    });
   });
 
   // =========================================================================
@@ -1841,8 +1907,9 @@ describe('Node', () => {
           onConnection: () => {},
           close: async () => {},
         }),
-        createClientTransport: vi.fn().mockImplementation(
-          async (_addr: string, signal?: AbortSignal) => {
+        createClientTransport: vi
+          .fn()
+          .mockImplementation(async (_addr: string, signal?: AbortSignal) => {
             capturedSignal = signal;
             return new Promise<SocketLike>((resolve, reject) => {
               resolveConnect = resolve;
@@ -1850,8 +1917,7 @@ describe('Node', () => {
                 reject(new Error('aborted'));
               });
             });
-          },
-        ),
+          }),
         networkManagerOptions: { probeFn: mockProbe },
       };
       const config = createConfig(8013, join(tempDir, 'retry-abort'), {
