@@ -479,10 +479,10 @@ export class Node {
   }
 
   private async _becomeClient(): Promise<void> {
-    const maxRetries = 5;
+    const maxBackoff = 16_000;
     const gen = this._transitionGen;
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    for (let attempt = 0; ; attempt++) {
       if (
         !this._running ||
         this._role !== 'client' ||
@@ -496,30 +496,19 @@ export class Node {
       /* v8 ignore next -- @preserve */
       this._logger.info(
         'Node',
-        `_becomeClient attempt ${attempt}/${maxRetries}: ` +
+        `_becomeClient attempt ${attempt}: ` +
           `hubAddress=${hubAddress ?? 'null'}, ` +
           `hubNodeId=${topology.hubNodeId?.slice(0, 8) ?? 'null'}`,
       );
 
       if (!hubAddress) {
-        /* v8 ignore else -- @preserve */
-        if (attempt < maxRetries) {
-          const delay = 1000 * 2 ** attempt;
-          this._logger.warn(
-            'Node',
-            `No hub address in topology — retrying in ${delay}ms ` +
-              `(${attempt + 1}/${maxRetries})`,
-          );
-          await this._sleep(delay);
-          continue;
-        }
-        /* v8 ignore start -- @preserve */
+        const delay = Math.min(1000 * 2 ** attempt, maxBackoff);
         this._logger.warn(
           'Node',
-          'Cannot become client: no hub address after all retries',
+          `No hub address in topology — retrying in ${delay}ms`,
         );
-        return;
-        /* v8 ignore stop -- @preserve */
+        await this._sleep(delay);
+        continue;
       }
 
       try {
@@ -534,24 +523,14 @@ export class Node {
         // If gen changed while we were connecting, exit immediately.
         // The new transition will handle reconnection.
         if (gen !== this._transitionGen) return;
-        /* v8 ignore else -- @preserve */
-        if (attempt < maxRetries) {
-          const delay = 1000 * 2 ** attempt;
-          this._logger.warn(
-            'Node',
-            `Client transport to ${hubAddress} failed: ${err} — ` +
-              `retrying in ${delay}ms (${attempt + 1}/${maxRetries})`,
-          );
-          await this._sleep(delay);
-          continue;
-        }
-        /* v8 ignore start -- @preserve */
-        this._logger.error(
+        const delay = Math.min(1000 * 2 ** attempt, maxBackoff);
+        this._logger.warn(
           'Node',
-          `Client transport to ${hubAddress} failed after all retries: ${err}`,
+          `Client transport to ${hubAddress} failed: ${err} — ` +
+            `retrying in ${delay}ms`,
         );
-        return;
-        /* v8 ignore stop -- @preserve */
+        await this._sleep(delay);
+        continue;
       }
 
       // Success — set up the rest of the client stack
