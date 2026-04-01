@@ -596,6 +596,10 @@ export class Server extends BaseNode {
    */
   seedLatestRef(ref: string): void {
     this._latestRef = ref;
+    // Mark the seeded ref as already-multicast so that stale client
+    // re-sends of the same ref are deduplicated and cannot overwrite
+    // _latestRef with an older value.
+    this._multicastedRefsCurrent.add(ref);
     this._logger.info('Server', `Seeded latestRef: ${ref.slice(0, 12)}…`);
   }
 
