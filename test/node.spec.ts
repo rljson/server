@@ -1961,6 +1961,53 @@ describe('Node', () => {
 
       await node.stop();
     });
+
+    it('should retry beyond old maxRetries and succeed when hub starts late', async () => {
+      let callCount = 0;
+      const [serverSock, clientSock] = createSocketPair();
+      serverSock.connect();
+
+      const deps: NodeDeps = {
+        createHubTransport: async () => ({
+          onConnection: () => {},
+          close: async () => {},
+        }),
+        createClientTransport: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount <= 7) throw new Error('hub not ready');
+          return clientSock;
+        }),
+        networkManagerOptions: { probeFn: mockProbe },
+      };
+      const config = createConfig(8014, join(tempDir, 'retry-infinite'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:8014' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      // Patch _sleep to resolve instantly so retries don't wait
+      (node as unknown as { _sleep: () => Promise<void> })._sleep =
+        () => Promise.resolve();
+
+      const ready = vi.fn();
+      node.on('ready', ready);
+
+      await node.start();
+
+      await vi.waitFor(() => expect(ready).toHaveBeenCalledOnce(), {
+        timeout: 5_000,
+      });
+
+      // 7 failures + 1 success = 8 calls — proves retry goes past old limit of 6
+      expect(callCount).toBe(8);
+      expect(node.client).toBeDefined();
+
+      await node.stop();
+    });
   });
 
   // =========================================================================
