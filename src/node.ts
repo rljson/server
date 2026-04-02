@@ -96,6 +96,21 @@ export interface NodeConfig {
   logger?: ServerLogger;
   /** Directory for persistent node identity. */
   identityDir?: string;
+  /**
+   * Hub self-check timeout in milliseconds.
+   *
+   * After becoming hub, wait this long for at least one client to connect.
+   * If no clients connect and known peers exist in the network, the hub
+   * steps down and assigns another peer as hub.
+   *
+   * This prevents "phantom hubs" — nodes that win election and bind the
+   * port but cannot accept inbound connections (e.g. due to firewall,
+   * network profile, or NIC misconfiguration).
+   *
+   * Set to `0` to disable the self-check.
+   * @default 20000 (20 seconds)
+   */
+  hubSelfCheckMs?: number;
 }
 
 // .............................................................................
@@ -168,6 +183,7 @@ export class Node {
   private _sleepResolve?: () => void;
   private _connectAbort?: AbortController;
   private _lastKnownRef?: string;
+  private _hubSelfCheckTimer?: ReturnType<typeof setTimeout>;
   private _listeners = new Map<string, Set<NodeListener>>();
   private readonly _logger: ServerLogger;
 
@@ -227,6 +243,7 @@ export class Node {
 
     this._running = false;
     this._transportReady = false;
+    this._clearHubSelfCheck();
     this._cancelRetry();
     this._networkManager.off('role-changed', this._onRoleChanged);
     this._networkManager.off('hub-changed', this._onHubChanged);
@@ -467,6 +484,7 @@ export class Node {
       });
       this._logger.info('Node', 'Now hub — accepting connections');
       this._transportReady = true;
+      this._startHubSelfCheck();
     } catch (err) {
       this._logger.error(
         'Node',
@@ -590,6 +608,7 @@ export class Node {
   // .........................................................................
 
   private async _tearDownCurrentRole(): Promise<void> {
+    this._clearHubSelfCheck();
     await this._stopAgent();
 
     // Preserve the latest ref so it can be seeded into the next role.
@@ -679,6 +698,116 @@ export class Node {
     if (this._connectAbort) {
       this._connectAbort.abort();
       this._connectAbort = undefined;
+    }
+  }
+
+  // .........................................................................
+  // Hub self-check
+  // .........................................................................
+
+  /**
+   * Start the hub self-check timer.
+   *
+   * After {@link NodeConfig.hubSelfCheckMs} (default 20s), checks whether
+   * the hub has accepted any client connections. If not — and known peers
+   * exist — this node is likely unreachable (e.g. firewall blocking inbound
+   * TCP). The hub steps down by assigning the earliest-started reachable
+   * peer as the new hub.
+   */
+  private _startHubSelfCheck(): void {
+    const ms = this._config.hubSelfCheckMs ?? 20_000;
+    if (ms <= 0) return; // Disabled
+
+    this._hubSelfCheckTimer = setTimeout(() => {
+      this._hubSelfCheckTimer = undefined;
+      this._runHubSelfCheck();
+    }, ms);
+    // Allow the process to exit even if the timer is pending
+    this._hubSelfCheckTimer.unref?.();
+  }
+
+  /**
+   * Clear (cancel) any pending hub self-check timer.
+   */
+  private _clearHubSelfCheck(): void {
+    if (this._hubSelfCheckTimer !== undefined) {
+      clearTimeout(this._hubSelfCheckTimer);
+      this._hubSelfCheckTimer = undefined;
+    }
+  }
+
+  /**
+   * Run the hub self-check. Called once after the timeout expires.
+   *
+   * If this node is still hub, has a Server with zero connected clients,
+   * and there are known peers in the network — step down.
+   */
+  private _runHubSelfCheck(): void {
+    /* v8 ignore if -- @preserve */
+    if (!this._running || this._role !== 'hub' || !this._server) return;
+
+    const clientCount = this._server.clients.size;
+    if (clientCount > 0) {
+      this._logger.info(
+        'Node',
+        `Hub self-check passed: ${clientCount} client(s) connected`,
+      );
+      return;
+    }
+
+    // Check if there are known peers (excluding self)
+    const topology = this._networkManager.getTopology();
+    const peerCount = Object.keys(topology.nodes).length - 1; // -1 for self
+    if (peerCount <= 0) {
+      this._logger.info(
+        'Node',
+        'Hub self-check: no peers in network, staying hub',
+      );
+      return;
+    }
+
+    // Zero clients connected but peers exist — this hub is unreachable.
+    // Find the best alternative: earliest-started peer that has been
+    // reachable (i.e. its port was open when probed).
+    this._logger.warn(
+      'Node',
+      `Hub self-check FAILED: 0 clients after timeout, ` +
+        `${peerCount} peer(s) known — stepping down`,
+    );
+
+    const selfId = this._networkManager.getIdentity().nodeId;
+    const probes = this._networkManager.getProbeScheduler().getProbes();
+    const reachablePeerIds = new Set(
+      probes.filter((p) => p.reachable).map((p) => p.toNodeId),
+    );
+
+    // Sort peers by startedAt (earliest first) among reachable peers
+    const candidates = Object.values(topology.nodes)
+      .filter((n) => n.nodeId !== selfId && reachablePeerIds.has(n.nodeId))
+      .sort((a, b) => a.startedAt - b.startedAt);
+
+    if (candidates.length > 0) {
+      const newHub = candidates[0];
+      this._logger.info(
+        'Node',
+        `Assigning hub to ${newHub.hostname} (${newHub.nodeId.slice(0, 8)}...)`,
+      );
+      this._networkManager.assignHub(newHub.nodeId);
+    } else {
+      // No reachable peers — try any peer (they may become reachable)
+      const anyPeers = Object.values(topology.nodes)
+        .filter((n) => n.nodeId !== selfId)
+        .sort((a, b) => a.startedAt - b.startedAt);
+      /* v8 ignore if -- @preserve */
+      if (anyPeers.length > 0) {
+        const newHub = anyPeers[0];
+        this._logger.info(
+          'Node',
+          `Assigning hub to ${newHub.hostname} ` +
+            `(${newHub.nodeId.slice(0, 8)}..., not yet probed)`,
+        );
+        this._networkManager.assignHub(newHub.nodeId);
+      }
     }
   }
 }
