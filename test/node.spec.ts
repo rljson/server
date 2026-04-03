@@ -1990,8 +1990,8 @@ describe('Node', () => {
       const node = new Node(config, deps);
 
       // Patch _sleep to resolve instantly so retries don't wait
-      (node as unknown as { _sleep: () => Promise<void> })._sleep =
-        () => Promise.resolve();
+      (node as unknown as { _sleep: () => Promise<void> })._sleep = () =>
+        Promise.resolve();
 
       const ready = vi.fn();
       node.on('ready', ready);
@@ -2196,6 +2196,362 @@ describe('Node', () => {
 
       await client.stop();
       await hub.stop();
+    });
+  });
+
+  // =========================================================================
+  // Hub self-check
+  // =========================================================================
+
+  describe('hub self-check', () => {
+    /**
+     * Helper: create a fake topology with the given nodes.
+     * `selfId` is always included in nodes.  `peers` are additional entries.
+     */
+    function fakeTopology(
+      selfId: string,
+      peers: Array<{
+        nodeId: string;
+        hostname: string;
+        startedAt: number;
+      }>,
+    ): NetworkTopology {
+      const nodes: Record<
+        string,
+        {
+          nodeId: string;
+          hostname: string;
+          localIps: string[];
+          domain: string;
+          port: number;
+          startedAt: number;
+        }
+      > = {};
+      nodes[selfId] = {
+        nodeId: selfId,
+        hostname: 'self',
+        localIps: ['127.0.0.1'],
+        domain: 'test-domain',
+        port: 3000,
+        startedAt: 2000,
+      };
+      for (const p of peers) {
+        nodes[p.nodeId] = {
+          ...p,
+          localIps: ['192.168.1.99'],
+          domain: 'test-domain',
+          port: 3000,
+        };
+      }
+      return {
+        domain: 'test-domain',
+        hubNodeId: selfId,
+        hubAddress: '127.0.0.1:3000',
+        formedBy: 'election',
+        formedAt: Date.now(),
+        nodes,
+        probes: [],
+        myRole: 'hub',
+      };
+    }
+
+    it('should step down when hub has zero clients and peers exist', async () => {
+      vi.useFakeTimers();
+      try {
+        const deps = createMockDeps();
+        const config = createConfig(4070, join(tempDir, 'sc1'), {
+          hubSelfCheckMs: 500,
+        });
+        const node = new Node(config, deps);
+        await node.start();
+        await becomeHub(node);
+
+        const nm = node.networkManager;
+        const selfId = nm.getIdentity().nodeId;
+
+        // Inject fake topology with one peer
+        const topoSpy = vi
+          .spyOn(nm, 'getTopology')
+          .mockReturnValue(
+            fakeTopology(selfId, [
+              { nodeId: 'peer-1', hostname: 'PEER-1', startedAt: 1000 },
+            ]),
+          );
+
+        // Peer is reachable in probes
+        vi.spyOn(nm.getProbeScheduler(), 'getProbes').mockReturnValue([
+          {
+            fromNodeId: selfId,
+            toNodeId: 'peer-1',
+            reachable: true,
+            latencyMs: 5,
+            measuredAt: Date.now(),
+          },
+        ]);
+
+        const assignHubSpy = vi.spyOn(nm, 'assignHub');
+
+        // Advance past the self-check timeout
+        vi.advanceTimersByTime(600);
+
+        expect(assignHubSpy).toHaveBeenCalledWith('peer-1');
+
+        topoSpy.mockRestore();
+        await node.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should NOT step down when hub has connected clients', async () => {
+      vi.useFakeTimers();
+      try {
+        const deps = createMockDeps();
+        const config = createConfig(4071, join(tempDir, 'sc2'), {
+          hubSelfCheckMs: 500,
+        });
+        const node = new Node(config, deps);
+        await node.start();
+        await becomeHub(node);
+
+        const nm = node.networkManager;
+        const selfId = nm.getIdentity().nodeId;
+
+        // Inject fake topology with a peer
+        const topoSpy = vi
+          .spyOn(nm, 'getTopology')
+          .mockReturnValue(
+            fakeTopology(selfId, [
+              { nodeId: 'peer-2', hostname: 'PEER-2', startedAt: 1000 },
+            ]),
+          );
+
+        // Simulate a connected client
+        const [serverSocket] = createSocketPair();
+        serverSocket.connect();
+        deps.capturedOnConnection!(serverSocket);
+
+        // Flush promises so addSocket() completes
+        await vi.advanceTimersByTimeAsync(0);
+
+        const assignHubSpy = vi.spyOn(nm, 'assignHub');
+
+        // Advance past the self-check timeout
+        await vi.advanceTimersByTimeAsync(600);
+
+        expect(assignHubSpy).not.toHaveBeenCalled();
+
+        topoSpy.mockRestore();
+        await node.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should NOT step down when no peers exist', async () => {
+      vi.useFakeTimers();
+      try {
+        const deps = createMockDeps();
+        const config = createConfig(4072, join(tempDir, 'sc3'), {
+          hubSelfCheckMs: 500,
+        });
+        const node = new Node(config, deps);
+        await node.start();
+        await becomeHub(node);
+
+        // Default topology has only self — no peers
+        const assignHubSpy = vi.spyOn(node.networkManager, 'assignHub');
+
+        // Advance past the self-check timeout
+        vi.advanceTimersByTime(600);
+
+        expect(assignHubSpy).not.toHaveBeenCalled();
+
+        await node.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should be disabled when hubSelfCheckMs is 0', async () => {
+      vi.useFakeTimers();
+      try {
+        const deps = createMockDeps();
+        const config = createConfig(4073, join(tempDir, 'sc4'), {
+          hubSelfCheckMs: 0,
+        });
+        const node = new Node(config, deps);
+        await node.start();
+        await becomeHub(node);
+
+        const nm = node.networkManager;
+        const selfId = nm.getIdentity().nodeId;
+
+        // Even with unreachable hub and peers, disabled means no action
+        const topoSpy = vi
+          .spyOn(nm, 'getTopology')
+          .mockReturnValue(
+            fakeTopology(selfId, [
+              { nodeId: 'peer-4', hostname: 'PEER-4', startedAt: 1000 },
+            ]),
+          );
+
+        const assignHubSpy = vi.spyOn(nm, 'assignHub');
+
+        vi.advanceTimersByTime(30_000);
+
+        expect(assignHubSpy).not.toHaveBeenCalled();
+
+        topoSpy.mockRestore();
+        await node.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should clear timer on role teardown', async () => {
+      vi.useFakeTimers();
+      try {
+        const deps = createMockDeps();
+        const config = createConfig(4074, join(tempDir, 'sc5'), {
+          hubSelfCheckMs: 500,
+        });
+        const node = new Node(config, deps);
+        await node.start();
+        await becomeHub(node);
+
+        const nm = node.networkManager;
+        const selfId = nm.getIdentity().nodeId;
+
+        const topoSpy = vi
+          .spyOn(nm, 'getTopology')
+          .mockReturnValue(
+            fakeTopology(selfId, [
+              { nodeId: 'peer-5', hostname: 'PEER-5', startedAt: 1000 },
+            ]),
+          );
+
+        // Stop the node before timer fires — should not throw
+        await node.stop();
+
+        // Advance timers — the callback must not fire after stop
+        const assignHubSpy = vi.spyOn(nm, 'assignHub');
+        vi.advanceTimersByTime(1000);
+
+        expect(assignHubSpy).not.toHaveBeenCalled();
+
+        topoSpy.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should prefer earliest-started reachable peer', async () => {
+      vi.useFakeTimers();
+      try {
+        const deps = createMockDeps();
+        const config = createConfig(4075, join(tempDir, 'sc6'), {
+          hubSelfCheckMs: 500,
+        });
+        const node = new Node(config, deps);
+        await node.start();
+        await becomeHub(node);
+
+        const nm = node.networkManager;
+        const selfId = nm.getIdentity().nodeId;
+
+        // Two peers — peer-b started earlier than peer-a
+        const topoSpy = vi.spyOn(nm, 'getTopology').mockReturnValue(
+          fakeTopology(selfId, [
+            { nodeId: 'peer-a', hostname: 'PEER-A', startedAt: 3000 },
+            { nodeId: 'peer-b', hostname: 'PEER-B', startedAt: 1000 },
+          ]),
+        );
+
+        // Both reachable
+        vi.spyOn(nm.getProbeScheduler(), 'getProbes').mockReturnValue([
+          {
+            fromNodeId: selfId,
+            toNodeId: 'peer-a',
+            reachable: true,
+            latencyMs: 5,
+            measuredAt: Date.now(),
+          },
+          {
+            fromNodeId: selfId,
+            toNodeId: 'peer-b',
+            reachable: true,
+            latencyMs: 5,
+            measuredAt: Date.now(),
+          },
+        ]);
+
+        const assignHubSpy = vi.spyOn(nm, 'assignHub');
+
+        vi.advanceTimersByTime(600);
+
+        // peer-b started earlier, so it should be chosen
+        expect(assignHubSpy).toHaveBeenCalledWith('peer-b');
+
+        topoSpy.mockRestore();
+        await node.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should fall back to unreachable peer if no reachable ones', async () => {
+      vi.useFakeTimers();
+      try {
+        const deps = createMockDeps();
+        const config = createConfig(4076, join(tempDir, 'sc7'), {
+          hubSelfCheckMs: 500,
+        });
+        const node = new Node(config, deps);
+        await node.start();
+        await becomeHub(node);
+
+        const nm = node.networkManager;
+        const selfId = nm.getIdentity().nodeId;
+
+        // Two unreachable peers — exercises the fallback sort comparator
+        const topoSpy = vi.spyOn(nm, 'getTopology').mockReturnValue(
+          fakeTopology(selfId, [
+            { nodeId: 'peer-u1', hostname: 'PEER-U1', startedAt: 2000 },
+            { nodeId: 'peer-u2', hostname: 'PEER-U2', startedAt: 1000 },
+          ]),
+        );
+
+        // No reachable probes
+        vi.spyOn(nm.getProbeScheduler(), 'getProbes').mockReturnValue([
+          {
+            fromNodeId: selfId,
+            toNodeId: 'peer-u1',
+            reachable: false,
+            latencyMs: -1,
+            measuredAt: Date.now(),
+          },
+          {
+            fromNodeId: selfId,
+            toNodeId: 'peer-u2',
+            reachable: false,
+            latencyMs: -1,
+            measuredAt: Date.now(),
+          },
+        ]);
+
+        const assignHubSpy = vi.spyOn(nm, 'assignHub');
+
+        vi.advanceTimersByTime(600);
+
+        // Falls back to earliest-started unreachable peer
+        expect(assignHubSpy).toHaveBeenCalledWith('peer-u2');
+
+        topoSpy.mockRestore();
+        await node.stop();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
