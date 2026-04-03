@@ -775,7 +775,15 @@ export class Node {
         `${peerCount} peer(s) known — stepping down`,
     );
 
+    // Exclude self from election for 3× the self-check interval.
+    // This prevents the step-down → re-elect → step-down loop when
+    // this node always wins election (earliest startedAt) but cannot
+    // accept inbound connections.
+    // hubSelfCheckMs is always positive here (guard in _startHubSelfCheck)
+    /* v8 ignore next -- @preserve */
+    const cooldownMs = (this._config.hubSelfCheckMs ?? 20_000) * 3;
     const selfId = this._networkManager.getIdentity().nodeId;
+    this._networkManager.excludeFromElection(selfId, cooldownMs);
     const probes = this._networkManager.getProbeScheduler().getProbes();
     const reachablePeerIds = new Set(
       probes.filter((p) => p.reachable).map((p) => p.toNodeId),
