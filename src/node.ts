@@ -108,7 +108,7 @@ export interface NodeConfig {
    * network profile, or NIC misconfiguration).
    *
    * Set to `0` to disable the self-check.
-   * @default 20000 (20 seconds)
+   * Defaults to 20000 (20 seconds).
    */
   hubSelfCheckMs?: number;
 }
