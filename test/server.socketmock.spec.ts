@@ -108,17 +108,17 @@ describe('[SocketMock] Data Storage (Io) Integration', () => {
   });
 
   afterAll(async () => {
-    await socketIoServer.close();
-
     await Promise.all(
       clientSockets.map(
         (clientSocket) =>
           new Promise<void>((resolve) => {
+            if (!clientSocket.connected) { resolve(); return; }
             clientSocket.on('disconnect', () => resolve());
             clientSocket.disconnect();
           }),
       ),
     );
+    await socketIoServer.close();
   });
 
   beforeEach(async () => {
@@ -412,17 +412,17 @@ describe('[SocketMock] Db Operations over IoMulti Integration', () => {
   });
 
   afterAll(async () => {
-    await socketIoServer.close();
-
     await Promise.all(
       clientSockets.map(
         (clientSocket) =>
           new Promise<void>((resolve) => {
+            if (!clientSocket.connected) { resolve(); return; }
             clientSocket.on('disconnect', () => resolve());
             clientSocket.disconnect();
           }),
       ),
     );
+    await socketIoServer.close();
   }, 20000);
 
   beforeEach(async () => {
@@ -598,17 +598,17 @@ describe('[SocketMock] Bs Operations over BsMulti Integration', () => {
   });
 
   afterAll(async () => {
-    await socketIoServer.close();
-
     await Promise.all(
       clientSockets.map(
         (clientSocket) =>
           new Promise<void>((resolve) => {
+            if (!clientSocket.connected) { resolve(); return; }
             clientSocket.on('disconnect', () => resolve());
             clientSocket.disconnect();
           }),
       ),
     );
+    await socketIoServer.close();
   });
 
   beforeEach(async () => {
@@ -1522,17 +1522,17 @@ describe('[SocketMock] Tree Operations over IoMulti Integration', () => {
   });
 
   afterAll(async () => {
-    await socketIoServer.close();
-
     await Promise.all(
       clientSockets.map(
         (clientSocket) =>
           new Promise<void>((resolve) => {
+            if (!clientSocket.connected) { resolve(); return; }
             clientSocket.on('disconnect', () => resolve());
             clientSocket.disconnect();
           }),
       ),
     );
+    await socketIoServer.close();
   });
 
   beforeEach(async () => {
