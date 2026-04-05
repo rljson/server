@@ -306,9 +306,10 @@ export class Node {
   }
 
   /**
-   * Whether the node's transport is fully ready.
+   * Whether the node's transport and agent are fully ready.
    * `false` during role transitions and before the first transition completes.
-   * `true` only after `_becomeHub()` or `_becomeClient()` has finished.
+   * `true` only after `_becomeHub()` or `_becomeClient()` has finished,
+   * including the `createAgent` callback (if provided).
    */
   get isTransportReady(): boolean {
     return this._transportReady;
@@ -483,7 +484,6 @@ export class Node {
         await this._server.addSocket(socket);
       });
       this._logger.info('Node', 'Now hub — accepting connections');
-      this._transportReady = true;
       this._startHubSelfCheck();
     } catch (err) {
       this._logger.error(
@@ -494,6 +494,9 @@ export class Node {
     const ctx: ReadyContext = { role: 'hub', server: this._server };
     this._emit('ready', ctx);
     await this._startAgent(ctx);
+    // Only mark ready when transport actually succeeded — a degraded hub
+    // (createHubTransport threw) works locally but can't accept connections.
+    this._transportReady = !!this._hubTransport;
   }
 
   private async _becomeClient(): Promise<void> {
@@ -593,7 +596,6 @@ export class Node {
       `Now client — connected to hub ${this._networkManager.getTopology().hubAddress}`,
     );
 
-    this._transportReady = true;
     const ctx: ReadyContext = {
       role: 'client',
       client: this._client,
@@ -601,6 +603,7 @@ export class Node {
     };
     this._emit('ready', ctx);
     await this._startAgent(ctx);
+    this._transportReady = true;
   }
 
   // .........................................................................
