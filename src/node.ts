@@ -134,6 +134,14 @@ export interface ReadyContext {
  * Node calls `stop()` before every role transition and on `node.stop()`.
  */
 export interface AgentHandle {
+  /**
+   * Optional flush hook called before `stop()` during role transitions.
+   * Implementations should capture the current filesystem/application
+   * state so that `_lastKnownRef` can be seeded into the next role.
+   * @returns The latest ref that represents the flushed state, or
+   *          undefined if nothing was flushed.
+   */
+  flush?: () => Promise<string | undefined>;
   stop: () => Promise<void> | void;
 }
 
@@ -612,12 +620,31 @@ export class Node {
 
   private async _tearDownCurrentRole(): Promise<void> {
     this._clearHubSelfCheck();
+
+    // Flush pending changes before stopping the agent.
+    // This captures last-moment writes that the file watcher hasn't
+    // detected yet (e.g. a file written milliseconds before a hub change).
+    // The returned ref represents the latest on-disk state and takes
+    // priority over Server.latestRef / Connector.lastSentRef.
+    let flushedRef: string | undefined;
+    if (this._agentHandle?.flush) {
+      try {
+        flushedRef = await this._agentHandle.flush();
+      } catch (err) {
+        this._logger.error('Node', `Agent flush failed: ${err}`);
+      }
+    }
+
     await this._stopAgent();
 
     // Preserve the latest ref so it can be seeded into the next role.
+    // Flushed ref takes priority (most up-to-date disk state).
     // Server.latestRef tracks what was broadcast; Connector.lastSentRef
     // tracks what this node pushed to the hub.
-    const ref = this._server?.latestRef ?? this._client?.connector?.lastSentRef;
+    const ref =
+      flushedRef ??
+      this._server?.latestRef ??
+      this._client?.connector?.lastSentRef;
     /* v8 ignore else -- @preserve */
     if (ref) {
       this._lastKnownRef = ref;
