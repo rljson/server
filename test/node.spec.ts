@@ -1518,6 +1518,128 @@ describe('Node', () => {
       // transition was discarded because _running was set to false.
       expect(ready).toHaveBeenCalledTimes(1);
     });
+
+    it('should call flush before stop on role transition', async () => {
+      const callOrder: string[] = [];
+
+      const createAgent = vi.fn(async () => ({
+        flush: async () => {
+          callOrder.push('flush');
+          return 'flushed-ref-abc';
+        },
+        stop: async () => {
+          callOrder.push('stop');
+        },
+      }));
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(7007, join(tempDir, 'a-flush'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+      // → client via static
+      await vi.waitFor(() => expect(createAgent).toHaveBeenCalledTimes(1));
+
+      // → hub (flush + stop agent #1, create agent #2)
+      await becomeHub(node);
+
+      // flush was called BEFORE stop
+      expect(callOrder[0]).toBe('flush');
+      expect(callOrder[1]).toBe('stop');
+
+      await node.stop();
+    });
+
+    it('should use flushed ref as _lastKnownRef', async () => {
+      const createAgent = vi.fn(async () => ({
+        flush: async () => 'flushed-ref-xyz',
+        stop: async () => {},
+      }));
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(7008, join(tempDir, 'a-flush2'));
+      const node = new Node(config, deps);
+
+      await node.start();
+      await becomeHub(node);
+
+      // Agent #1 returns flush ref. Transition hub→client uses it.
+      // Override hub to trigger hub→client transition.
+      node.networkManager.assignHub('some-other-node');
+      await vi.waitFor(() => expect(node.role).toBe('client'));
+
+      // The node should have passed the flushed ref to the new Client
+      // via connector.send(_lastKnownRef). We verify by checking that
+      // the Server in the second hub transition seeds the flushed ref.
+      // Switch back to hub to inspect the seeded ref.
+      await becomeHub(node);
+
+      // The server was seeded with the flushed ref from the first
+      // hub role's flush.
+      expect(node.server!.latestRef).toBe('flushed-ref-xyz');
+
+      await node.stop();
+    });
+
+    it('should survive flush throwing an error', async () => {
+      const error = vi.fn();
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error,
+        traffic: vi.fn(),
+      };
+
+      const createAgent = vi.fn(async () => ({
+        flush: async () => {
+          throw new Error('flush exploded');
+        },
+        stop: async () => {},
+      }));
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(7009, join(tempDir, 'a-flush3'), {
+        logger,
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+      await vi.waitFor(() => expect(node.role).toBe('client'));
+
+      // Transition should succeed despite flush error
+      await becomeHub(node);
+      expect(node.role).toBe('hub');
+
+      // Error was logged
+      expect(error).toHaveBeenCalledWith(
+        'Node',
+        expect.stringContaining('Agent flush failed'),
+      );
+
+      await node.stop();
+    });
   });
 
   // =========================================================================
