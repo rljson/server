@@ -595,10 +595,15 @@ export class Server extends BaseNode {
    * @param ref - The ref to seed as the latest known state.
    */
   seedLatestRef(ref: string): void {
-    this._latestRef = ref;
-    // Mark the seeded ref as already-multicast so that stale client
-    // re-sends of the same ref are deduplicated and cannot overwrite
-    // _latestRef with an older value.
+    // Only seed if no client push has already set _latestRef.
+    // During hub transitions a fast client may push before the new hub
+    // finishes its own storeInDb + seedLatestRef.  Overwriting with the
+    // seed would clobber the client's more-recent tree.
+    if (!this._latestRef) {
+      this._latestRef = ref;
+    }
+    // Always mark the seeded ref as already-multicast so that stale
+    // client re-sends of the same ref are deduplicated.
     this._multicastedRefsCurrent.add(ref);
     this._logger.info('Server', `Seeded latestRef: ${ref.slice(0, 12)}…`);
   }
