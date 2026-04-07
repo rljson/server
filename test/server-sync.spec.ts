@@ -912,6 +912,36 @@ describe('Server sync protocol', () => {
       expect(bootstrapReceived).toHaveLength(1);
       expect(bootstrapReceived[0].r).toBe('no-sync-ref');
     });
+
+    it('should not overwrite latestRef when a client has already pushed', async () => {
+      const route = Route.fromFlat('seedGuard');
+      const result = await createSyncServer(route, {});
+      server = result.server;
+
+      // Client pushes before seedLatestRef is called
+      const socketA = await addClient(server);
+      socketA.emit(route.flat, { o: 'originA', r: 'client-push-ref' });
+
+      expect(server.latestRef).toBe('client-push-ref');
+
+      // Hub calls seedLatestRef with its own (older) extract
+      server.seedLatestRef('seed-ref');
+
+      // The client push should NOT be overwritten
+      expect(server.latestRef).toBe('client-push-ref');
+    });
+
+    it('should set latestRef via seed when no client has pushed', async () => {
+      const route = Route.fromFlat('seedFresh');
+      const result = await createSyncServer(route, {});
+      server = result.server;
+
+      expect(server.latestRef).toBeUndefined();
+
+      server.seedLatestRef('seed-ref');
+
+      expect(server.latestRef).toBe('seed-ref');
+    });
   });
 
   // =========================================================================
