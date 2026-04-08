@@ -881,6 +881,75 @@ describe('Node', () => {
 
       await node.stop();
     });
+
+    it('should skip reconnect when reconciliation already connected to correct hub', async () => {
+      // Scenario: override cycle (assignHub + clearOverride) fires hub-changed
+      // BEFORE the role transition completes. The reconciliation in
+      // _performTransition reconnects to the same hub. The stale hub-changed
+      // transition should detect it's already connected and skip.
+      const createClientSpy = vi.fn();
+      const deps: NodeDeps = {
+        createHubTransport: async () => ({
+          onConnection: () => {},
+          close: async () => {},
+        }),
+        createClientTransport: async (hubAddress: string) => {
+          createClientSpy(hubAddress);
+          const [serverSocket, clientSocket] = createSocketPair();
+          serverSocket.connect();
+          return clientSocket;
+        },
+        networkManagerOptions: { probeFn: mockProbe },
+      };
+
+      const config = createConfig(4078, join(tempDir, 'hcSkip'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:4078' },
+          probing: { enabled: false },
+        },
+      });
+
+      const node = new Node(config, deps);
+      const ready = vi.fn();
+      node.on('ready', ready);
+      await node.start();
+
+      // Wait for initial client connection via static layer
+      await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+      expect(node.role).toBe('client');
+      expect(createClientSpy).toHaveBeenCalledTimes(1);
+
+      // Override self as hub + immediately clear. Both calls are
+      // synchronous, so the transition chain hasn't started yet.
+      // assignHub(self) → queues client→hub transition
+      // clearOverride → hub-changed fires (queues stale teardown)
+      //                + role-changed(hub→client) is SKIPPED (_role still 'client')
+      const nodeId = node.networkManager.getIdentity().nodeId;
+      node.networkManager.assignHub(nodeId);
+      node.networkManager.clearOverride();
+
+      // Wait for transitions to settle:
+      // 1. client→hub (assignHub)
+      // 2. hub→client (reconciliation) → reconnects to same static hub
+      // 3. stale hub-changed → detects same hub address → SKIP
+      await vi.waitFor(
+        () => {
+          expect(ready).toHaveBeenCalledTimes(3); // initial + hub + client
+          expect(node.role).toBe('client');
+        },
+        { timeout: 5_000 },
+      );
+
+      // createClientTransport called exactly twice:
+      // 1. initial connection
+      // 2. reconciliation reconnect
+      // NOT 3 — the stale hub-changed was skipped.
+      expect(createClientSpy).toHaveBeenCalledTimes(2);
+
+      await node.stop();
+    });
   });
 
   // =========================================================================

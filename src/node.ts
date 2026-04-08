@@ -191,6 +191,7 @@ export class Node {
   private _sleepResolve?: () => void;
   private _connectAbort?: AbortController;
   private _lastKnownRef?: string;
+  private _currentHubAddress?: string;
   private _hubSelfCheckTimer?: ReturnType<typeof setTimeout>;
   private _listeners = new Map<string, Set<NodeListener>>();
   private readonly _logger: ServerLogger;
@@ -383,6 +384,24 @@ export class Node {
     const prev = this._transitioning ?? Promise.resolve();
     this._transitioning = prev.then(async () => {
       if (!this._running || this._role !== 'client') return;
+
+      // Skip if a preceding transition (e.g. reconciliation in
+      // _performTransition) already reconnected us to the correct hub.
+      // Without this guard, an override cycle (hub-changed fires before
+      // role-changed is processed) can queue a stale teardown that
+      // destroys a working client connection.
+      const currentTopology = this._networkManager.getTopology();
+      if (
+        this._currentHubAddress &&
+        this._currentHubAddress === currentTopology.hubAddress
+      ) {
+        this._logger.info(
+          'Node',
+          'Hub-changed: already connected to correct hub — skipping reconnect',
+        );
+        return;
+      }
+
       this._transportReady = false;
       await this._tearDownCurrentRole();
       await this._becomeClient();
@@ -611,6 +630,9 @@ export class Node {
     };
     this._emit('ready', ctx);
     await this._startAgent(ctx);
+    /* v8 ignore next -- @preserve */
+    this._currentHubAddress =
+      this._networkManager.getTopology().hubAddress ?? undefined;
     this._transportReady = true;
   }
 
@@ -620,6 +642,7 @@ export class Node {
 
   private async _tearDownCurrentRole(): Promise<void> {
     this._clearHubSelfCheck();
+    this._currentHubAddress = undefined;
 
     // Flush pending changes before stopping the agent.
     // This captures last-moment writes that the file watcher hasn't
