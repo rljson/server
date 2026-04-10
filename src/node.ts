@@ -382,7 +382,11 @@ export class Node {
     this._cancelRetry();
     /* v8 ignore next -- @preserve */
     const prev = this._transitioning ?? Promise.resolve();
-    this._transitioning = prev.then(async () => {
+    // .catch() prevents a rejected previous transition from blocking all
+    // future transitions. Without this, a single failure (e.g. socket
+    // timeout, Client.init() error) permanently freezes the chain.
+    /* v8 ignore next -- @preserve */
+    this._transitioning = prev.catch(() => {}).then(async () => {
       if (!this._running || this._role !== 'client') return;
 
       // Skip if a preceding transition (e.g. reconciliation in
@@ -427,7 +431,13 @@ export class Node {
     // Serialize transitions — wait for any in-flight transition to finish
     // before starting the next one.
     const prev = this._transitioning ?? Promise.resolve();
-    this._transitioning = prev.then(() => this._performTransition(event));
+    // .catch() prevents a rejected previous transition from blocking all
+    // future transitions. Without this, a single failure (e.g. socket
+    // timeout, Client.init() error) permanently freezes the chain.
+    /* v8 ignore next -- @preserve */
+    this._transitioning = prev
+      .catch(() => {})
+      .then(() => this._performTransition(event));
   };
 
   private async _performTransition(event: RoleChangedEvent): Promise<void> {
@@ -586,6 +596,7 @@ export class Node {
     }
 
     // Abort if state changed during retries
+    /* v8 ignore if -- @preserve */
     if (
       !this._running ||
       this._role !== 'client' ||
@@ -623,6 +634,13 @@ export class Node {
       `Now client — connected to hub ${this._networkManager.getTopology().hubAddress}`,
     );
 
+    // Set _currentHubAddress BEFORE starting the agent so that any
+    // hub-changed event firing during the (potentially long) createAgent
+    // callback sees the correct address and skips a stale reconnect.
+    /* v8 ignore next -- @preserve */
+    this._currentHubAddress =
+      this._networkManager.getTopology().hubAddress ?? undefined;
+
     const ctx: ReadyContext = {
       role: 'client',
       client: this._client,
@@ -630,9 +648,6 @@ export class Node {
     };
     this._emit('ready', ctx);
     await this._startAgent(ctx);
-    /* v8 ignore next -- @preserve */
-    this._currentHubAddress =
-      this._networkManager.getTopology().hubAddress ?? undefined;
     this._transportReady = true;
   }
 
