@@ -539,6 +539,7 @@ export class Node {
   private async _becomeClient(): Promise<void> {
     const maxBackoff = 16_000;
     const gen = this._transitionGen;
+    let connectedHubAddress: string | undefined;
 
     for (let attempt = 0; ; attempt++) {
       if (
@@ -591,7 +592,9 @@ export class Node {
         continue;
       }
 
-      // Success — set up the rest of the client stack
+      // Success — record the address we actually connected to and
+      // set up the rest of the client stack.
+      connectedHubAddress = hubAddress;
       break;
     }
 
@@ -631,15 +634,18 @@ export class Node {
 
     this._logger.info(
       'Node',
-      `Now client — connected to hub ${this._networkManager.getTopology().hubAddress}`,
+      `Now client — connected to hub ${connectedHubAddress}`,
     );
 
     // Set _currentHubAddress BEFORE starting the agent so that any
     // hub-changed event firing during the (potentially long) createAgent
     // callback sees the correct address and skips a stale reconnect.
-    /* v8 ignore next -- @preserve */
-    this._currentHubAddress =
-      this._networkManager.getTopology().hubAddress ?? undefined;
+    // CRITICAL: use the address we ACTUALLY connected to, not the live
+    // topology. The topology may have changed during Client.init() —
+    // using the live value would make the stale-skip guard in
+    // _onHubChanged believe we're already connected to the new hub
+    // when the socket is still pointing at the old one.
+    this._currentHubAddress = connectedHubAddress;
 
     const ctx: ReadyContext = {
       role: 'client',
