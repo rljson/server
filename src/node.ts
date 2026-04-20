@@ -329,6 +329,63 @@ export class Node {
     return this._networkManager;
   }
 
+  /**
+   * Restart the agent without tearing down the transport or network layer.
+   *
+   * 1. Flushes the current agent (captures last-moment state).
+   * 2. Stops the agent (watcher, sync listeners).
+   * 3. Rebuilds a {@link ReadyContext} from the **existing** transport.
+   * 4. Calls {@link CreateAgent} again with the same role and transport.
+   *
+   * Use this to simulate a fresh-client bootstrap on a running node:
+   * clear the sync folder, then call `restartAgent()` — the agent factory
+   * will see an empty folder and trigger snapshot download.
+   */
+  async restartAgent(): Promise<void> {
+    if (!this._running) {
+      throw new Error('Cannot restart agent: node is not running');
+    }
+    if (this._role === 'unassigned') {
+      throw new Error('Cannot restart agent: no role assigned');
+    }
+
+    this._transportReady = false;
+
+    // 1. Flush pending changes before stopping.
+    let flushedRef: string | undefined;
+    if (this._agentHandle?.flush) {
+      try {
+        flushedRef = await this._agentHandle.flush();
+      } catch (err) {
+        this._logger.error('Node', `Agent flush failed during restart: ${err}`);
+      }
+    }
+
+    // 2. Stop agent (watcher, sync listeners, dispose).
+    await this._stopAgent();
+
+    // Preserve the latest ref so createAgent can seed it.
+    const ref =
+      flushedRef ??
+      this._server?.latestRef ??
+      this._client?.connector?.lastSentRef;
+    if (ref) {
+      this._lastKnownRef = ref;
+    }
+
+    // 3. Rebuild ReadyContext from existing transport.
+    const ctx: ReadyContext = {
+      role: this._role,
+      client: this._client,
+      server: this._server,
+      socket: this._clientSocket,
+    };
+
+    // 4. Re-create the agent.
+    await this._startAgent(ctx);
+    this._transportReady = true;
+  }
+
   // .........................................................................
   // Events
   // .........................................................................
@@ -386,30 +443,32 @@ export class Node {
     // future transitions. Without this, a single failure (e.g. socket
     // timeout, Client.init() error) permanently freezes the chain.
     /* v8 ignore next -- @preserve */
-    this._transitioning = prev.catch(() => {}).then(async () => {
-      if (!this._running || this._role !== 'client') return;
+    this._transitioning = prev
+      .catch(() => {})
+      .then(async () => {
+        if (!this._running || this._role !== 'client') return;
 
-      // Skip if a preceding transition (e.g. reconciliation in
-      // _performTransition) already reconnected us to the correct hub.
-      // Without this guard, an override cycle (hub-changed fires before
-      // role-changed is processed) can queue a stale teardown that
-      // destroys a working client connection.
-      const currentTopology = this._networkManager.getTopology();
-      if (
-        this._currentHubAddress &&
-        this._currentHubAddress === currentTopology.hubAddress
-      ) {
-        this._logger.info(
-          'Node',
-          'Hub-changed: already connected to correct hub — skipping reconnect',
-        );
-        return;
-      }
+        // Skip if a preceding transition (e.g. reconciliation in
+        // _performTransition) already reconnected us to the correct hub.
+        // Without this guard, an override cycle (hub-changed fires before
+        // role-changed is processed) can queue a stale teardown that
+        // destroys a working client connection.
+        const currentTopology = this._networkManager.getTopology();
+        if (
+          this._currentHubAddress &&
+          this._currentHubAddress === currentTopology.hubAddress
+        ) {
+          this._logger.info(
+            'Node',
+            'Hub-changed: already connected to correct hub — skipping reconnect',
+          );
+          return;
+        }
 
-      this._transportReady = false;
-      await this._tearDownCurrentRole();
-      await this._becomeClient();
-    });
+        this._transportReady = false;
+        await this._tearDownCurrentRole();
+        await this._becomeClient();
+      });
   };
 
   private _onRoleChanged = (event: RoleChangedEvent): void => {
