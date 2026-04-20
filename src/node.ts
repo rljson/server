@@ -443,30 +443,32 @@ export class Node {
     // future transitions. Without this, a single failure (e.g. socket
     // timeout, Client.init() error) permanently freezes the chain.
     /* v8 ignore next -- @preserve */
-    this._transitioning = prev.catch(() => {}).then(async () => {
-      if (!this._running || this._role !== 'client') return;
+    this._transitioning = prev
+      .catch(() => {})
+      .then(async () => {
+        if (!this._running || this._role !== 'client') return;
 
-      // Skip if a preceding transition (e.g. reconciliation in
-      // _performTransition) already reconnected us to the correct hub.
-      // Without this guard, an override cycle (hub-changed fires before
-      // role-changed is processed) can queue a stale teardown that
-      // destroys a working client connection.
-      const currentTopology = this._networkManager.getTopology();
-      if (
-        this._currentHubAddress &&
-        this._currentHubAddress === currentTopology.hubAddress
-      ) {
-        this._logger.info(
-          'Node',
-          'Hub-changed: already connected to correct hub — skipping reconnect',
-        );
-        return;
-      }
+        // Skip if a preceding transition (e.g. reconciliation in
+        // _performTransition) already reconnected us to the correct hub.
+        // Without this guard, an override cycle (hub-changed fires before
+        // role-changed is processed) can queue a stale teardown that
+        // destroys a working client connection.
+        const currentTopology = this._networkManager.getTopology();
+        if (
+          this._currentHubAddress &&
+          this._currentHubAddress === currentTopology.hubAddress
+        ) {
+          this._logger.info(
+            'Node',
+            'Hub-changed: already connected to correct hub — skipping reconnect',
+          );
+          return;
+        }
 
-      this._transportReady = false;
-      await this._tearDownCurrentRole();
-      await this._becomeClient();
-    });
+        this._transportReady = false;
+        await this._tearDownCurrentRole();
+        await this._becomeClient();
+      });
   };
 
   private _onRoleChanged = (event: RoleChangedEvent): void => {
