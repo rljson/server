@@ -1712,6 +1712,213 @@ describe('Node', () => {
   });
 
   // =========================================================================
+  // restartAgent — restart agent without tearing down transport
+  // =========================================================================
+
+  describe('restartAgent', () => {
+    it('should stop old agent and call createAgent again with same role', async () => {
+      const callOrder: string[] = [];
+      let callCount = 0;
+
+      const createAgent = vi.fn(async (ctx: ReadyContext) => {
+        const n = ++callCount;
+        callOrder.push(`create-${ctx.role}-${n}`);
+        return {
+          flush: async () => {
+            callOrder.push(`flush-${n}`);
+            return `ref-${n}`;
+          },
+          stop: async () => {
+            callOrder.push(`stop-${n}`);
+          },
+        };
+      });
+
+      const deps: NodeDeps = { ...createMockDeps(), createAgent };
+      const config = createConfig(7020, join(tempDir, 'ra1'));
+      const node = new Node(config, deps);
+
+      await node.start();
+      await becomeHub(node);
+      expect(createAgent).toHaveBeenCalledTimes(1);
+
+      // Restart agent
+      await node.restartAgent();
+      expect(createAgent).toHaveBeenCalledTimes(2);
+
+      // Second createAgent call gets the same role
+      const ctx2 = createAgent.mock.calls[1][0];
+      expect(ctx2.role).toBe('hub');
+      expect(ctx2.server).toBeDefined();
+
+      // Order: flush old → stop old → create new
+      expect(callOrder).toEqual([
+        'create-hub-1',
+        'flush-1',
+        'stop-1',
+        'create-hub-2',
+      ]);
+
+      await node.stop();
+    });
+
+    it('should work for client role', async () => {
+      const createAgent = vi
+        .fn<(ctx: ReadyContext) => Promise<AgentHandle>>()
+        .mockResolvedValue({ stop: vi.fn() });
+
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent,
+      };
+      const config = createConfig(7021, join(tempDir, 'ra2'), {
+        network: {
+          broadcast: { enabled: false, port: 41234 },
+          cloud: { enabled: false, endpoint: '' },
+          static: { hubAddress: '127.0.0.1:9999' },
+          probing: { enabled: false },
+        },
+      });
+      const node = new Node(config, deps);
+
+      await node.start();
+      await vi.waitFor(() => expect(createAgent).toHaveBeenCalledTimes(1));
+
+      await node.restartAgent();
+      expect(createAgent).toHaveBeenCalledTimes(2);
+
+      const ctx2 = createAgent.mock.calls[1][0];
+      expect(ctx2.role).toBe('client');
+      expect(ctx2.client).toBeDefined();
+      expect(ctx2.socket).toBeDefined();
+
+      await node.stop();
+    });
+
+    it('should preserve transport (server still works after restart)', async () => {
+      const createAgent = vi
+        .fn<(ctx: ReadyContext) => Promise<AgentHandle>>()
+        .mockResolvedValue({ stop: vi.fn() });
+
+      const deps = createMockDeps();
+      const depsWithAgent: NodeDeps = { ...deps, createAgent };
+      const config = createConfig(7022, join(tempDir, 'ra3'));
+      const node = new Node(config, depsWithAgent);
+
+      await node.start();
+      await becomeHub(node);
+
+      const serverBefore = createAgent.mock.calls[0][0].server;
+
+      await node.restartAgent();
+
+      const serverAfter = createAgent.mock.calls[1][0].server;
+      // Same server instance — transport was preserved
+      expect(serverAfter).toBe(serverBefore);
+
+      await node.stop();
+    });
+
+    it('should set transportReady back to true after restart', async () => {
+      const createAgent = vi
+        .fn<(ctx: ReadyContext) => Promise<AgentHandle>>()
+        .mockResolvedValue({ stop: vi.fn() });
+
+      const deps: NodeDeps = { ...createMockDeps(), createAgent };
+      const config = createConfig(7023, join(tempDir, 'ra4'));
+      const node = new Node(config, deps);
+
+      await node.start();
+      await becomeHub(node);
+      expect(node.isTransportReady).toBe(true);
+
+      await node.restartAgent();
+      expect(node.isTransportReady).toBe(true);
+
+      await node.stop();
+    });
+
+    it('should throw when node is not running', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(7024, join(tempDir, 'ra5'));
+      const node = new Node(config, deps);
+
+      await expect(node.restartAgent()).rejects.toThrow(
+        'Cannot restart agent: node is not running',
+      );
+    });
+
+    it('should throw when no role is assigned', async () => {
+      const deps = createMockDeps();
+      const config = createConfig(7025, join(tempDir, 'ra6'));
+      const node = new Node(config, deps);
+
+      await node.start();
+      // Node is running but no role assigned yet (no hub/client trigger)
+      expect(node.role).toBe('unassigned');
+
+      await expect(node.restartAgent()).rejects.toThrow(
+        'Cannot restart agent: no role assigned',
+      );
+
+      await node.stop();
+    });
+
+    it('should work without flush (agent has no flush method)', async () => {
+      let callCount = 0;
+      const createAgent = vi.fn(async () => {
+        callCount++;
+        return {
+          stop: vi.fn(),
+          // No flush method
+        };
+      });
+
+      const deps: NodeDeps = { ...createMockDeps(), createAgent };
+      const config = createConfig(7026, join(tempDir, 'ra7'));
+      const node = new Node(config, deps);
+
+      await node.start();
+      await becomeHub(node);
+
+      // Should not throw even without flush
+      await node.restartAgent();
+      expect(callCount).toBe(2);
+
+      await node.stop();
+    });
+
+    it('should log error and continue when flush throws during restart', async () => {
+      const error = vi.fn();
+      const logger = { info: vi.fn(), warn: vi.fn(), error };
+
+      const createAgent = vi.fn(async () => ({
+        flush: async () => {
+          throw new Error('flush kaboom');
+        },
+        stop: vi.fn(),
+      }));
+
+      const deps: NodeDeps = { ...createMockDeps(), createAgent };
+      const config = createConfig(7027, join(tempDir, 'ra8'), { logger });
+      const node = new Node(config, deps);
+
+      await node.start();
+      await becomeHub(node);
+
+      // Should not throw — flush error is caught and logged
+      await node.restartAgent();
+      expect(createAgent).toHaveBeenCalledTimes(2);
+      expect(error).toHaveBeenCalledWith(
+        'Node',
+        expect.stringContaining('Agent flush failed during restart'),
+      );
+
+      await node.stop();
+    });
+  });
+
+  // =========================================================================
   // Error resilience — boundary errors must not crash the node
   // =========================================================================
 
