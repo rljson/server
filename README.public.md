@@ -377,6 +377,7 @@ const server = new Server(route, io, bs, {
 | `refLogSize`            | 1 000      | Maximum number of recent payloads retained in the ref log for gap-fill responses.                                                                                                         |
 | `ackTimeoutMs`          | 10 000     | Timeout for collecting individual client ACKs before emitting the aggregated ACK. Falls back to `syncConfig.ackTimeoutMs`.                                                                |
 | `disableLocalCache`     | false      | When true, the server skips creating local IoMem/BsMem caches. The server acts as a pure relay, reading data only from connected client peers. Useful for memory-constrained deployments. |
+| `onRefArrived`          | undefined  | Hook awaited for every new ref before multicast. Receives `{ tenantId?, route, ref, sourceNodeId }`. If it throws, the ref is dropped (neither archived nor forwarded). See [EventHub archival hook](#eventhub-archival-hook--tenant-keyed-multicast). |
 
 ## Client options
 
@@ -610,6 +611,37 @@ client_V1StGXR8_Z5j
 ```
 
 Unlike a Connector's ephemeral `origin` (which changes on every instantiation), a `ClientId` should be generated once and stored (e.g. in localStorage) so it persists across reconnections.
+
+## EventHub archival hook & tenant-keyed multicast
+
+The server has two additive features to support persistent cross-network relays (e.g. an EventHub running on a cloud platform). Both are zero-cost and backwards compatible when unused.
+
+### `onRefArrived` archival hook
+
+```ts
+const server = new Server(route, io, bs, {
+  onRefArrived: async ({ tenantId, route, ref, sourceNodeId }) => {
+    await db.insert('eh_refs', { tenantId, route, ref, sourceNodeId });
+  },
+});
+```
+
+- Invoked (awaited) for every new ref BEFORE the multicast fan-out.
+- Receives `{ tenantId?: string, route: string, ref: string, sourceNodeId: string }`.
+  - `tenantId` is the value pinned on `socket.data.tenantId` on the sender's socket by an external auth middleware (e.g. a Socket.IO namespace middleware). `undefined` if none was set.
+  - `sourceNodeId` is the server-internal client id of the sender socket.
+- **If the hook throws, the ref is dropped** — it is neither archived nor forwarded. This is intentional: archival failure must not silently lose data downstream.
+
+### Tenant-keyed multicast
+
+When sockets have `data.tenantId` set by an external auth middleware, the server scopes multicast to sockets sharing the same `tenantId`:
+
+| Sender's `socket.data.tenantId` | Receivers that get the ref                |
+| ------------------------------- | ------------------------------------------ |
+| `"t1"`                          | only sockets with `data.tenantId === "t1"` |
+| `undefined`                     | only sockets with `data.tenantId === undefined` |
+
+Cross-tenant delivery is impossible by construction. Sockets without `data.tenantId` behave exactly as before, so non-tenant deployments are unaffected.
 
 ## Lifecycle management
 

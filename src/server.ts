@@ -99,6 +99,29 @@ export interface ServerOptions {
    * Defaults to 10 000 (10 s).
    */
   healthCheckTimeoutMs?: number;
+
+  /**
+   * Optional hook invoked (awaited) for every new ref received by the server,
+   * BEFORE the ref is multicast to other clients.
+   *
+   * Intended for archival use cases (e.g. EventHub writing the ref to a
+   * persistent log) where archival must complete before fan-out.
+   *
+   * The `tenantId` field is the value pinned on `socket.data.tenantId` by an
+   * external auth middleware on the sender's socket, or `undefined` if none
+   * was set. The `sourceNodeId` is the server-internal client id for the
+   * sender socket.
+   *
+   * Errors thrown by the hook are logged and DROP the ref (it is neither
+   * archived nor multicast). This is intentional: archival failure must not
+   * silently lose data downstream.
+   */
+  onRefArrived?: (ctx: {
+    tenantId?: string;
+    route: string;
+    ref: string;
+    sourceNodeId: string;
+  }) => Promise<void> | void;
 }
 
 // .............................................................................
@@ -158,6 +181,9 @@ export class Server extends BaseNode {
   // Local cache toggle
   private _disableLocalCache: boolean;
 
+  // Archival hook (EventHub etc.)
+  private _onRefArrived?: ServerOptions['onRefArrived'];
+
   // Bootstrap state
   private _latestRef: string | undefined;
   private _bootstrapHeartbeatTimer?: ReturnType<typeof setInterval>;
@@ -183,6 +209,7 @@ export class Server extends BaseNode {
     this._disableLocalCache = options?.disableLocalCache ?? false;
     this._healthCheckIntervalMs = options?.healthCheckIntervalMs ?? 30_000;
     this._healthCheckTimeoutMs = options?.healthCheckTimeoutMs ?? 10_000;
+    this._onRefArrived = options?.onRefArrived;
 
     // Sync protocol initialization
     this._syncConfig = options?.syncConfig;
@@ -426,12 +453,16 @@ export class Server extends BaseNode {
    */
   private _multicastRefs = () => {
     for (const [clientIdA, { ioUp: socketA }] of this._clients.entries()) {
-      socketA.on(this._route.flat, (payload: ConnectorPayload) => {
+      socketA.on(this._route.flat, async (payload: ConnectorPayload) => {
         const ref = payload.r;
+        const senderTenantId = (socketA as any).data?.tenantId as
+          | string
+          | undefined;
 
         this._logger.traffic('in', 'Server.Multicast', this._route.flat, {
           ref,
           from: clientIdA,
+          tenantId: senderTenantId,
         });
 
         // Avoid rebroadcasting the same ref multiple times (two-generation check)
@@ -464,12 +495,32 @@ export class Server extends BaseNode {
           return;
         }
 
+        // Archival hook — must succeed before fan-out
+        if (this._onRefArrived) {
+          try {
+            await this._onRefArrived({
+              tenantId: senderTenantId,
+              route: this._route.flat,
+              ref,
+              sourceNodeId: clientIdA,
+            });
+          } catch (err) {
+            this._logger.error(
+              'Server.Multicast',
+              'onRefArrived hook failed; dropping ref',
+              err,
+              { ref, from: clientIdA, tenantId: senderTenantId },
+            );
+            return;
+          }
+        }
+
         // Append to ref log (ring buffer) for gap-fill
         if (this._syncConfig) {
           this._appendToRefLog(payload);
         }
 
-        // Count receivers (all OTHER clients)
+        // Count receivers (all OTHER clients with matching tenant scope)
         let receiverCount = 0;
 
         // Set up ACK collection BEFORE broadcasting (so synchronous
@@ -479,26 +530,35 @@ export class Server extends BaseNode {
           ackCollector = this._setupAckCollection(clientIdA, ref);
         }
 
-        // Broadcast to all OTHER clients (filter out the sender)
+        // Broadcast to all OTHER clients (filter out the sender).
+        // When the sender's socket has a tenantId pinned, restrict delivery
+        // to sockets with the SAME tenantId — cross-tenant delivery is
+        // impossible by construction. Sockets without a tenantId only
+        // receive from senders without a tenantId.
         for (const [
           clientIdB,
-          { ioDown: socketB },
+          { ioUp: socketUpB, ioDown: socketB },
         ] of this._clients.entries()) {
-          if (clientIdA !== clientIdB) {
-            // clone and mark the forwarded payload with the origin to prevent loops
-            const forwarded = Object.assign({}, payload, {
-              __origin: clientIdA,
-            });
+          if (clientIdA === clientIdB) continue;
+          const receiverTenantId = (socketUpB as any).data?.tenantId as
+            | string
+            | undefined;
+          if (receiverTenantId !== senderTenantId) continue;
 
-            this._logger.traffic('out', 'Server.Multicast', this._route.flat, {
-              ref,
-              from: clientIdA,
-              to: clientIdB,
-            });
+          // clone and mark the forwarded payload with the origin to prevent loops
+          const forwarded = Object.assign({}, payload, {
+            __origin: clientIdA,
+          });
 
-            socketB.emit(this._route.flat, forwarded);
-            receiverCount++;
-          }
+          this._logger.traffic('out', 'Server.Multicast', this._route.flat, {
+            ref,
+            from: clientIdA,
+            to: clientIdB,
+            tenantId: senderTenantId,
+          });
+
+          socketB.emit(this._route.flat, forwarded);
+          receiverCount++;
         }
 
         // If no receivers and ACK was set up, trigger immediate finish
