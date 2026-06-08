@@ -5,24 +5,24 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@rljson/rljson': ^0.0.78
+  '@rljson/rljson': ^0.0.79
 
 importers:
 
   .:
     dependencies:
       '@rljson/bs':
-        specifier: ^0.0.22
-        version: 0.0.22
+        specifier: ^0.0.23
+        version: 0.0.23
       '@rljson/db':
-        specifier: ^0.0.19
-        version: 0.0.19
+        specifier: ^0.0.20
+        version: 0.0.20
       '@rljson/hash':
         specifier: ^0.0.18
         version: 0.0.18
       '@rljson/io':
-        specifier: ^0.0.68
-        version: 0.0.68
+        specifier: ^0.0.69
+        version: 0.0.69
       '@rljson/json':
         specifier: ^0.0.23
         version: 0.0.23
@@ -30,12 +30,12 @@ importers:
         specifier: ^0.0.17
         version: 0.0.17
       '@rljson/rljson':
-        specifier: ^0.0.78
-        version: 0.0.78
+        specifier: ^0.0.79
+        version: 0.0.79
     devDependencies:
       '@types/node':
-        specifier: ^25.9.1
-        version: 25.9.1
+        specifier: ^25.9.2
+        version: 25.9.2
       '@typescript-eslint/eslint-plugin':
         specifier: ^8.60.1
         version: 8.60.1(@typescript-eslint/parser@8.60.1(eslint@9.39.4)(typescript@6.0.3))(eslint@9.39.4)(typescript@6.0.3)
@@ -52,8 +52,8 @@ importers:
         specifier: ~9.39.2
         version: 9.39.4
       eslint-plugin-jsdoc:
-        specifier: ^63.0.1
-        version: 63.0.1(eslint@9.39.4)
+        specifier: ^63.0.2
+        version: 63.0.2(eslint@9.39.4)
       eslint-plugin-tsdoc:
         specifier: ^0.5.2
         version: 0.5.2(eslint@9.39.4)(typescript@6.0.3)
@@ -80,19 +80,19 @@ importers:
         version: 8.60.1(eslint@9.39.4)(typescript@6.0.3)
       vite:
         specifier: ^8.0.16
-        version: 8.0.16(@types/node@25.9.1)(esbuild@0.27.4)
+        version: 8.0.16(@types/node@25.9.2)(esbuild@0.27.4)
       vite-node:
         specifier: ^6.0.0
-        version: 6.0.0(@types/node@25.9.1)(esbuild@0.27.4)
+        version: 6.0.0(@types/node@25.9.2)(esbuild@0.27.4)
       vite-plugin-dts:
         specifier: ^5.0.2
-        version: 5.0.2(@microsoft/api-extractor@7.58.1(@types/node@25.9.1))(esbuild@0.27.4)(rolldown@1.0.3)(rollup@4.60.1)(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4))
+        version: 5.0.2(@microsoft/api-extractor@7.58.1(@types/node@25.9.2))(esbuild@0.27.4)(rolldown@1.0.3)(rollup@4.60.1)(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4))
       vite-tsconfig-paths:
         specifier: ^6.1.1
-        version: 6.1.1(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4))
+        version: 6.1.1(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4))
       vitest:
         specifier: ^4.1.8
-        version: 4.1.8(@types/node@25.9.1)(@vitest/coverage-v8@4.1.8)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4))
+        version: 4.1.8(@types/node@25.9.2)(@vitest/coverage-v8@4.1.8)(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4))
       vitest-dom:
         specifier: ^0.1.1
         version: 0.1.1(vitest@4.1.8)
@@ -106,8 +106,8 @@ packages:
   '@aws-crypto/util@5.2.0':
     resolution: {integrity: sha512-4RkU9EsI6ZpBve5fseQlGNUWKMa1RLPQ1dnjnQoe07ldfIzcsGb5hC5W0Dm7u423KWzawlrpbjXBrXCEv9zazQ==}
 
-  '@aws-sdk/types@3.973.9':
-    resolution: {integrity: sha512-kuBfgQVdcz5Bmapc4A13YbpVw/pXkesfhetcFYwbntqas8sF41OHyd4o28+/TG2ZQdHBsv90Lsu5y6oitvYCdg==}
+  '@aws-sdk/types@3.973.11':
+    resolution: {integrity: sha512-YjS0qFuECClRh4qhEyW8XagW0fwEPBeZ1cfsW/gU73Kh/ExFILxbzxOfPCmzF/2DwEvhvsHYt0b0qnvStwKYrg==}
     engines: {node: '>=20.0.0'}
 
   '@babel/code-frame@7.29.7':
@@ -411,12 +411,12 @@ packages:
   '@oxc-project/types@0.133.0':
     resolution: {integrity: sha512-KzkdCd6Uxqnf6l3HOw1xfatAlUURA0g14cvBYFyJ5SaNOQbOUvBr9PKArcPcrNIeRsBdgcUzOGrhKveVpvOIGA==}
 
-  '@rljson/bs@0.0.22':
-    resolution: {integrity: sha512-UQv2gx+uc9TI29VfwGfAhwd0xR8uiEpw+ObRyoshS4ZyyUpgOE3kti4nDffTVkbjNrU18rFqEhumexXs1/2anQ==}
+  '@rljson/bs@0.0.23':
+    resolution: {integrity: sha512-SNUHTVf5CN+KE/xHgMSwVmVzPHOQapPV8JFW1mztsfarH4gwnvbjhqygiV0kIGSaEsxs5w4Cj/zUShKnlQGqSw==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/db@0.0.19':
-    resolution: {integrity: sha512-zcjNMfhksKnYXROCoHASYvTW3CPoJPF3QuD073XssuuxxqZvLUB3Ui1YVwpPvH2qf9krEqWGoFJJE3wfbFcECg==}
+  '@rljson/db@0.0.20':
+    resolution: {integrity: sha512-MZDMsPBAGZcOxnbgr2gkjxS3GXX/dyoyUFP72wP/DeUawYj85fb50OXeN+CmgGoT3XqJBitPStHXHFXv8GtasA==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/hash@0.0.16':
@@ -431,8 +431,8 @@ packages:
     resolution: {integrity: sha512-3bqp+h+ifMrc6ki6N39vdp7XC6b2bjKodR4Grbv++7+s0RczaMZCPV81ylAIqWL/XBy63o3rTRqaFkGND/SrbA==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/io@0.0.68':
-    resolution: {integrity: sha512-XTAwtu+pGxkyZKVyv8E+MjypmJ9w1DCzAytCbn28gMng/DK/DLg11ZocmzYixVAxGSn0A9sXLFar72/x3NynDw==}
+  '@rljson/io@0.0.69':
+    resolution: {integrity: sha512-4nA5LV1vEUM3h8JeqO35wGM/CU1EYbLnSVMY4CNJq2ApW/xwrHElclkAxRoi1Q2fiaGjgMrU9FUf4NN/PrUEWg==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/is-ready@0.0.17':
@@ -451,8 +451,8 @@ packages:
     resolution: {integrity: sha512-KkDIN0zEFBiFhhpDi/HEWhD9oon5CEqJohNNIWbAazK/cE/ZFwCFPxVFimwA84l4mhDow8Ys4SGbum+AeBewWQ==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/rljson@0.0.78':
-    resolution: {integrity: sha512-HifsZIFNpJ65UaQA81Bjt68oI9s5mh8vqmzTsHhCHiw91gQ9TWACDli24LllHkSwi+g5rB+Ep9zxk4+e8qot9w==}
+  '@rljson/rljson@0.0.79':
+    resolution: {integrity: sha512-U9ZID+TEBrWpa1cNHoMDcspHs9nig9S9AVTL+QmrkFmbIlV+g3bPxXEt3QEyx9aB79TKxcBMbPcka9g94edHDA==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/validate@0.0.11':
@@ -774,8 +774,8 @@ packages:
   '@types/mdurl@2.0.0':
     resolution: {integrity: sha512-RGdgjQUZba5p6QEFAVx2OGb8rQDL/cPRG7GiedRzMcJ1tYnUANBncjbSB1NRGwbvjcPeikRABz2nshyPk1bhWg==}
 
-  '@types/node@25.9.1':
-    resolution: {integrity: sha512-xfrlY7UD5rMJk3ZVJP8BNzS28J36YJg+xp+LPXV1TdWxr8uMH5A860QNxYDGQe/ylDSgjxE52Q9VnO7p75tJxg==}
+  '@types/node@25.9.2':
+    resolution: {integrity: sha512-G05zqtJhcDLb8uslf5EjCxXg9G1KQxiV8OS0R26IC//Eoyitzqe8z37I7cqvnZlrlSfgocQRfSn/AHBZJJFyGw==}
 
   '@types/normalize-package-data@2.4.4':
     resolution: {integrity: sha512-37i+OaWTh9qeK4LSHPsyRC7NahnGotNuZvjLSgcPzblpHB3rrCJxAOgI5gCdKm7coonsaX1Of0ILiTcnZjbfxA==}
@@ -1136,8 +1136,8 @@ packages:
     resolution: {integrity: sha512-TtpcNJ3XAzx3Gq8sWRzJaVajRs0uVxA2YAkdb1jm2YkPz4G6egUFAyA3n5vtEIZefPk5Wa4UXbKuS5fKkJWdgA==}
     engines: {node: '>=10'}
 
-  eslint-plugin-jsdoc@63.0.1:
-    resolution: {integrity: sha512-2uQ2ShksMXRUI4K96/CyNs5sYmXQHaSoRjn1cxL2RcRHF+9d+njIkT03cZS7/g/eI/fPJTRfjm/MgIlOezD+KQ==}
+  eslint-plugin-jsdoc@63.0.2:
+    resolution: {integrity: sha512-0TchoK1uS4VxHSo3P4CyWQ31Lm+6zsT+xkHMC5KbFKwgOf8YrXPf1Bl8EP7kpgw1wfe/Ui5jz5mSX7ou8WAVuw==}
     engines: {node: ^22.13.0 || >=24}
     peerDependencies:
       eslint: ^7.0.0 || ^8.0.0 || ^9.0.0 || ^10.0.0
@@ -1594,8 +1594,9 @@ packages:
     resolution: {integrity: sha512-aLXtM9kbcG/ePyZfB45B0FrIdu1yy3udQjIVmp2IVl2np52dBK5ZZBhdyUKFT6neCutwDhCW/kQ+e/0K5n/Jhw==}
     engines: {node: '>=10'}
 
-  obug@2.1.1:
-    resolution: {integrity: sha512-uTqF9MuPraAQ+IsnPf366RG4cP9RtUi7MLO1N3KEc+wb0a6yKpeL0lmk2IB1jY5KHPAlTc6T/JRdC/YqxHNwkQ==}
+  obug@2.1.2:
+    resolution: {integrity: sha512-AWGB9WFcRXOQs48Z/udjI5ZcZMHXwX8XPByNpOydgcGsDLIzjGizhoMWJyKAWze7AVW/2W1i+/gPX4YtKe5cyg==}
+    engines: {node: '>=12.20.0'}
 
   optionator@0.9.4:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
@@ -1718,8 +1719,8 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
-  semver@7.8.1:
-    resolution: {integrity: sha512-rkVq3IXh+4FDGch+KwzX3aV9W3kO54GyEgpvBzSyctDA6Xtd7RJQV1xmXbeQp5v7+VzLOfVqiutSE6GICgPFvg==}
+  semver@7.8.2:
+    resolution: {integrity: sha512-c8jsqUZm3omBOI66G90z1Dyw5z622G8oLG+omfsHBJf3CWQTlOcwOjvOG6wtiNfW6anKm/eA39LMwMtMez2TiQ==}
     engines: {node: '>=10'}
     hasBin: true
 
@@ -2104,16 +2105,16 @@ snapshots:
   '@aws-crypto/sha256-js@5.2.0':
     dependencies:
       '@aws-crypto/util': 5.2.0
-      '@aws-sdk/types': 3.973.9
+      '@aws-sdk/types': 3.973.11
       tslib: 2.8.1
 
   '@aws-crypto/util@5.2.0':
     dependencies:
-      '@aws-sdk/types': 3.973.9
+      '@aws-sdk/types': 3.973.11
       '@smithy/util-utf8': 2.3.0
       tslib: 2.8.1
 
-  '@aws-sdk/types@3.973.9':
+  '@aws-sdk/types@3.973.11':
     dependencies:
       '@smithy/types': 4.14.3
       tslib: 2.8.1
@@ -2330,24 +2331,24 @@ snapshots:
     dependencies:
       lodash: 4.18.1
 
-  '@microsoft/api-extractor-model@7.33.5(@types/node@25.9.1)':
+  '@microsoft/api-extractor-model@7.33.5(@types/node@25.9.2)':
     dependencies:
       '@microsoft/tsdoc': 0.16.0
       '@microsoft/tsdoc-config': 0.18.1
-      '@rushstack/node-core-library': 5.21.0(@types/node@25.9.1)
+      '@rushstack/node-core-library': 5.21.0(@types/node@25.9.2)
     transitivePeerDependencies:
       - '@types/node'
     optional: true
 
-  '@microsoft/api-extractor@7.58.1(@types/node@25.9.1)':
+  '@microsoft/api-extractor@7.58.1(@types/node@25.9.2)':
     dependencies:
-      '@microsoft/api-extractor-model': 7.33.5(@types/node@25.9.1)
+      '@microsoft/api-extractor-model': 7.33.5(@types/node@25.9.2)
       '@microsoft/tsdoc': 0.16.0
       '@microsoft/tsdoc-config': 0.18.1
-      '@rushstack/node-core-library': 5.21.0(@types/node@25.9.1)
+      '@rushstack/node-core-library': 5.21.0(@types/node@25.9.2)
       '@rushstack/rig-package': 0.7.2
-      '@rushstack/terminal': 0.22.4(@types/node@25.9.1)
-      '@rushstack/ts-command-line': 5.3.4(@types/node@25.9.1)
+      '@rushstack/terminal': 0.22.4(@types/node@25.9.2)
+      '@rushstack/ts-command-line': 5.3.4(@types/node@25.9.2)
       diff: 8.0.4
       lodash: 4.18.1
       minimatch: 10.2.3
@@ -2377,18 +2378,18 @@ snapshots:
 
   '@oxc-project/types@0.133.0': {}
 
-  '@rljson/bs@0.0.22':
+  '@rljson/bs@0.0.23':
     dependencies:
       '@rljson/hash': 0.0.18
       '@rljson/json': 0.0.23
-      '@rljson/rljson': 0.0.78
+      '@rljson/rljson': 0.0.79
 
-  '@rljson/db@0.0.19':
+  '@rljson/db@0.0.20':
     dependencies:
       '@rljson/hash': 0.0.18
       '@rljson/io': 0.0.66
       '@rljson/json': 0.0.23
-      '@rljson/rljson': 0.0.78
+      '@rljson/rljson': 0.0.79
       '@rljson/validate': 0.0.11
       filtrex: 3.1.0
       object-traversal: 1.0.1
@@ -2411,15 +2412,15 @@ snapshots:
       '@rljson/hash': 0.0.18
       '@rljson/is-ready': 0.0.17
       '@rljson/json': 0.0.23
-      '@rljson/rljson': 0.0.78
+      '@rljson/rljson': 0.0.79
       '@rljson/validate': 0.0.11
 
-  '@rljson/io@0.0.68':
+  '@rljson/io@0.0.69':
     dependencies:
       '@rljson/hash': 0.0.18
       '@rljson/is-ready': 0.0.17
       '@rljson/json': 0.0.23
-      '@rljson/rljson': 0.0.78
+      '@rljson/rljson': 0.0.79
       '@rljson/validate': 0.0.11
 
   '@rljson/is-ready@0.0.17': {}
@@ -2430,7 +2431,7 @@ snapshots:
 
   '@rljson/network@0.0.17': {}
 
-  '@rljson/rljson@0.0.78':
+  '@rljson/rljson@0.0.79':
     dependencies:
       '@rljson/hash': 0.0.18
       '@rljson/json': 0.0.23
@@ -2440,7 +2441,7 @@ snapshots:
     dependencies:
       '@rljson/hash': 0.0.16
       '@rljson/json': 0.0.21
-      '@rljson/rljson': 0.0.78
+      '@rljson/rljson': 0.0.79
 
   '@rolldown/binding-android-arm64@1.0.3':
     optional: true
@@ -2576,7 +2577,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.60.1':
     optional: true
 
-  '@rushstack/node-core-library@5.21.0(@types/node@25.9.1)':
+  '@rushstack/node-core-library@5.21.0(@types/node@25.9.2)':
     dependencies:
       ajv: 8.18.0
       ajv-draft-04: 1.0.0(ajv@8.18.0)
@@ -2587,12 +2588,12 @@ snapshots:
       resolve: 1.22.12
       semver: 7.5.4
     optionalDependencies:
-      '@types/node': 25.9.1
+      '@types/node': 25.9.2
     optional: true
 
-  '@rushstack/problem-matcher@0.2.1(@types/node@25.9.1)':
+  '@rushstack/problem-matcher@0.2.1(@types/node@25.9.2)':
     optionalDependencies:
-      '@types/node': 25.9.1
+      '@types/node': 25.9.2
     optional: true
 
   '@rushstack/rig-package@0.7.2':
@@ -2601,18 +2602,18 @@ snapshots:
       strip-json-comments: 3.1.1
     optional: true
 
-  '@rushstack/terminal@0.22.4(@types/node@25.9.1)':
+  '@rushstack/terminal@0.22.4(@types/node@25.9.2)':
     dependencies:
-      '@rushstack/node-core-library': 5.21.0(@types/node@25.9.1)
-      '@rushstack/problem-matcher': 0.2.1(@types/node@25.9.1)
+      '@rushstack/node-core-library': 5.21.0(@types/node@25.9.2)
+      '@rushstack/problem-matcher': 0.2.1(@types/node@25.9.2)
       supports-color: 8.1.1
     optionalDependencies:
-      '@types/node': 25.9.1
+      '@types/node': 25.9.2
     optional: true
 
-  '@rushstack/ts-command-line@5.3.4(@types/node@25.9.1)':
+  '@rushstack/ts-command-line@5.3.4(@types/node@25.9.2)':
     dependencies:
-      '@rushstack/terminal': 0.22.4(@types/node@25.9.1)
+      '@rushstack/terminal': 0.22.4(@types/node@25.9.2)
       '@types/argparse': 1.0.38
       argparse: 1.0.10
       string-argv: 0.3.2
@@ -2659,7 +2660,7 @@ snapshots:
 
   '@types/cors@2.8.19':
     dependencies:
-      '@types/node': 25.9.1
+      '@types/node': 25.9.2
 
   '@types/deep-eql@4.0.2': {}
 
@@ -2679,7 +2680,7 @@ snapshots:
 
   '@types/mdurl@2.0.0': {}
 
-  '@types/node@25.9.1':
+  '@types/node@25.9.2':
     dependencies:
       undici-types: 7.24.6
 
@@ -2687,7 +2688,7 @@ snapshots:
 
   '@types/ws@8.18.1':
     dependencies:
-      '@types/node': 25.9.1
+      '@types/node': 25.9.2
 
   '@typescript-eslint/eslint-plugin@8.60.1(@typescript-eslint/parser@8.60.1(eslint@9.39.4)(typescript@6.0.3))(eslint@9.39.4)(typescript@6.0.3)':
     dependencies:
@@ -2777,7 +2778,7 @@ snapshots:
       '@typescript-eslint/visitor-keys': 8.56.1
       debug: 4.4.3
       minimatch: 10.2.5
-      semver: 7.8.1
+      semver: 7.8.2
       tinyglobby: 0.2.17
       ts-api-utils: 2.5.0(typescript@6.0.3)
       typescript: 6.0.3
@@ -2792,7 +2793,7 @@ snapshots:
       '@typescript-eslint/visitor-keys': 8.60.1
       debug: 4.4.3
       minimatch: 10.2.5
-      semver: 7.8.1
+      semver: 7.8.2
       tinyglobby: 0.2.17
       ts-api-utils: 2.5.0(typescript@6.0.3)
       typescript: 6.0.3
@@ -2840,10 +2841,10 @@ snapshots:
       istanbul-lib-report: 3.0.1
       istanbul-reports: 3.2.0
       magicast: 0.5.3
-      obug: 2.1.1
+      obug: 2.1.2
       std-env: 4.1.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.8(@types/node@25.9.1)(@vitest/coverage-v8@4.1.8)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4))
+      vitest: 4.1.8(@types/node@25.9.2)(@vitest/coverage-v8@4.1.8)(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4))
 
   '@vitest/expect@4.1.8':
     dependencies:
@@ -2854,13 +2855,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.0
 
-  '@vitest/mocker@4.1.8(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4))':
+  '@vitest/mocker@4.1.8(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4))':
     dependencies:
       '@vitest/spy': 4.1.8
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.0.16(@types/node@25.9.1)(esbuild@0.27.4)
+      vite: 8.0.16(@types/node@25.9.2)(esbuild@0.27.4)
 
   '@vitest/pretty-format@4.1.8':
     dependencies:
@@ -3058,7 +3059,7 @@ snapshots:
   engine.io@6.6.8:
     dependencies:
       '@types/cors': 2.8.19
-      '@types/node': 25.9.1
+      '@types/node': 25.9.2
       '@types/ws': 8.18.1
       accepts: 1.3.8
       base64id: 2.0.0
@@ -3112,7 +3113,7 @@ snapshots:
 
   escape-string-regexp@4.0.0: {}
 
-  eslint-plugin-jsdoc@63.0.1(eslint@9.39.4):
+  eslint-plugin-jsdoc@63.0.2(eslint@9.39.4):
     dependencies:
       '@es-joy/jsdoccomment': 0.87.0
       '@es-joy/resolve.exports': 1.2.0
@@ -3126,7 +3127,7 @@ snapshots:
       html-entities: 2.6.0
       object-deep-merge: 2.0.1
       parse-imports-exports: 0.2.4
-      semver: 7.8.1
+      semver: 7.8.2
       spdx-expression-parse: 4.0.0
       to-valid-identifier: 1.0.0
     transitivePeerDependencies:
@@ -3491,7 +3492,7 @@ snapshots:
 
   make-dir@4.0.0:
     dependencies:
-      semver: 7.8.1
+      semver: 7.8.2
 
   markdown-it-anchor@8.6.7(@types/markdown-it@14.1.2)(markdown-it@14.2.0):
     dependencies:
@@ -3552,7 +3553,7 @@ snapshots:
   normalize-package-data@8.0.0:
     dependencies:
       hosted-git-info: 9.0.3
-      semver: 7.8.1
+      semver: 7.8.2
       validate-npm-package-license: 3.0.4
 
   object-assign@4.1.1: {}
@@ -3561,7 +3562,7 @@ snapshots:
 
   object-traversal@1.0.1: {}
 
-  obug@2.1.1: {}
+  obug@2.1.2: {}
 
   optionator@0.9.4:
     dependencies:
@@ -3728,7 +3729,7 @@ snapshots:
       lru-cache: 6.0.0
     optional: true
 
-  semver@7.8.1: {}
+  semver@7.8.2: {}
 
   shebang-command@2.0.0:
     dependencies:
@@ -3895,7 +3896,7 @@ snapshots:
   universalify@2.0.1:
     optional: true
 
-  unplugin-dts@1.0.2(@microsoft/api-extractor@7.58.1(@types/node@25.9.1))(esbuild@0.27.4)(rolldown@1.0.3)(rollup@4.60.1)(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4)):
+  unplugin-dts@1.0.2(@microsoft/api-extractor@7.58.1(@types/node@25.9.2))(esbuild@0.27.4)(rolldown@1.0.3)(rollup@4.60.1)(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4)):
     dependencies:
       '@rollup/pluginutils': 5.4.0(rollup@4.60.1)
       '@volar/typescript': 2.4.28
@@ -3907,11 +3908,11 @@ snapshots:
       typescript: 6.0.3
       unplugin: 2.3.11
     optionalDependencies:
-      '@microsoft/api-extractor': 7.58.1(@types/node@25.9.1)
+      '@microsoft/api-extractor': 7.58.1(@types/node@25.9.2)
       esbuild: 0.27.4
       rolldown: 1.0.3
       rollup: 4.60.1
-      vite: 8.0.16(@types/node@25.9.1)(esbuild@0.27.4)
+      vite: 8.0.16(@types/node@25.9.2)(esbuild@0.27.4)
     transitivePeerDependencies:
       - supports-color
 
@@ -3933,13 +3934,13 @@ snapshots:
 
   vary@1.1.2: {}
 
-  vite-node@6.0.0(@types/node@25.9.1)(esbuild@0.27.4):
+  vite-node@6.0.0(@types/node@25.9.2)(esbuild@0.27.4):
     dependencies:
       cac: 7.0.0
       es-module-lexer: 2.1.0
-      obug: 2.1.1
+      obug: 2.1.2
       pathe: 2.0.3
-      vite: 8.0.16(@types/node@25.9.1)(esbuild@0.27.4)
+      vite: 8.0.16(@types/node@25.9.2)(esbuild@0.27.4)
     transitivePeerDependencies:
       - '@types/node'
       - '@vitejs/devtools'
@@ -3954,13 +3955,13 @@ snapshots:
       - tsx
       - yaml
 
-  vite-plugin-dts@5.0.2(@microsoft/api-extractor@7.58.1(@types/node@25.9.1))(esbuild@0.27.4)(rolldown@1.0.3)(rollup@4.60.1)(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4)):
+  vite-plugin-dts@5.0.2(@microsoft/api-extractor@7.58.1(@types/node@25.9.2))(esbuild@0.27.4)(rolldown@1.0.3)(rollup@4.60.1)(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4)):
     dependencies:
-      unplugin-dts: 1.0.2(@microsoft/api-extractor@7.58.1(@types/node@25.9.1))(esbuild@0.27.4)(rolldown@1.0.3)(rollup@4.60.1)(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4))
+      unplugin-dts: 1.0.2(@microsoft/api-extractor@7.58.1(@types/node@25.9.2))(esbuild@0.27.4)(rolldown@1.0.3)(rollup@4.60.1)(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4))
     optionalDependencies:
-      '@microsoft/api-extractor': 7.58.1(@types/node@25.9.1)
+      '@microsoft/api-extractor': 7.58.1(@types/node@25.9.2)
       rollup: 4.60.1
-      vite: 8.0.16(@types/node@25.9.1)(esbuild@0.27.4)
+      vite: 8.0.16(@types/node@25.9.2)(esbuild@0.27.4)
     transitivePeerDependencies:
       - '@rspack/core'
       - '@vue/language-core'
@@ -3970,17 +3971,17 @@ snapshots:
       - typescript
       - webpack
 
-  vite-tsconfig-paths@6.1.1(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4)):
+  vite-tsconfig-paths@6.1.1(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4)):
     dependencies:
       debug: 4.4.3
       globrex: 0.1.2
       tsconfck: 3.1.6(typescript@6.0.3)
-      vite: 8.0.16(@types/node@25.9.1)(esbuild@0.27.4)
+      vite: 8.0.16(@types/node@25.9.2)(esbuild@0.27.4)
     transitivePeerDependencies:
       - supports-color
       - typescript
 
-  vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4):
+  vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4):
     dependencies:
       lightningcss: 1.32.0
       picomatch: 4.0.4
@@ -3988,7 +3989,7 @@ snapshots:
       rolldown: 1.0.3
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 25.9.1
+      '@types/node': 25.9.2
       esbuild: 0.27.4
       fsevents: 2.3.3
 
@@ -4000,12 +4001,12 @@ snapshots:
       dom-accessibility-api: 0.6.3
       lodash-es: 4.18.1
       redent: 4.0.0
-      vitest: 4.1.8(@types/node@25.9.1)(@vitest/coverage-v8@4.1.8)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4))
+      vitest: 4.1.8(@types/node@25.9.2)(@vitest/coverage-v8@4.1.8)(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4))
 
-  vitest@4.1.8(@types/node@25.9.1)(@vitest/coverage-v8@4.1.8)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4)):
+  vitest@4.1.8(@types/node@25.9.2)(@vitest/coverage-v8@4.1.8)(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4)):
     dependencies:
       '@vitest/expect': 4.1.8
-      '@vitest/mocker': 4.1.8(vite@8.0.16(@types/node@25.9.1)(esbuild@0.27.4))
+      '@vitest/mocker': 4.1.8(vite@8.0.16(@types/node@25.9.2)(esbuild@0.27.4))
       '@vitest/pretty-format': 4.1.8
       '@vitest/runner': 4.1.8
       '@vitest/snapshot': 4.1.8
@@ -4014,7 +4015,7 @@ snapshots:
       es-module-lexer: 2.1.0
       expect-type: 1.3.0
       magic-string: 0.30.21
-      obug: 2.1.1
+      obug: 2.1.2
       pathe: 2.0.3
       picomatch: 4.0.4
       std-env: 4.1.0
@@ -4022,10 +4023,10 @@ snapshots:
       tinyexec: 1.2.4
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
-      vite: 8.0.16(@types/node@25.9.1)(esbuild@0.27.4)
+      vite: 8.0.16(@types/node@25.9.2)(esbuild@0.27.4)
       why-is-node-running: 2.3.0
     optionalDependencies:
-      '@types/node': 25.9.1
+      '@types/node': 25.9.2
       '@vitest/coverage-v8': 4.1.8(vitest@4.1.8)
     transitivePeerDependencies:
       - msw
