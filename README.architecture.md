@@ -68,6 +68,12 @@ Client B: db.get(route, {_hash: ref})
 
 In default setups you can reuse a single socket for all four channels; the code normalizes that into a bundle. When you need stricter isolation (e.g., large blob streams vs. small Io refs), use distinct namespaces/sockets to avoid head-of-line blocking and to keep logging/metrics per channel.
 
+#### Connector channel duplexing (split namespaces)
+
+The sync `Connector` uses a **single** `Socket` for both directions: it _emits_ refs/acks/gap-fill upstream and _listens_ for refs/acks/bootstrap downstream. The `Server`, however, receives a client's refs on that client's `ioUp` namespace and fans forwarded refs + bootstrap back out on the client's **`ioDown`** namespace.
+
+With a single multiplexed socket (`ioUp === ioDown`) this is transparent. When the namespaces are genuinely split (e.g. an EventHub exposing four Socket.IO namespaces per client), binding the Connector to `ioUp` alone would make it listen on the wrong channel and never see the server's downstream traffic. `Client` therefore wires the Connector through `connectorDuplexSocket(ioUp, ioDown)`, which routes `emit` upstream and `on`/`off`/`removeAllListeners` downstream. The adapter returns the socket unchanged when `ioUp === ioDown`, so single-socket setups are entirely unaffected.
+
 ### Design Pillars
 
 - **Local-first reads, local-only writes**: All mutations stay on the caller; reads walk the priority ladder (local first, then peers through the server).
