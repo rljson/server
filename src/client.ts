@@ -12,6 +12,7 @@ import { ClientId, Route, SyncConfig } from '@rljson/rljson';
 import { BaseNode } from './base-node.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
 import {
+  connectorDuplexSocket,
   normalizeSocketBundle,
   SocketLike,
   SocketNamespaceBundle,
@@ -258,7 +259,7 @@ export class Client extends BaseNode {
     this._connector = new Connector(
       this._db,
       this._route!,
-      socket.ioUp,
+      connectorDuplexSocket(socket.ioUp, socket.ioDown),
       this._syncConfig,
       this._clientIdentity,
     );

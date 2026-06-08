@@ -13,6 +13,7 @@ found in the LICENSE file in the root of this package.
 - [Split-Brain: Clients not reconnecting on hub change (fixed in v0.0.14)](#split-brain-clients-not-reconnecting-on-hub-change-fixed-in-v0014)
 - [Vscode Windows: Debugging is not working](#vscode-windows-debugging-is-not-working)
 - [Test Isolation: Socket.IO event listener accumulation](#test-isolation-socketio-event-listener-accumulation)
+- [Refs not delivered across split namespaces (fixed in v0.0.36)](#refs-not-delivered-across-split-namespaces-fixed-in-v0036)
 
 ## Split-Brain: Clients not reconnecting on hub change (fixed in v0.0.14)
 
@@ -104,3 +105,41 @@ beforeEach(async () => {
 1. ❌ `tearDown()` in `afterEach`: Caused hook timeouts
 2. ❌ Creating new socket connections per test: Too slow, defeats purpose of `beforeAll`
 3. ✅ Clear listeners while reusing connections: Fast and reliable
+
+## Refs not delivered across split namespaces (fixed in v0.0.36)
+
+Date: 2026-06-08
+
+**Problem:**
+
+When a client connects over four genuinely separate Socket.IO namespaces
+(`ioUp`/`ioDown`/`bsUp`/`bsDown`) — as a tenant-aware EventHub does — a ref
+written by client A was never received by client B, even though both clients
+connected, authenticated, and initialised successfully.
+
+**Symptoms:**
+
+- `connector.send(ref)` on A completes without error.
+- B's `connector.listen(cb)` callback never fires.
+- A raw listener on B's `ioDown` socket DOES receive the `${route}` event, but
+  B's `Connector` (bound to `ioUp`) stays silent.
+- All single-socket unit/integration tests pass, masking the bug.
+
+**Root Cause:**
+
+The `Connector` uses a single `Socket` for both directions — it `emit`s
+upstream and `.on`-listens downstream. `Client` bound that socket to the
+bundle's `ioUp`. But `Server._multicastRefs` fans forwarded refs and bootstrap
+out on each receiver's **`ioDown`** namespace. With a single multiplexed socket
+(`ioUp === ioDown`) the channels coincide, so every existing test passed; with
+split namespaces the Connector listened on `ioUp` and missed all server →
+client traffic.
+
+**Solution (v0.0.36):**
+
+`Client._setupDbAndConnector` now wires the Connector through
+`connectorDuplexSocket(ioUp, ioDown)`, which routes `emit` upstream and
+`on`/`off`/`removeAllListeners` downstream. The adapter returns the socket
+unchanged when `ioUp === ioDown`, leaving single-socket setups untouched.
+A real split-namespace round-trip test (`test/connector-split-namespace.spec.ts`)
+locks in the behaviour.

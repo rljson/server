@@ -1,6 +1,6 @@
 {
   "name": "@rljson/server",
-  "version": "0.0.35",
+  "version": "0.0.36",
   "description": "Rljson server description",
   "homepage": "https://github.com/rljson/server",
   "bugs": "https://github.com/rljson/server/issues",
@@ -28,13 +28,13 @@
     "updateGoldens": "cross-env UPDATE_GOLDENS=true pnpm test"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.2",
     "@typescript-eslint/eslint-plugin": "^8.60.1",
     "@typescript-eslint/parser": "^8.60.1",
     "@vitest/coverage-v8": "^4.1.8",
     "cross-env": "^10.1.0",
     "eslint": "~9.39.2",
-    "eslint-plugin-jsdoc": "^63.0.1",
+    "eslint-plugin-jsdoc": "^63.0.2",
     "eslint-plugin-tsdoc": "^0.5.2",
     "globals": "^17.6.0",
     "jsdoc": "^4.0.5",
@@ -51,20 +51,20 @@
     "vitest-dom": "^0.1.1"
   },
   "dependencies": {
-    "@rljson/bs": "^0.0.22",
-    "@rljson/db": "^0.0.19",
+    "@rljson/bs": "^0.0.23",
+    "@rljson/db": "^0.0.20",
     "@rljson/hash": "^0.0.18",
-    "@rljson/io": "^0.0.68",
+    "@rljson/io": "^0.0.69",
     "@rljson/json": "^0.0.23",
     "@rljson/network": "^0.0.17",
-    "@rljson/rljson": "^0.0.78"
+    "@rljson/rljson": "^0.0.79"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
     ],
     "overrides": {
-      "@rljson/rljson": "^0.0.78"
+      "@rljson/rljson": "^0.0.79"
     }
   },
   "packageManager": "pnpm@10.11.0"
