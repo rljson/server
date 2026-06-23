@@ -2746,6 +2746,66 @@ describe('Node', () => {
       }
     });
 
+    it('should step down when a client connects then later drops (periodic re-check)', async () => {
+      // Regression: the self-check used to be one-shot. A hub that passed the
+      // first check (clients connected) would never re-check, so if its server
+      // later lost every client (crash/partition) it stayed 'hub' forever with
+      // a dead server while a peer elected itself — a split brain where the
+      // stale ex-hub never demoted and never caught up. The check must repeat.
+      vi.useFakeTimers();
+      try {
+        const deps = createMockDeps();
+        const config = createConfig(4078, join(tempDir, 'sc-periodic'), {
+          hubSelfCheckMs: 500,
+        });
+        const node = new Node(config, deps);
+        await node.start();
+        await becomeHub(node);
+
+        const nm = node.networkManager;
+        const selfId = nm.getIdentity().nodeId;
+
+        const topoSpy = vi
+          .spyOn(nm, 'getTopology')
+          .mockReturnValue(
+            fakeTopology(selfId, [
+              { nodeId: 'peer-p', hostname: 'PEER-P', startedAt: 1000 },
+            ]),
+          );
+        vi.spyOn(nm.getProbeScheduler(), 'getProbes').mockReturnValue([
+          {
+            fromNodeId: selfId,
+            toNodeId: 'peer-p',
+            reachable: true,
+            latencyMs: 5,
+            measuredAt: Date.now(),
+          },
+        ]);
+
+        // A client is connected — first check passes and re-arms.
+        const [serverSocket] = createSocketPair();
+        serverSocket.connect();
+        deps.capturedOnConnection!(serverSocket);
+        await vi.advanceTimersByTimeAsync(0);
+
+        const assignHubSpy = vi.spyOn(nm, 'assignHub');
+        await vi.advanceTimersByTimeAsync(600);
+        expect(assignHubSpy).not.toHaveBeenCalled();
+
+        // The server now loses every client (simulated crash/partition).
+        node.server!.clients.clear();
+
+        // Next periodic tick: 0 clients + a reachable peer → step down.
+        await vi.advanceTimersByTimeAsync(600);
+        expect(assignHubSpy).toHaveBeenCalledWith('peer-p');
+
+        topoSpy.mockRestore();
+        await node.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('should NOT step down when no peers exist', async () => {
       vi.useFakeTimers();
       try {

@@ -885,6 +885,12 @@ export class Node {
         'Node',
         `Hub self-check passed: ${clientCount} client(s) connected`,
       );
+      // Re-arm: a hub must keep monitoring. Its server can lose every client
+      // later (process/transport crash, network partition). Without a repeat
+      // check the node would stay 'hub' with a dead server forever while a
+      // peer elects itself — a split brain in which the stale ex-hub never
+      // demotes to client and so never catches up on new revisions.
+      this._startHubSelfCheck();
       return;
     }
 
@@ -896,6 +902,8 @@ export class Node {
         'Node',
         'Hub self-check: no peers in network, staying hub',
       );
+      // Re-arm: peers may appear (or our server may fail) before the next tick.
+      this._startHubSelfCheck();
       return;
     }
 
