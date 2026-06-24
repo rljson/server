@@ -879,7 +879,15 @@ export class Node {
     /* v8 ignore if -- @preserve */
     if (!this._running || this._role !== 'hub' || !this._server) return;
 
-    const clientCount = this._server.clients.size;
+    // Count only real remote clients. A hub registers its own loopback via
+    // addBroadcastSocket under a 'broadcast_' clientId so it can multicast to
+    // itself; that must NOT count as a connected client. Using clients.size
+    // here would make a hub always see >=1 "client" (its loopback) and so
+    // never step down — defeating the whole self-check (the stale/crashed hub
+    // stays hub forever → split brain). Real clients use a 'client_' prefix.
+    const clientCount = [...this._server.clients.keys()].filter((id) =>
+      id.startsWith('client_'),
+    ).length;
     if (clientCount > 0) {
       this._logger.info(
         'Node',
