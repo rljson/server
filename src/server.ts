@@ -323,6 +323,28 @@ export class Server extends BaseNode {
     (bsUp as any).__clientId = clientId;
     (bsDown as any).__clientId = clientId;
 
+    // F1: Register a disconnect watcher on ioUp BEFORE any of the awaits
+    // below (peer creation, _queueRefresh). Socket.io — and every Socket
+    // implementation used here — does not replay a 'disconnect' event
+    // that fires while we are suspended on one of those awaits, so a
+    // handler registered only once setup finishes (as this used to do,
+    // via _registerDisconnectHandler near the very end) can miss it
+    // entirely. When that happens the client's IoPeer/BsPeer still get
+    // queued into _ios/_bss below, with nothing left watching the socket
+    // to ever remove them — a permanently stranded dead peer.
+    //
+    // `clientId` is not in `_clients` yet at this point, so the real
+    // disconnect handler's removeSocket(clientId) call would just no-op
+    // if used here directly. Instead, remember that a disconnect
+    // happened; the post-setup check further down finishes the cleanup
+    // once the client actually exists to remove. Once setup succeeds,
+    // this watcher is swapped for the real handler.
+    let diedDuringSetup = false;
+    const earlyDisconnect = () => {
+      diedDuringSetup = true;
+    };
+    ioUp.on('disconnect', earlyDisconnect);
+
     try {
       const ioPeer = await this._createIoPeer(socket, clientId);
       const bsPeer = await this._createBsPeer(socket, clientId);
@@ -336,37 +358,83 @@ export class Server extends BaseNode {
       this._pendingSockets.push({ ioDown, bsDown });
       this._queueIoPeer(ioPeer);
       this._queueBsPeer(bsPeer);
-
-      await this._queueRefresh();
-
-      // remove all existing listeners and re-establish multicast
-      this._removeAllListeners();
-      this._multicastRefs();
-
-      // Auto-cleanup on socket disconnect
-      this._registerDisconnectHandler(clientId, ioUp);
-
-      // Bootstrap: send latest ref to the new client
-      this._sendBootstrap(ioDown);
-
-      // Start heartbeat timer if configured and not already running
-      this._startBootstrapHeartbeat();
-
-      // Start application-level health checks
-      this._startHealthChecks();
-
-      this._logger.info('Server', 'Client socket added successfully', {
-        clientId,
-        totalClients: this._clients.size,
-      });
     } catch (error) {
       /* v8 ignore start -- @preserve */
+      ioUp.off('disconnect', earlyDisconnect);
       this._logger.error('Server', 'Failed to add client socket', error, {
         clientId,
       });
       throw error;
+      /* v8 ignore stop -- @preserve */
     }
-    /* v8 ignore stop -- @preserve */
+
+    try {
+      await this._queueRefresh();
+    } catch (refreshError) {
+      // F1/F3: _queueRefresh() rejecting must not leave this client
+      // half-registered. It is already sitting in _clients/_ios/_bss
+      // (registered just above) with no disconnect handler watching it,
+      // and its {ioDown, bsDown} pair is still in _pendingSockets even
+      // though _refreshServers() never got to drain it. Left alone, the
+      // next successful refresh (e.g. triggered by removeSocket's own
+      // rebuild below, or a later addSocket) would register CRUD
+      // listeners for a socket whose client we are about to tear back
+      // down — a duplicate-listener leak on retry. Drop the stale
+      // pending entry first, then remove the client the normal way, now
+      // that it actually exists to remove.
+      this._pendingSockets = this._pendingSockets.filter(
+        (pending) => pending.ioDown !== ioDown,
+      );
+      ioUp.off('disconnect', earlyDisconnect);
+      this._logger.error(
+        'Server',
+        'Queued refresh failed during addSocket — rolling back client',
+        refreshError,
+        { clientId },
+      );
+      await this.removeSocket(clientId);
+
+      throw refreshError;
+    }
+
+    // Setup succeeded — swap the early watcher for the real disconnect
+    // handler now that the client is fully registered.
+    ioUp.off('disconnect', earlyDisconnect);
+    this._registerDisconnectHandler(clientId, ioUp);
+
+    // remove all existing listeners and re-establish multicast
+    this._removeAllListeners();
+    this._multicastRefs();
+
+    // Bootstrap: send latest ref to the new client
+    this._sendBootstrap(ioDown);
+
+    // Start heartbeat timer if configured and not already running
+    this._startBootstrapHeartbeat();
+
+    // Start application-level health checks
+    this._startHealthChecks();
+
+    // F1: the socket may already be gone — either the early watcher above
+    // caught a 'disconnect' event mid-setup, or (belt-and-suspenders, in
+    // case a Socket implementation's event and its `connected` flag can
+    // momentarily disagree) it simply is not connected right now even
+    // though no event fired. Either way, do not leave a dead client
+    // registered for the next health-check cycle to eventually find —
+    // clean it up immediately.
+    if (diedDuringSetup || ioUp.connected === false) {
+      this._logger.warn(
+        'Server',
+        'Socket disconnected during addSocket setup — removing client',
+        { clientId },
+      );
+      await this.removeSocket(clientId);
+    } else {
+      this._logger.info('Server', 'Client socket added successfully', {
+        clientId,
+        totalClients: this._clients.size,
+      });
+    }
 
     return this;
   }
@@ -1242,12 +1310,31 @@ export class Server extends BaseNode {
     // Remove multicast listener for this client
     client.ioUp.removeAllListeners(this._route.flat);
 
-    // Remove disconnect handler
+    // Remove disconnect handler. Absent when removeSocket() is called to
+    // roll back a client whose _queueRefresh() rejected during addSocket
+    // (F1) — that path never got as far as registering the real
+    // disconnect handler in the first place.
     const cleanup = this._disconnectCleanups.get(clientId);
-    /* v8 ignore if -- @preserve */
     if (cleanup) {
       cleanup();
       this._disconnectCleanups.delete(clientId);
+    }
+
+    // F4: Unregister this client's CRUD listeners from IoServer/BsServer.
+    // Before io 0.0.73 / bs 0.0.25 these removeSocket() calls only forgot
+    // the socket in internal bookkeeping — the CRUD handlers were
+    // anonymous arrows with no retained reference, so they kept firing on
+    // the down socket forever (a leak, and duplicate execution if the
+    // socket is later shared with, or re-added to, another server — see
+    // the two-Servers-one-socket coverage in server-peer-lifecycle.spec.ts).
+    // Broadcast clients (see addBroadcastSocket) never had their down
+    // sockets registered here in the first place — io/bs is null for
+    // those — so there is nothing to unregister.
+    if (client.io) {
+      this._ioServer.removeSocket(client.ioDown);
+    }
+    if (client.bs) {
+      this._bsServer.removeSocket(client.bsDown);
     }
 
     // Remove peers from multi arrays
@@ -1355,9 +1442,23 @@ export class Server extends BaseNode {
     clientId: string,
     socket: SocketWithClientId,
   ) {
-    const handler = () => {
+    const handler = async () => {
       this._logger.info('Server', 'Client disconnected', { clientId });
-      this.removeSocket(clientId);
+      // F3: nothing awaits this handler's own returned promise — it runs
+      // as an event callback. Without this try/catch, a rejection from
+      // removeSocket() (e.g. a rebuild failure while tearing the client
+      // down) would surface as an unhandled promise rejection instead of
+      // a logged, recoverable error.
+      try {
+        await this.removeSocket(clientId);
+      } catch (error) {
+        this._logger.error(
+          'Server',
+          'removeSocket failed while handling disconnect',
+          error,
+          { clientId },
+        );
+      }
     };
     socket.on('disconnect', handler);
     this._disconnectCleanups.set(clientId, () => {
