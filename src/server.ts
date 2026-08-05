@@ -607,6 +607,43 @@ export class Server extends BaseNode {
   }
 
   /**
+   * Number of IoPeer entries currently in the Io read cascade (`_ios`),
+   * i.e. `_ios.length` minus the local cache slot (when local caching is
+   * enabled). Reflects reality after any pruning, which can legitimately
+   * differ from the number of connected clients — that gap is exactly
+   * what {@link isLocalCacheDisabled} and the peer-count invariant (see
+   * `_checkPeerInvariant`) are there to catch. Exists so tests can assert
+   * on cascade membership after connect/disconnect churn without
+   * reaching into the private `_ios` array.
+   */
+  get ioPeerCount(): number {
+    return this._ios.length - (this._disableLocalCache ? 0 : 1);
+  }
+
+  /**
+   * Stable identifiers for every entry currently in the Io read cascade
+   * (`_ios`), in cascade order: the local cache first (as `'local'`, when
+   * enabled), then one entry per peer, identified by the `clientId` of
+   * the client it belongs to. Peer entries are looked up by identity
+   * against `_clients` rather than using IoMulti's own positional ids
+   * (`io-0`, `io-1`, …), which are reassigned on every rebuild and would
+   * not survive being compared across churn. An entry that is neither
+   * the local cache nor traceable to a current client is an orphan —
+   * exactly what `_pruneDeadPeers` removes on the next rebuild; it
+   * surfaces here as `'orphan'` so a test can observe it before that
+   * happens.
+   */
+  get readableIds(): string[] {
+    return this._ios.map((entry) => {
+      if (entry.io === this._localIo) return 'local';
+      for (const [clientId, client] of this._clients.entries()) {
+        if (client.io === entry.io) return clientId;
+      }
+      return 'orphan';
+    });
+  }
+
+  /**
    * Returns the sync configuration, if any.
    */
   get syncConfig(): SyncConfig | undefined {
