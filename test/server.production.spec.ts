@@ -515,10 +515,13 @@ describe('Server production readiness', () => {
       await server.addSocket(clientSocket);
 
       // IoMulti should have: IoMem (local cache) + 1 IoPeer (client)
-      // but NOT 2 IoPeers (no broadcast peer)
-      // Verify indirectly: clients map has 2, showing broadcast is registered
-      // for multicast, but since we can't directly inspect _ios length,
-      // we verify the broadcast socket's io field is null
+      // but NOT 2 IoPeers (no broadcast peer). ioPeerCount excludes the
+      // local IoMem, so exactly 1 confirms the broadcast socket never
+      // queued an IoPeer.
+      expect(server.ioPeerCount).toBe(1);
+
+      // Also verify indirectly: clients map has 2, showing broadcast is
+      // registered for multicast, but its io field stays null.
       const entries = [...server.clients.entries()];
       const broadcastEntry = entries.find(([k]) => k.startsWith('broadcast_'));
       expect(broadcastEntry).toBeDefined();

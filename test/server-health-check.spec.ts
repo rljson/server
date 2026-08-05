@@ -133,6 +133,38 @@ describe('Server health checks', () => {
       // Only healthy client remains
       expect(server.clients.size).toBe(1);
     });
+
+    // T2: extends the zombie-pruning coverage above with the
+    // ioPeerCount/readableIds accessors (server-peer-lifecycle.spec.ts
+    // covers the F1-F4 fixes; this proves the pre-existing prune path
+    // they build on still shrinks the cascade and — the part that could
+    // not be asserted directly before these accessors existed — that a
+    // pruned zombie is never queried by a later served read).
+    it('should shrink ioPeerCount/readableIds and never query a pruned zombie again', async () => {
+      server = await createServerWithHealth();
+      const zombieSocket = await addZombieSocket(server);
+      const emitSpy = vi.spyOn(zombieSocket, 'emit');
+
+      const [zombieClientId] = [...server.clients.keys()];
+      expect(server.ioPeerCount).toBe(1);
+      expect(server.readableIds).toContain(zombieClientId);
+
+      // Trigger health check + timeout
+      vi.advanceTimersByTime(5_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(server.clients.size).toBe(0);
+      expect(server.ioPeerCount).toBe(0);
+      expect(server.readableIds).not.toContain(zombieClientId);
+
+      // A served read must not attempt to reach the pruned zombie's
+      // socket — it is gone from the cascade, not merely skipped.
+      emitSpy.mockClear();
+      await server.io.rawTableCfgs();
+      expect(
+        emitSpy.mock.calls.some(([event]) => event === 'rawTableCfgs'),
+      ).toBe(false);
+    });
   });
 
   // =========================================================================
