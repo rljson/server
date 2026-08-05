@@ -1087,6 +1087,128 @@ When `server.addSocket(socket)` is called:
 
 Each step is logged at `info` level. Errors in any step are logged at `error` level and re-thrown.
 
+### Socket / peer lifecycle
+
+The Server sits at the middle of a distributed sync hub: it keeps a cascade
+of `IoPeer`/`BsPeer` entries in `_ios`/`_bss` (one per connected client, read
+priority 2, behind the local cache at priority 1) and hands that cascade to
+`IoMulti`/`BsMulti`. If that cascade ever accumulates a dead/stale peer — a
+client whose socket dropped without the Server noticing — every read that
+falls through to it pays the full peer-request timeout (30s) before the next
+readable answers. The mechanisms below (introduced alongside the
+`@rljson/io@0.0.73` / `@rljson/bs@0.0.25` dependency bump, which shipped the
+library-side halves of this hardening — see "Dependency versions" below)
+keep the cascade honest.
+
+**`addSocket()` registration order.** The disconnect watcher on `ioUp` is
+registered **before** the first `await` in `addSocket()` (i.e. before
+`IoPeer`/`BsPeer` creation), not after setup finishes. Socket.io — and every
+`Socket` implementation this package ships — does not replay a `'disconnect'`
+event that fires while `addSocket()` is suspended on one of those awaits,
+so a handler registered only at the end can miss a disconnect that happens
+mid-setup entirely, permanently stranding a peer in `_ios`/`_bss` with
+nothing left watching its socket. Concretely:
+
+1. A lightweight watcher is attached to `ioUp` first thing. Because the
+   client is not registered in `_clients` yet, it cannot call
+   `removeSocket()` directly (that would just no-op) — it only records that
+   a disconnect happened.
+2. Peer creation, registration, and `_queueRefresh()` proceed as before.
+3. If `_queueRefresh()` **rejects**, the client is rolled all the way back:
+   its `{ioDown, bsDown}` pair is dropped from `_pendingSockets` (so a later
+   successful refresh cannot resurrect CRUD listeners for a socket whose
+   client no longer exists), the early watcher is removed, and
+   `removeSocket()` cleans up the client/peer entries already registered —
+   `addSocket()` then rejects with the original error. Without this, a
+   failed refresh left a half-registered client behind: present in
+   `_clients`/`_ios` but never wired to a disconnect handler.
+4. On success, the early watcher is swapped for the real disconnect handler
+   (`_registerDisconnectHandler`), and — belt-and-suspenders — `addSocket()`
+   checks whether the socket died during setup (either the watcher caught a
+   `'disconnect'` event, or `ioUp.connected` now reads `false` even though no
+   event fired) and immediately removes the client if so, rather than
+   waiting for the next health-check cycle to find it.
+
+**Health-check prune contract.** The existing ping/pong health check
+(`_runHealthCheck`, opt-in via `healthCheckIntervalMs`) is unchanged: each
+cycle pings every non-broadcast client and calls `removeSocket()` on any
+that fail to pong within `healthCheckTimeoutMs`. `removeSocket()` fully
+rebuilds the cascade, so a pruned zombie is not just skipped on the next
+read — it is gone.
+
+**Defensive sweep + invariant (`_pruneDeadPeers` / `_checkPeerInvariant`).**
+Every rebuild (`_rebuildMultis`, called from both `addSocket()` and
+`removeSocket()`) starts by dropping any `_ios`/`_bss` entry whose `isOpen`
+is explicitly `false`, or that is not the local cache entry and does not
+belong to any client currently in `_clients` (an orphan). This is a
+bookkeeping safety net independent of whichever path normally removes a
+client — it catches drift regardless of cause. After sweeping, a private
+invariant check compares `_ios.length` against
+`(non-broadcast client count) + (disableLocalCache ? 0 : 1)` and logs (does
+not throw — this is a production safety net, not a hard guard) if they
+disagree.
+
+**Robust rebuild (closed-member pre-filter).** `IoMulti.init()` throws if
+*any* member's `isOpen` is `false` (see `@rljson/io`) — before the sweep
+above ran on every rebuild, a single dead peer left in `_ios` would strand
+the **entire** cascade: `_rebuildMultis()` (and therefore every future
+`addSocket()`/`removeSocket()` call) would throw trying to construct the
+next `IoMulti`, even for a brand-new, perfectly healthy client. The sweep
+removes closed members before `new IoMulti(...)`/`new BsMulti(...)` are
+ever called, so a peer going dark no longer takes the whole read cascade
+down with it. (`BsMulti.init()` does not have this failure mode — it
+tolerates closed members at construction time — but `_bss` is swept
+identically for consistency and so `ioPeerCount`/invariant bookkeeping stays
+accurate on both sides.)
+
+**`removeSocket()` listener cleanup.** After filtering the departing
+client's peer out of `_ios`/`_bss`, `removeSocket()` now also calls
+`this._ioServer.removeSocket(client.ioDown)` and
+`this._bsServer.removeSocket(client.bsDown)`. Before `@rljson/io@0.0.73` /
+`@rljson/bs@0.0.25`, these calls only forgot the socket in `IoServer`'s /
+`BsServer`'s own bookkeeping — the CRUD listeners registered in
+`_addTransportLayer` were anonymous arrows with no retained reference, so
+`socket.off()` could never target them and they kept firing on the socket
+forever. The updated libraries retain `{event, handler}` pairs per socket so
+`removeSocket()` can really unregister them; idempotent for broadcast
+clients (`client.io`/`client.bs` are `null` — see `addBroadcastSocket` —
+so there is nothing to unregister) and for sockets that were never
+registered in the first place.
+
+**The one-socket-one-Server assumption.** A given down-socket
+(`ioDown`/`bsDown`) is meant to be registered with exactly one `Server`
+instance's `IoServer`/`BsServer` at a time. Nothing at this layer *prevents*
+two `Server`s from sharing one socket — `IoServer`/`BsServer` keep their CRUD
+listeners in an instance-scoped map, so two servers on the same socket both
+answer requests (whichever's listener settles the ack callback first wins;
+`removeSocket()` on one only unregisters that one's listeners, never the
+other's) rather than crashing or corrupting state. But it is still an
+accident, not a supported topology: a hub app with more than one `Server`
+role in flight (e.g. during a hub transition) is responsible for routing
+each socket to exactly one `Server` at a time. That app-level routing
+discipline is out of scope here — this package only guarantees the
+library-side primitives stay well-behaved if it is ever violated
+transiently.
+
+**Test accessors.** `server.ioPeerCount` returns the number of `IoPeer`
+entries currently in `_ios` (i.e. `_ios.length` minus the local cache slot,
+when enabled) — the count as swept, not as merely requested.
+`server.readableIds` returns a stable identifier per `_ios` entry in cascade
+order (`'local'` for the local cache, the owning client's `clientId` for a
+peer, `'orphan'` for an entry `_pruneDeadPeers` would remove on the next
+rebuild), so a test can assert on cascade membership across connect/
+disconnect churn without reaching into the private `_ios` array.
+
+### Dependency versions
+
+`@rljson/io@0.0.73` and `@rljson/bs@0.0.25` are the minimum versions this
+package's peer-lifecycle hardening (above) relies on:
+`IoMulti`/`BsMulti` skip closed readables at call time and record them as
+errors instead of silently returning an empty result; `IoPeer`/`BsPeer` fail
+fast on a known-closed socket instead of paying the full request timeout;
+and `IoServer.removeSocket()`/`BsServer.removeSocket()` really unregister
+their CRUD listeners (see "`removeSocket()` listener cleanup" above).
+
 ### Teardown
 
 ```typescript

@@ -181,6 +181,8 @@ This is implemented with `IoMulti` and `BsMulti` internally, but the public API 
 - `isTornDown` – whether the server has been shut down
 - `isLocalCacheDisabled` – whether local caching is disabled (pure relay mode)
 - `logger` – the `ServerLogger` instance (defaults to `noopLogger`)
+- `ioPeerCount` – number of `IoPeer` entries currently in the Io read cascade (excludes the local cache slot); reflects reality after dead/orphaned-peer pruning, useful for asserting cascade size after connect/disconnect churn
+- `readableIds` – stable identifiers (`'local'`, a peer's `clientId`, or `'orphan'`) for every entry currently in the Io read cascade, in cascade order
 
 ## Example
 

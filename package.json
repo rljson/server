@@ -1,6 +1,6 @@
 {
   "name": "@rljson/server",
-  "version": "0.0.41",
+  "version": "0.0.42",
   "description": "Rljson server description",
   "homepage": "https://github.com/rljson/server",
   "bugs": "https://github.com/rljson/server/issues",
@@ -51,10 +51,10 @@
     "vitest-dom": "^0.1.1"
   },
   "dependencies": {
-    "@rljson/bs": "^0.0.23",
+    "@rljson/bs": "^0.0.25",
     "@rljson/db": "^0.0.20",
     "@rljson/hash": "^0.0.18",
-    "@rljson/io": "^0.0.69",
+    "@rljson/io": "^0.0.73",
     "@rljson/json": "^0.0.23",
     "@rljson/network": "^0.0.20",
     "@rljson/rljson": "^0.0.79"
