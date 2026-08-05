@@ -1054,9 +1054,102 @@ export class Server extends BaseNode {
   }
 
   /**
+   * Drops dead or orphaned entries from `_ios`/`_bss` before they can be
+   * fed into a fresh IoMulti/BsMulti, or silently inflate `ioPeerCount`.
+   * An entry is dropped when either:
+   *  - its `isOpen` is explicitly `false` — a peer whose socket has
+   *    closed. `IoMulti.init()` THROWS on this (see `@rljson/io`), which
+   *    would strand the entire cascade — including every future rebuild
+   *    — behind that one dead member; `BsMulti.init()` tolerates it, but
+   *    both cascades should stop offering a known-dead member either way.
+   *  - it is not the local cache entry and does not belong to any client
+   *    currently in `_clients` — an orphan, e.g. left behind by a bug or
+   *    a duplicate registration.
+   * Called on every rebuild (see `_rebuildMultis`), which is the single
+   * choke point that guarantees `new IoMulti(...)` below never sees a
+   * closed member. Logs and checks the peer-count invariant whenever
+   * anything actually changes.
+   */
+  private _pruneDeadPeers(): void {
+    const liveIos = new Set<Io>();
+    const liveBss = new Set<Bs>();
+    for (const client of this._clients.values()) {
+      if (client.io) liveIos.add(client.io);
+      if (client.bs) liveBss.add(client.bs);
+    }
+
+    const ioCountBefore = this._ios.length;
+    this._ios = this._ios.filter((entry) => {
+      if (entry.io === this._localIo) return true;
+      if (entry.io.isOpen === false) return false;
+      return liveIos.has(entry.io);
+    });
+
+    const bsCountBefore = this._bss.length;
+    this._bss = this._bss.filter((entry) => {
+      if (entry.bs === this._localBs) return true;
+      if ((entry.bs as { isOpen?: boolean }).isOpen === false) return false;
+      return liveBss.has(entry.bs);
+    });
+
+    if (
+      this._ios.length !== ioCountBefore ||
+      this._bss.length !== bsCountBefore
+    ) {
+      this._logger.warn('Server', 'Pruned dead/orphaned peers', {
+        ioRemoved: ioCountBefore - this._ios.length,
+        bsRemoved: bsCountBefore - this._bss.length,
+      });
+    }
+
+    this._checkPeerInvariant();
+  }
+
+  /**
+   * Defensive invariant: the Io read cascade (`_ios`) should hold exactly
+   * one entry per non-broadcast client plus, when local caching is
+   * enabled, the local cache slot — no more, no less. Violations are
+   * logged rather than thrown: this is a production safety net, not a
+   * hard guard, so a drifted count degrades observability, not
+   * availability. The violation branch is deliberately reachable (not
+   * v8-ignored) so tests can prove it fires — see
+   * server-peer-lifecycle.spec.ts.
+   * @returns Whether the invariant currently holds.
+   */
+  private _checkPeerInvariant(): boolean {
+    let nonBroadcastClients = 0;
+    for (const clientId of this._clients.keys()) {
+      if (!clientId.startsWith('broadcast_')) nonBroadcastClients++;
+    }
+    const expected = nonBroadcastClients + (this._disableLocalCache ? 0 : 1);
+    const ok = this._ios.length === expected;
+
+    if (!ok) {
+      this._logger.error(
+        'Server',
+        'Io peer-count invariant violated',
+        undefined,
+        {
+          actual: this._ios.length,
+          expected,
+          nonBroadcastClients,
+          disableLocalCache: this._disableLocalCache,
+        },
+      );
+    }
+
+    return ok;
+  }
+
+  /**
    * Rebuilds Io and Bs multis from queued peers.
    */
   private async _rebuildMultis() {
+    // F2/F3: prune dead/orphaned peers BEFORE constructing the next
+    // IoMulti/BsMulti — see `_pruneDeadPeers` for why this is the single
+    // choke point that has to run first.
+    this._pruneDeadPeers();
+
     this._logger.info('Server', 'Rebuilding multis', {
       ioCount: this._ios.length,
       bsCount: this._bss.length,
