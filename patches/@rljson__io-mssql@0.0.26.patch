@@ -1,0 +1,23 @@
+diff --git a/dist/io-mssql.js b/dist/io-mssql.js
+index 3eb8f5a1f5dfe2801b3e21434de60a509f5183f6..1b91346b6fdaa272039b9d6aa51aa132aa8a5410 100644
+--- a/dist/io-mssql.js
++++ b/dist/io-mssql.js
+@@ -787,7 +787,7 @@ class DbStatements {
+     return `SELECT COUNT(*) AS totalCount FROM [${this.schemaName}].[${this._map.addTableSuffix(tableKey)}]`;
+   }
+   selection(tableKey, columns, whereClause) {
+-    return `SELECT ${columns} FROM ${tableKey} WHERE ${whereClause}`;
++    return `SELECT ${columns} FROM [${this.schemaName}].[${tableKey}] WHERE ${whereClause}`;
+   }
+   allData(tableKey, namedColumns) {
+     if (!namedColumns) {
+@@ -796,6 +796,9 @@ class DbStatements {
+     return `SELECT ${namedColumns} FROM [${this.schemaName}].[${this._map.addTableSuffix(tableKey)}]`;
+   }
+   whereString(whereClause) {
++    if (whereClause.length === 0) {
++      return " 1=1";
++    }
+     let constraint = " ";
+     for (const [column, value] of whereClause) {
+       const columnWithFix = this._map.addColumnSuffix(column);

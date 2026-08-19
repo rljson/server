@@ -8,6 +8,11 @@ found in the LICENSE file in the root of this package.
 
 # @rljson/server
 
+> Running this as part of the local workspace (Server + generator +
+> generator-ui against MSSQL)? Start at the top-level
+> [README.md](../README.md) instead — this document is the published
+> package's library documentation.
+
 Local-first, pull-by-reference server layer for Rljson. Clients keep writes local, pull data on demand through multis, and let the server proxy references without duplicating client data.
 
 - Writes stay local; reads cascade: local ➜ server ➜ peers

@@ -1,0 +1,40 @@
+diff --git a/dist/io.js b/dist/io.js
+index 9ae017495218738c79b2d800104093682cf2845f..838df89d93486cbd53e6b8c6abff03a24b038ed4 100644
+--- a/dist/io.js
++++ b/dist/io.js
+@@ -1190,10 +1190,24 @@ var IoMulti = class IoMulti {
+ 	async contentType(request) {
+ 		/* v8 ignore next -- @preserve */
+ 		if (this.readables.length === 0) throw new Error("No readable Io available");
++		const groups = IoMulti._groupByPriority(this.readables);
+ 		const errors = [];
+-		for (const ioMultiIo of this.readables) {
+-			if (IoMulti._isClosed(ioMultiIo, errors)) continue;
+-			return ioMultiIo.io.contentType(request);
++		for (const group of groups) {
++			const openGroup = IoMulti._skipClosed(group, errors);
++			if (openGroup.length === 0) continue;
++			if (openGroup.length === 1) {
++				try {
++					return await openGroup[0].io.contentType(request);
++				} catch (error) {
++					errors.push(error);
++				}
++			} else {
++				const results = await Promise.allSettled(openGroup.map((r) => r.io.contentType(request)));
++				for (const result of results) {
++					if (result.status === "fulfilled") return result.value;
++					errors.push(result.reason);
++				}
++			}
+ 		}
+ 		throw errors[0];
+ 	}
+@@ -1260,7 +1274,6 @@ var IoMulti = class IoMulti {
+ 			/* v8 ignore else -- @preserve */
+ 			if (cfgs.length > 0) {
+ 				for (const tableCfg of cfgs) if (!rawTableCfgs.has(tableCfg.key)) rawTableCfgs.set(tableCfg.key, tableCfg);
+-				break;
+ 			}
+ 		}
+ 		if (!anyOpen) throw errors[0];

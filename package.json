@@ -25,9 +25,12 @@
     "prebuild": "npm run test",
     "prepublishOnly": "npm run build",
     "lint": "pnpm exec eslint",
-    "updateGoldens": "cross-env UPDATE_GOLDENS=true pnpm test"
+    "updateGoldens": "cross-env UPDATE_GOLDENS=true pnpm test",
+    "start": "tsx src/start.ts"
   },
   "devDependencies": {
+    "@rolldown/binding-win32-x64-msvc": "1.0.3",
+    "@types/mssql": "^9.1.8",
     "@types/node": "^25.9.2",
     "@typescript-eslint/eslint-plugin": "^8.60.1",
     "@typescript-eslint/parser": "^8.60.1",
@@ -41,6 +44,7 @@
     "read-pkg": "^10.1.0",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
+    "tsx": "^4.22.4",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.60.1",
     "vite": "^8.0.16",
@@ -55,16 +59,23 @@
     "@rljson/db": "^0.0.20",
     "@rljson/hash": "^0.0.18",
     "@rljson/io": "^0.0.73",
+    "@rljson/io-mssql": "^0.0.26",
     "@rljson/json": "^0.0.23",
     "@rljson/network": "^0.0.20",
-    "@rljson/rljson": "^0.0.79"
+    "@rljson/rljson": "^0.0.79",
+    "mssql": "^12.2.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
     ],
     "overrides": {
-      "@rljson/rljson": "^0.0.79"
+      "@rljson/rljson": "^0.0.79",
+      "@rljson/hash": "^0.0.18"
+    },
+    "patchedDependencies": {
+      "@rljson/io-mssql@0.0.26": "patches/@rljson__io-mssql@0.0.26.patch",
+      "@rljson/io@0.0.73": "patches/@rljson__io@0.0.73.patch"
     }
   },
   "packageManager": "pnpm@10.11.0"

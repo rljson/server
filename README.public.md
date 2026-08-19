@@ -35,6 +35,40 @@ found in the LICENSE file in the root of this package.
 pnpm add @rljson/server
 ```
 
+## Running this workspace's local dev server
+
+This repo also ships a **standalone local server process** on top of the
+library — [`src/start.ts`](src/start.ts) /
+[`src/server-bootstrap.ts`](src/server-bootstrap.ts) — used by this
+workspace's [generator](../data-generator) and [generator-ui](../generator-ui) to
+sync against a real MSSQL database. This is specific to this checkout, not
+part of what a consumer of the published `@rljson/server` package needs —
+skip this section if you're only using the library API below.
+
+```sh
+npm start
+```
+
+Configured entirely via `.env` (copy `.env.example`):
+
+| Variable | Purpose |
+|---|---|
+| `IO_BACKEND` | `mssql` (default, persistent) or `mem` (in-memory, lost on exit) |
+| `MSSQL_*` | Connection details — must match the Generator repo's own `.env` |
+| `RLJSON_ROUTES` | Comma-separated list of routes to host, one per independent entity type (e.g. `customerCake,productCake`) — each gets its own `Server` instance and Socket.IO namespace, since a `Server`/`Client` pair is single-route. `RLJSON_ROUTE` (singular) is also accepted for a single-route setup. |
+| `PORT` | HTTP/Socket.IO port (default `3000`) |
+
+`createOnRefArrived` (in `server-bootstrap.ts`) wires the
+[`onRefArrived` archival hook](#onrefarrived-archival-hook) below to
+recursively pull and persist every ref a client sends — necessary because
+batch clients (like the Generator) write locally and disconnect right
+away, so their data must be durable server-side *before* the ack, not
+just reachable while they happen to stay connected.
+
+See the top-level [README.md](../README.md) for the full walkthrough
+(one-time MSSQL setup, starting Server + generator-ui together, generating and
+viewing data, adding a new entity type).
+
 ## Quick start (Socket.IO example)
 
 Server setup:
