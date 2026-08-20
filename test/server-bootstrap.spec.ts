@@ -382,6 +382,45 @@ describe('createOnRefArrived', () => {
     );
     expect(localChild.testChild._data.length).toBe(2);
   });
+
+  it('auto-provisions a table the server has never seen before persisting into it', async () => {
+    // The server's local Io starts with NO tables at all — simulating a
+    // brand-new entity type it has never received data for before (e.g. a
+    // chart/example file the Generator just picked up for the first time).
+    // Only the sending peer has the schema and the data; there is no
+    // equivalent of a prior setup-server-tables run against localIo here.
+    const localIo = new IoMem();
+    await localIo.init();
+    const peerIo = new IoMem();
+    await peerIo.init();
+
+    const peerDb = new Db(peerIo);
+    await peerDb.core.createTable(childCfg);
+    await peerDb.core.import({
+      testChild: { _type: 'components', _data: [{ value: 'brand-new' }] },
+    } as any);
+    const childRow = (await peerDb.core.dumpTable('testChild'))
+      .testChild._data[0] as any;
+
+    const serverIo = new IoMulti([
+      { io: localIo, priority: 1, read: true, write: true, dump: true },
+      { io: peerIo, priority: 2, read: true, write: false, dump: false },
+    ]);
+    await serverIo.init();
+    const getServer = () => ({ io: serverIo }) as any;
+
+    await createOnRefArrived(getServer)({
+      route: 'testChild',
+      ref: childRow._hash,
+      sourceNodeId: 'client-a',
+    });
+
+    // The table now exists locally (schema was provisioned automatically,
+    // via IoMulti.rawTableCfgs() picking it up from the peer) and holds
+    // the persisted row.
+    const localChild = await localIo.dumpTable({ table: 'testChild' });
+    expect(localChild.testChild._data[0]._hash).toBe(childRow._hash);
+  });
 });
 
 describe('main sync integration', () => {

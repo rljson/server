@@ -140,6 +140,33 @@ const walkAndPersistByRef = async (
 };
 
 /**
+ * Provisions every table config known to *any* currently-reachable Io
+ * (the server's own persistent store plus whichever peers are connected
+ * right now) into every writable Io, including the server's own —
+ * `IoMulti.rawTableCfgs()` already merges across all readables rather than
+ * stopping at the first one, so a batch client's brand-new table configs
+ * (e.g. a chart the Generator never synced before) are included as long as
+ * that client is still connected. `createOrExtendTable()` is idempotent
+ * (a no-op once a table already matches its config), so calling this on
+ * every ref is safe — it only ever does real work the first time a given
+ * table shows up.
+ *
+ * This is what lets a genuinely new entity type "just work" the first time
+ * it's generated, without a separate `setup-server-tables` run first (see
+ * that script for the one-time, all-registered-generators equivalent of
+ * this — this does the same `rawTableCfgs()` + `createOrExtendTable()`
+ * pairing, just scoped to what's reachable at this exact moment, and
+ * triggered automatically instead of manually).
+ * @param io - The Server's own merged IoMulti (`server.io`).
+ */
+const ensureTablesProvisioned = async (io: Io): Promise<void> => {
+  const cfgs = await io.rawTableCfgs();
+  for (const cfg of cfgs) {
+    await io.createOrExtendTable({ tableCfg: cfg });
+  }
+};
+
+/**
  * Builds the archival hook that makes clients' writes durable server-side.
  *
  * The sync protocol is pull-based: a client's data is normally only
@@ -152,6 +179,8 @@ const walkAndPersistByRef = async (
  * (`walkAndPersistByRef`) against the Server's own merged IoMulti, relying
  * on its built-in hot-swap write-back — never a raw dump of everything the
  * client happens to hold locally, and no manual write() call here.
+ * `ensureTablesProvisioned` runs first so that write-back never fails with
+ * a missing-table error for a table this exact server has never seen yet.
  *
  * `server` is assigned right after construction (see `main`); the hook
  * itself only runs later, once a client actually sends a ref.
@@ -163,6 +192,8 @@ export const createOnRefArrived = (
 ): NonNullable<ServerOptions['onRefArrived']> => {
   return async (ctx) => {
     const server = getServer();
+    await ensureTablesProvisioned(server.io);
+
     const serverDb = new Db(server.io);
     const rootTableKey = Route.fromFlat(ctx.route).top.tableKey;
 

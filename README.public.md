@@ -63,7 +63,12 @@ Configured entirely via `.env` (copy `.env.example`):
 recursively pull and persist every ref a client sends — necessary because
 batch clients (like the Generator) write locally and disconnect right
 away, so their data must be durable server-side *before* the ack, not
-just reachable while they happen to stay connected.
+just reachable while they happen to stay connected. Before that walk, it
+also calls `IoMulti.rawTableCfgs()`/`createOrExtendTable()` to provision
+any table config reachable from a connected peer that this server doesn't
+have yet — so a genuinely new entity type (e.g. a chart file the Generator
+never synced before) works the first time, with no separate schema-setup
+step against this server's own database.
 
 See the top-level [README.md](../README.md) for the full walkthrough
 (one-time MSSQL setup, starting Server + generator-ui together, generating and
