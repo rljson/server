@@ -547,6 +547,23 @@ export class Server extends BaseNode {
         }
         this._multicastedRefsCurrent.add(ref);
 
+        // Retire the ref this one supersedes.
+        //
+        // Refs are content hashes, so a tree that returns to a state it held
+        // earlier re-derives that state's exact ref — and this dedup set would
+        // discard the return trip as a duplicate forever. A client that
+        // creates a file and then deletes it does exactly that, and its
+        // deletion reached no peer at all.
+        //
+        // Suppression is meant to stop a ref echoing around the mesh while it
+        // is current, which the just-added `ref` still does. The one it
+        // replaces no longer describes anything, so letting it through again
+        // is news, not an echo.
+        if (this._latestRef && this._latestRef !== ref) {
+          this._multicastedRefsCurrent.delete(this._latestRef);
+          this._multicastedRefsPrevious.delete(this._latestRef);
+        }
+
         // Track latest ref for bootstrap
         this._latestRef = ref;
 

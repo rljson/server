@@ -578,6 +578,50 @@ describe('Logger integration', () => {
       expect(dupWarn!.data?.['ref']).toBe('dup-ref');
     });
 
+    it('re-multicasts a ref once a newer one has superseded it', async () => {
+      // Refs are content hashes, so a tree returning to an earlier state
+      // re-derives that state's exact ref. A client that creates a file and
+      // then deletes it does exactly that, and permanent suppression meant its
+      // deletion reached no peer at all.
+      const logger = new BufferedLogger();
+
+      const io = new IoMem();
+      await io.init();
+      const bs = new BsMem();
+      const route = Route.fromFlat('supersededRefTest');
+
+      const server = new Server(route, io, bs, { logger });
+      await server.init();
+
+      const socketA = new SocketMock();
+      const socketB = new SocketMock();
+      socketA.connect();
+      socketB.connect();
+      await server.addSocket(socketA);
+      await server.addSocket(socketB);
+
+      const received: string[] = [];
+      socketB.on(route.flat, (p: { r?: string }) => {
+        if (p?.r) received.push(p.r);
+      });
+
+      socketA.emit(route.flat, { r: 'state-a' });
+      socketA.emit(route.flat, { r: 'state-b' });
+      // Returning to state-a: no longer the latest, so it is news again.
+      socketA.emit(route.flat, { r: 'state-a' });
+
+      expect(received).toEqual(['state-a', 'state-b', 'state-a']);
+
+      logger.clear();
+      // While a ref IS the latest, repeating it is still an echo.
+      socketA.emit(route.flat, { r: 'state-a' });
+      expect(
+        logger.byLevel('warn').find(
+          (e) => e.message === 'Duplicate ref suppressed',
+        ),
+      ).toBeDefined();
+    });
+
     it('should log warning for loop prevention on payload with __origin', async () => {
       const logger = new BufferedLogger();
 
