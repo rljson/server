@@ -24,6 +24,7 @@ import {
   SyncConfig,
   SyncEventNames,
   syncEvents,
+  timeId,
 } from '@rljson/rljson';
 
 import { BaseNode } from './base-node.ts';
@@ -186,6 +187,25 @@ export class Server extends BaseNode {
 
   // Bootstrap state
   private _latestRef: string | undefined;
+
+  /**
+   * Identity this server announces under, stable for its lifetime.
+   *
+   * Receivers key their per-sender staleness on it. A restarted server is
+   * legitimately a new sender — its first announcement is then the newest
+   * thing that sender has said, which is exactly right.
+   */
+  private readonly _announceId = `__server__:${timeId()}`;
+
+  /**
+   * How many DISTINCT states this server has announced.
+   *
+   * Deliberately not a message counter. A heartbeat repeating the current
+   * state carries the same number, so a receiver reads the repeat as "not
+   * newest" and will not act destructively on it — which is what made a
+   * periodic heartbeat unsafe. Only a genuinely new state advances it.
+   */
+  private _announceSeq = 0;
   private _bootstrapHeartbeatTimer?: ReturnType<typeof setInterval>;
 
   // Health check state
@@ -547,7 +567,25 @@ export class Server extends BaseNode {
         }
         this._multicastedRefsCurrent.add(ref);
 
+        // Retire the ref this one supersedes.
+        //
+        // Refs are content hashes, so a tree that returns to a state it held
+        // earlier re-derives that state's exact ref — and this dedup set would
+        // discard the return trip as a duplicate forever. A client that
+        // creates a file and then deletes it does exactly that, and its
+        // deletion reached no peer at all.
+        //
+        // Suppression is meant to stop a ref echoing around the mesh while it
+        // is current, which the just-added `ref` still does. The one it
+        // replaces no longer describes anything, so letting it through again
+        // is news, not an echo.
+        if (this._latestRef && this._latestRef !== ref) {
+          this._multicastedRefsCurrent.delete(this._latestRef);
+          this._multicastedRefsPrevious.delete(this._latestRef);
+        }
+
         // Track latest ref for bootstrap
+        if (this._latestRef !== ref) this._announceSeq++;
         this._latestRef = ref;
 
         const p = payload as any;
@@ -766,6 +804,7 @@ export class Server extends BaseNode {
     // seed would clobber the client's more-recent tree.
     if (!this._latestRef) {
       this._latestRef = ref;
+      this._announceSeq++;
     }
     // Always mark the seeded ref as already-multicast so that stale
     // client re-sends of the same ref are deduplicated.
@@ -804,6 +843,8 @@ export class Server extends BaseNode {
     const payload: ConnectorPayload = {
       o: '__server__',
       r: this._latestRef,
+      c: this._announceId,
+      seq: this._announceSeq,
     };
 
     this._logger.info('Server.Bootstrap', 'Sending bootstrap ref', {
@@ -825,6 +866,8 @@ export class Server extends BaseNode {
     const payload: ConnectorPayload = {
       o: '__server__',
       r: this._latestRef,
+      c: this._announceId,
+      seq: this._announceSeq,
     };
 
     this._logger.info('Server.Bootstrap', 'Heartbeat broadcast', {
