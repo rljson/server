@@ -839,6 +839,83 @@ describe('Server sync protocol', () => {
       expect(ids[1]).toBe(ids[0]);
     });
 
+    // The measured failure this exists for: a client whose socket connects
+    // before it has built the object that listens for the announcement. The
+    // first bootstrap lands with nobody home, and without a repeat nothing
+    // ever follows it — a rejoining node then keeps the state it left with.
+    it('repeats a new connection bootstrap, then stops', async () => {
+      vi.useFakeTimers();
+      try {
+        const route = Route.fromFlat('bootstrapRetry');
+        const result = await createSyncServer(route, { causalOrdering: true });
+        server = result.server;
+        const events = syncEvents(route.flat);
+
+        const socketA = await addClient(server);
+        socketA.emit(route.flat, {
+          o: 'originA',
+          r: 'ref-abc',
+        } as ConnectorPayload);
+
+        const seen: ConnectorPayload[] = [];
+        const socketB = new SocketMock();
+        socketB.connect();
+        socketB.on(events.bootstrap, (p: ConnectorPayload) => seen.push(p));
+        await server.addSocket(socketB);
+
+        expect(seen).toHaveLength(1); // the immediate one
+
+        await vi.advanceTimersByTimeAsync(10_000);
+        // Repeated a bounded number of times…
+        expect(seen.length).toBeGreaterThan(1);
+        const afterSchedule = seen.length;
+
+        // …and then it stops. This is not a heartbeat: a periodic broadcast
+        // was measured three times and is harmful.
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(seen).toHaveLength(afterSchedule);
+
+        // Every repeat carries the same distinct-state count, so a receiver
+        // reads them as "not newest" and will not act on them.
+        expect(new Set(seen.map((p) => p.seq)).size).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stops repeating once the client disconnects', async () => {
+      vi.useFakeTimers();
+      try {
+        const route = Route.fromFlat('bootstrapRetryGone');
+        const result = await createSyncServer(route, { causalOrdering: true });
+        server = result.server;
+        const events = syncEvents(route.flat);
+
+        const socketA = await addClient(server);
+        socketA.emit(route.flat, {
+          o: 'originA',
+          r: 'ref-abc',
+        } as ConnectorPayload);
+
+        const seen: ConnectorPayload[] = [];
+        const socketB = new SocketMock();
+        socketB.connect();
+        socketB.on(events.bootstrap, (p: ConnectorPayload) => seen.push(p));
+        await server.addSocket(socketB);
+        const atRegistration = seen.length;
+
+        const clientId = [...(server as unknown as {
+          _clients: Map<string, unknown>;
+        })._clients.keys()].at(-1) as string;
+        await server.removeSocket(clientId);
+
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(seen).toHaveLength(atRegistration);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('should not send bootstrap when no ref has been seen', async () => {
       const route = Route.fromFlat('bootstrapEmpty');
       const result = await createSyncServer(route, {});
