@@ -773,6 +773,70 @@ describe('Server sync protocol', () => {
       expect(bootstrapReceived).toHaveLength(1);
       expect(bootstrapReceived[0].r).toBe('ref-abc');
       expect(bootstrapReceived[0].o).toBe('__server__');
+      // An announcement carries who is announcing and how many distinct
+      // states they have announced, so a receiver can tell a repeat from
+      // something new without inspecting the content.
+      expect(bootstrapReceived[0].c).toMatch(/^__server__:/);
+      expect(bootstrapReceived[0].seq).toBe(1);
+    });
+
+    // The number counts DISTINCT STATES, not messages. A repeat has to carry
+    // the same number, or a receiver reads every heartbeat as news and acts
+    // destructively on a picture that may already be superseded — which is
+    // what made a periodic heartbeat unsafe to switch on.
+    it('repeats an announcement without advancing its sequence', async () => {
+      const route = Route.fromFlat('bootstrapRepeat');
+      const result = await createSyncServer(route, { causalOrdering: true });
+      server = result.server;
+      const events = syncEvents(route.flat);
+
+      const socketA = await addClient(server);
+      socketA.emit(route.flat, { o: 'originA', r: 'ref-1' } as ConnectorPayload);
+
+      const seen: ConnectorPayload[] = [];
+      const socketB = new SocketMock();
+      socketB.connect();
+      socketB.on(events.bootstrap, (p: ConnectorPayload) => seen.push(p));
+      await server.addSocket(socketB);
+
+      const socketC = new SocketMock();
+      socketC.connect();
+      socketC.on(events.bootstrap, (p: ConnectorPayload) => seen.push(p));
+      await server.addSocket(socketC);
+
+      // Two announcements of the same state — same number.
+      expect(seen.map((p) => p.seq)).toEqual([1, 1]);
+
+      // A genuinely new state advances it.
+      socketA.emit(route.flat, { o: 'originA', r: 'ref-2' } as ConnectorPayload);
+      const socketD = new SocketMock();
+      socketD.connect();
+      socketD.on(events.bootstrap, (p: ConnectorPayload) => seen.push(p));
+      await server.addSocket(socketD);
+
+      expect(seen.at(-1)?.seq).toBe(2);
+      expect(seen.at(-1)?.r).toBe('ref-2');
+    });
+
+    it('announces under one identity for its lifetime', async () => {
+      const route = Route.fromFlat('bootstrapIdentity');
+      const result = await createSyncServer(route, { causalOrdering: true });
+      server = result.server;
+      const events = syncEvents(route.flat);
+
+      const socketA = await addClient(server);
+      socketA.emit(route.flat, { o: 'originA', r: 'ref-1' } as ConnectorPayload);
+
+      const ids: Array<string | undefined> = [];
+      for (let i = 0; i < 2; i++) {
+        const sock = new SocketMock();
+        sock.connect();
+        sock.on(events.bootstrap, (p: ConnectorPayload) => ids.push(p.c));
+        await server.addSocket(sock);
+      }
+
+      expect(ids[0]).toBeDefined();
+      expect(ids[1]).toBe(ids[0]);
     });
 
     it('should not send bootstrap when no ref has been seen', async () => {
