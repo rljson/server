@@ -206,34 +206,6 @@ export class Server extends BaseNode {
    * periodic heartbeat unsafe. Only a genuinely new state advances it.
    */
   private _announceSeq = 0;
-
-  /**
-   * When a fresh connection's bootstrap is repeated, in ms after registration.
-   *
-   * A bootstrap is sent the moment a client registers, and that is often too
-   * early: the socket connects before the client has built the object that
-   * listens for it, so the announcement lands with nobody home and nothing
-   * follows it. The client then holds whatever state it had — for a rejoining
-   * node, the state it held before it left — until something else happens to
-   * it. Measured: a reconnected node receiving NOTHING for its whole listening
-   * window.
-   *
-   * A short, bounded schedule per connection, NOT a periodic broadcast. The
-   * broadcast form was measured three times and is harmful: it puts a message
-   * on every client every few seconds to serve the one client that needed it.
-   * This costs three extra messages on one socket, once, and then stops.
-   *
-   * Repeats are safe because an announcement carries a count of distinct
-   * states: a repeat of the same state reads as "not newest" and a receiver
-   * will not act on it.
-   */
-  private static readonly _bootstrapRetryDelaysMs = [1_000, 3_000, 6_000];
-
-  /** Pending bootstrap retries per client, so a disconnect cancels them. */
-  private _bootstrapRetries = new Map<
-    string,
-    Array<ReturnType<typeof setTimeout>>
-  >();
   private _bootstrapHeartbeatTimer?: ReturnType<typeof setInterval>;
 
   // Health check state
@@ -454,10 +426,8 @@ export class Server extends BaseNode {
     this._removeAllListeners();
     this._multicastRefs();
 
-    // Bootstrap: send latest ref to the new client, then a few more times in
-    // case it arrived before the client was listening.
+    // Bootstrap: send latest ref to the new client
     this._sendBootstrap(ioDown);
-    this._scheduleBootstrapRetries(clientId, ioDown);
 
     // Start heartbeat timer if configured and not already running
     this._startBootstrapHeartbeat();
@@ -540,7 +510,6 @@ export class Server extends BaseNode {
     this._registerDisconnectHandler(clientId, ioUp);
 
     this._sendBootstrap(ioDown);
-    this._scheduleBootstrapRetries(clientId, ioDown);
     this._startBootstrapHeartbeat();
     this._startHealthChecks();
 
@@ -868,42 +837,6 @@ export class Server extends BaseNode {
    * If no ref has been seen yet, this is a no-op.
    * @param ioDown - The downstream socket to send the bootstrap message on.
    */
-  /**
-   * Repeats a fresh connection's bootstrap a few times, then stops.
-   *
-   * See {@link Server._bootstrapRetryDelaysMs} for why this is a per-connection
-   * schedule rather than a periodic broadcast.
-   * @param clientId - The client, so a disconnect can cancel the schedule.
-   * @param ioDown - The socket to announce on.
-   */
-  private _scheduleBootstrapRetries(
-    clientId: string,
-    ioDown: SocketWithClientId,
-  ) {
-    this._cancelBootstrapRetries(clientId);
-    const timers = Server._bootstrapRetryDelaysMs.map((ms) => {
-      const t = setTimeout(() => {
-        // Re-read _latestRef at fire time: by now it may have advanced, and
-        // the newer state is the more useful thing to announce.
-        this._sendBootstrap(ioDown);
-      }, ms);
-      t.unref?.();
-      return t;
-    });
-    this._bootstrapRetries.set(clientId, timers);
-  }
-
-  /**
-   * Cancels a client's pending bootstrap repeats.
-   * @param clientId - The client whose schedule to drop.
-   */
-  private _cancelBootstrapRetries(clientId: string) {
-    const timers = this._bootstrapRetries.get(clientId);
-    if (!timers) return;
-    for (const t of timers) clearTimeout(t);
-    this._bootstrapRetries.delete(clientId);
-  }
-
   private _sendBootstrap(ioDown: SocketWithClientId) {
     if (!this._latestRef) return;
 
@@ -1417,9 +1350,6 @@ export class Server extends BaseNode {
 
     this._logger.info('Server', 'Removing client socket', { clientId });
 
-    // A client that has gone does not need to be announced to.
-    this._cancelBootstrapRetries(clientId);
-
     // Remove multicast listener for this client
     client.ioUp.removeAllListeners(this._route.flat);
 
@@ -1486,11 +1416,6 @@ export class Server extends BaseNode {
     if (this._refEvictionTimer) {
       clearInterval(this._refEvictionTimer);
       this._refEvictionTimer = undefined;
-    }
-
-    // Drop any pending per-connection bootstrap repeats
-    for (const clientId of [...this._bootstrapRetries.keys()]) {
-      this._cancelBootstrapRetries(clientId);
     }
 
     // Stop bootstrap heartbeat timer
