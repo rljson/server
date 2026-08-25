@@ -79,6 +79,15 @@ fresh MSSQL database, in two steps:
    entity type (e.g. a chart file the Generator never synced before) works
    the first time too.
 
+Both steps run concurrently with each other, and every table within step
+2 is also provisioned concurrently (`Promise.all`, not a sequential
+loop): against a brand-new database, a chart with many sub-entities (e.g.
+"Customer", with its nested addresses) means 50+ tables, each its own
+MSSQL round trip — done one after another, that alone can take longer
+than a client's `sendWithAck` timeout, producing a misleading "ACK
+timeout" error even though the Server finishes and archives the ref
+correctly moments later.
+
 Together, this means the **only** step left that this project doesn't
 automate is creating the database/login/schema container itself (needs
 server-level `sysadmin`/`dbcreator` rights the app's own login

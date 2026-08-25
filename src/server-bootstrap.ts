@@ -157,13 +157,24 @@ const walkAndPersistByRef = async (
  * this — this does the same `rawTableCfgs()` + `createOrExtendTable()`
  * pairing, just scoped to what's reachable at this exact moment, and
  * triggered automatically instead of manually).
+ *
+ * The per-table calls run concurrently (`Promise.all`), not one after
+ * another: against a brand-new database, a chart with many sub-entities
+ * (e.g. "Customer", with its nested addresses) can mean 50+ tables, each a
+ * separate MSSQL round trip — sequentially, that alone can take longer
+ * than a client's `sendWithAck` timeout, causing a misleading "ACK
+ * timeout" even though the Server finishes and archives the ref just
+ * fine. `createOrExtendTable()`'s per-table SQL touches only that table
+ * (no cross-table constraints), so concurrent calls are safe; the `mssql`
+ * package's `ConnectionPool` (which `IoMssql` holds one of) is designed
+ * for exactly this — multiple concurrent `Request`s sharing one pool.
  * @param io - The Server's own merged IoMulti (`server.io`).
  */
 const ensureTablesProvisioned = async (io: Io): Promise<void> => {
   const cfgs = await io.rawTableCfgs();
-  for (const cfg of cfgs) {
-    await io.createOrExtendTable({ tableCfg: cfg });
-  }
+  await Promise.all(
+    cfgs.map((cfg) => io.createOrExtendTable({ tableCfg: cfg })),
+  );
 };
 
 /**
@@ -207,10 +218,12 @@ const ensureMssqlAdminSchemaProvisioned = async (): Promise<void> => {
  * on its built-in hot-swap write-back — never a raw dump of everything the
  * client happens to hold locally, and no manual write() call here.
  * `ensureMssqlAdminSchemaProvisioned`/`ensureTablesProvisioned` run first
- * so that write-back never fails against a completely fresh MSSQL
- * database — one that has never had `setup-server-tables` run against it
- * at all, not even once — nor with a missing-table error for a table this
- * exact server has never seen yet.
+ * (concurrently with each other — they touch disjoint schemas, "main" vs.
+ * the data tables, so there is no ordering dependency between them) so
+ * that write-back never fails against a completely fresh MSSQL database —
+ * one that has never had `setup-server-tables` run against it at all, not
+ * even once — nor with a missing-table error for a table this exact
+ * server has never seen yet.
  *
  * `server` is assigned right after construction (see `main`); the hook
  * itself only runs later, once a client actually sends a ref.
@@ -222,8 +235,10 @@ export const createOnRefArrived = (
 ): NonNullable<ServerOptions['onRefArrived']> => {
   return async (ctx) => {
     const server = getServer();
-    await ensureMssqlAdminSchemaProvisioned();
-    await ensureTablesProvisioned(server.io);
+    await Promise.all([
+      ensureMssqlAdminSchemaProvisioned(),
+      ensureTablesProvisioned(server.io),
+    ]);
 
     const serverDb = new Db(server.io);
     const rootTableKey = Route.fromFlat(ctx.route).top.tableKey;
