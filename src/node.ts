@@ -337,11 +337,27 @@ export class Node {
    * 3. Rebuilds a {@link ReadyContext} from the **existing** transport.
    * 4. Calls {@link CreateAgent} again with the same role and transport.
    *
-   * Use this to simulate a fresh-client bootstrap on a running node:
-   * clear the sync folder, then call `restartAgent()` — the agent factory
-   * will see an empty folder and trigger snapshot download.
+   * Use this to simulate a fresh-client bootstrap on a running node — but pass
+   * the clearing in as `whileStopped` rather than doing it first.
+   *
+   * Clearing the folder while the agent still runs does not simulate a fresh
+   * client at all: the agent's watcher sees the deletions, its in-memory head
+   * ref is untouched, and it correctly broadcasts "everything here is gone"
+   * before this method is ever called. Peers then apply that deletion, which is
+   * right and is not what the caller wanted. Measured on a four-node lab, where
+   * it made a bootstrap test fail five times out of five while every node
+   * behaved correctly.
+   *
+   * `whileStopped` runs after the agent has stopped and before its replacement
+   * starts, so the wipe happens with nothing watching. The replacement then
+   * starts against a genuinely empty folder, which IS a fresh client.
+   * @param whileStopped - Runs with no agent attached. Its failure aborts the
+   *   restart rather than leaving a node with no agent: the old one is already
+   *   gone, so the caller must know the node needs attention.
    */
-  async restartAgent(): Promise<void> {
+  async restartAgent(
+    whileStopped?: () => void | Promise<void>,
+  ): Promise<void> {
     if (!this._running) {
       throw new Error('Cannot restart agent: node is not running');
     }
@@ -371,6 +387,12 @@ export class Node {
       this._client?.connector?.lastSentRef;
     if (ref) {
       this._lastKnownRef = ref;
+    }
+
+    // Whatever the caller needs done with no agent watching — clearing the
+    // synced folder, forgetting persisted state — happens here.
+    if (whileStopped) {
+      await whileStopped();
     }
 
     // 3. Rebuild ReadyContext from existing transport.
