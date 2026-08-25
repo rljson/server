@@ -1716,6 +1716,81 @@ describe('Node', () => {
   // =========================================================================
 
   describe('restartAgent', () => {
+    // Clearing a synced folder while the agent still runs does not simulate a
+    // fresh client: the watcher sees the deletions, the in-memory head ref is
+    // untouched, and the agent correctly broadcasts "everything here is gone"
+    // before restartAgent is ever called. Peers then apply that deletion —
+    // which is right, and is not what the caller wanted. Measured on a
+    // four-node lab, where it failed a bootstrap test five times out of five
+    // while every node behaved correctly.
+    it('runs whileStopped between the old agent and the new one', async () => {
+      const callOrder: string[] = [];
+      let n = 0;
+      const createAgent = vi.fn(async () => {
+        const i = ++n;
+        callOrder.push(`create-${i}`);
+        return {
+          stop: async () => {
+            callOrder.push(`stop-${i}`);
+          },
+        };
+      });
+      const deps: NodeDeps = { ...createMockDeps(), createAgent };
+      const node = new Node(createConfig(7028, join(tempDir, 'ra-hook')), deps);
+
+      await node.start();
+      await becomeHub(node);
+      await node.restartAgent(() => {
+        callOrder.push('wipe');
+      });
+
+      // The wipe happens with nothing watching.
+      expect(callOrder).toEqual(['create-1', 'stop-1', 'wipe', 'create-2']);
+      await node.stop();
+    });
+
+    it('awaits an async whileStopped before starting the replacement', async () => {
+      const callOrder: string[] = [];
+      let n = 0;
+      const createAgent = vi.fn(async () => {
+        const i = ++n;
+        callOrder.push(`create-${i}`);
+        return { stop: async () => {} };
+      });
+      const deps: NodeDeps = { ...createMockDeps(), createAgent };
+      const node = new Node(createConfig(7029, join(tempDir, 'ra-async')), deps);
+
+      await node.start();
+      await becomeHub(node);
+      await node.restartAgent(async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        callOrder.push('wipe-done');
+      });
+
+      expect(callOrder).toEqual(['create-1', 'wipe-done', 'create-2']);
+      await node.stop();
+    });
+
+    // The old agent is already gone by then, so a silent failure would leave a
+    // node running with nothing syncing it.
+    it('aborts the restart when whileStopped throws', async () => {
+      const deps: NodeDeps = {
+        ...createMockDeps(),
+        createAgent: vi.fn(async () => ({ stop: async () => {} })),
+      };
+      const node = new Node(createConfig(7030, join(tempDir, 'ra-throw')), deps);
+
+      await node.start();
+      await becomeHub(node);
+      await expect(
+        node.restartAgent(() => {
+          throw new Error('wipe failed');
+        }),
+      ).rejects.toThrow(/wipe failed/);
+      await node.stop();
+    });
+
+
     it('should stop old agent and call createAgent again with same role', async () => {
       const callOrder: string[] = [];
       let callCount = 0;
