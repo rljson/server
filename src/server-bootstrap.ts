@@ -9,7 +9,7 @@ import { createServer, Server as HttpServer } from 'node:http';
 import { BsMem } from '@rljson/bs';
 import { Db } from '@rljson/db';
 import { Io, IoMem } from '@rljson/io';
-import { IoMssql } from '@rljson/io-mssql';
+import { DbBasics, IoMssql } from '@rljson/io-mssql';
 import { Route } from '@rljson/rljson';
 
 import type { config as MssqlConfig } from 'mssql';
@@ -167,6 +167,33 @@ const ensureTablesProvisioned = async (io: Io): Promise<void> => {
 };
 
 /**
+ * Provisions the MSSQL-specific "main" schema and its admin stored
+ * procedures (e.g. `GetContentType`) — infrastructure `IoMssql` needs
+ * before it can serve `contentType()` requests, but which nothing in the
+ * regular sync flow creates on its own (previously only
+ * `setup-server-tables` did this, via the exact same `DbBasics` calls).
+ *
+ * Both `DbBasics.createSchema()` (`IF NOT EXISTS`) and
+ * `installProcedures()` (`CREATE OR ALTER PROCEDURE`) are idempotent, so —
+ * like `ensureTablesProvisioned` above — calling this on every ref is safe.
+ * Uses the same `MSSQL_*`-derived config as the app's regular connection
+ * (`mssqlConfigFromEnv()`); no elevated credentials needed, since the
+ * `db_owner` role membership granted during the one-time database/login
+ * setup (see the top-level README) is already enough to create a schema
+ * and procedures within a database that login owns.
+ *
+ * A no-op for the `IO_BACKEND=mem` backend, which has no such concept.
+ */
+const ensureMssqlAdminSchemaProvisioned = async (): Promise<void> => {
+  if (process.env.IO_BACKEND === 'mem') return;
+
+  const dbBasics = new DbBasics();
+  const dbName = process.env.MSSQL_DATABASE ?? 'rljson';
+  await dbBasics.createSchema(mssqlConfigFromEnv(), dbName, 'main');
+  await dbBasics.installProcedures(mssqlConfigFromEnv(), dbName);
+};
+
+/**
  * Builds the archival hook that makes clients' writes durable server-side.
  *
  * The sync protocol is pull-based: a client's data is normally only
@@ -179,8 +206,11 @@ const ensureTablesProvisioned = async (io: Io): Promise<void> => {
  * (`walkAndPersistByRef`) against the Server's own merged IoMulti, relying
  * on its built-in hot-swap write-back — never a raw dump of everything the
  * client happens to hold locally, and no manual write() call here.
- * `ensureTablesProvisioned` runs first so that write-back never fails with
- * a missing-table error for a table this exact server has never seen yet.
+ * `ensureMssqlAdminSchemaProvisioned`/`ensureTablesProvisioned` run first
+ * so that write-back never fails against a completely fresh MSSQL
+ * database — one that has never had `setup-server-tables` run against it
+ * at all, not even once — nor with a missing-table error for a table this
+ * exact server has never seen yet.
  *
  * `server` is assigned right after construction (see `main`); the hook
  * itself only runs later, once a client actually sends a ref.
@@ -192,6 +222,7 @@ export const createOnRefArrived = (
 ): NonNullable<ServerOptions['onRefArrived']> => {
   return async (ctx) => {
     const server = getServer();
+    await ensureMssqlAdminSchemaProvisioned();
     await ensureTablesProvisioned(server.io);
 
     const serverDb = new Db(server.io);

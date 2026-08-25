@@ -64,11 +64,27 @@ recursively pull and persist every ref a client sends — necessary because
 batch clients (like the Generator) write locally and disconnect right
 away, so their data must be durable server-side *before* the ack, not
 just reachable while they happen to stay connected. Before that walk, it
-also calls `IoMulti.rawTableCfgs()`/`createOrExtendTable()` to provision
-any table config reachable from a connected peer that this server doesn't
-have yet — so a genuinely new entity type (e.g. a chart file the Generator
-never synced before) works the first time, with no separate schema-setup
-step against this server's own database.
+also provisions everything the persist step needs against a completely
+fresh MSSQL database, in two steps:
+
+1. `ensureMssqlAdminSchemaProvisioned` — for the `mssql` backend only
+   (a no-op under `IO_BACKEND=mem`) — installs the `main` schema and its
+   admin stored procedures (e.g. `GetContentType`) via the same
+   `DbBasics.createSchema()`/`installProcedures()` calls
+   `setup-server-tables` used to be the only thing that ran. Both are
+   idempotent, so this is safe on every ref, not just the first.
+2. `ensureTablesProvisioned` calls `IoMulti.rawTableCfgs()`/
+   `createOrExtendTable()` to provision any table config reachable from a
+   connected peer that this server doesn't have yet — so a genuinely new
+   entity type (e.g. a chart file the Generator never synced before) works
+   the first time too.
+
+Together, this means the **only** step left that this project doesn't
+automate is creating the database/login/schema container itself (needs
+server-level `sysadmin`/`dbcreator` rights the app's own login
+intentionally doesn't have — see the top-level README's step 1). Once
+that container exists, the very first `generate` run against it does
+everything else — no `setup-server-tables` run required, ever.
 
 See the top-level [README.md](../README.md) for the full walkthrough
 (one-time MSSQL setup, starting Server + generator-ui together, generating and

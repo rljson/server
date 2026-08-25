@@ -34,13 +34,22 @@ vi.mock('@rljson/io-mssql', () => {
       this.readRows = vi.fn().mockResolvedValue({});
       this.rowCount = vi.fn().mockResolvedValue(0);
     }),
+    // `DbBasics` is the client `setup-server-tables.ts` also uses to
+    // install the "main" schema + admin stored procedures — real SQL
+    // scripts are never exercised in these unit tests, only that
+    // `createSchema`/`installProcedures` get called (or don't, for the
+    // mem backend) with the right arguments.
+    DbBasics: vi.fn().mockImplementation(function (this: any) {
+      this.createSchema = vi.fn().mockResolvedValue(['ok']);
+      this.installProcedures = vi.fn().mockResolvedValue(['ok']);
+    }),
   };
 });
 
 import { BsMem } from '@rljson/bs';
 import { Db } from '@rljson/db';
 import { IoMem, IoMulti } from '@rljson/io';
-import { IoMssql } from '@rljson/io-mssql';
+import { DbBasics, IoMssql } from '@rljson/io-mssql';
 import { createSliceIdsTableCfg, Route, TableCfg } from '@rljson/rljson';
 
 import { Client } from '../src/client.ts';
@@ -420,6 +429,44 @@ describe('createOnRefArrived', () => {
     // the persisted row.
     const localChild = await localIo.dumpTable({ table: 'testChild' });
     expect(localChild.testChild._data[0]._hash).toBe(childRow._hash);
+  });
+
+  it('provisions the mssql "main" schema and admin stored procedures before persisting (mssql backend, the default)', async () => {
+    const { serverIo } = await buildServerIo();
+    const getServer = () => ({ io: serverIo }) as any;
+
+    await createOnRefArrived(getServer)({
+      route: 'testParent',
+      ref: 'no-such-ref',
+      sourceNodeId: 'client-a',
+    });
+
+    expect(DbBasics).toHaveBeenCalled();
+    const instance = (DbBasics as any).mock.results.at(-1).value;
+    expect(instance.createSchema).toHaveBeenCalledWith(
+      mssqlConfigFromEnv(),
+      'rljson',
+      'main',
+    );
+    expect(instance.installProcedures).toHaveBeenCalledWith(
+      mssqlConfigFromEnv(),
+      'rljson',
+    );
+  });
+
+  it('skips mssql admin-schema provisioning entirely for the IO_BACKEND=mem backend', async () => {
+    process.env.IO_BACKEND = 'mem';
+    const { serverIo } = await buildServerIo();
+    const getServer = () => ({ io: serverIo }) as any;
+    const callsBefore = (DbBasics as any).mock.calls.length;
+
+    await createOnRefArrived(getServer)({
+      route: 'testParent',
+      ref: 'no-such-ref',
+      sourceNodeId: 'client-a',
+    });
+
+    expect((DbBasics as any).mock.calls.length).toBe(callsBefore);
   });
 });
 
