@@ -102,6 +102,17 @@ type FetchedTable = { _data: Record<string, unknown>[]; _type: string };
  * server's own local, persistent one. Walking the graph via reads alone is
  * therefore enough to make it durable; no explicit write-back or raw dump
  * of the client's local storage is needed.
+ * Sibling children (and, transitively, the whole rest of the tree below
+ * this node) are walked concurrently (`Promise.all`), not one after
+ * another — a deeply-nested chart (e.g. "Customer", with several address
+ * sub-entities each pulling in their own component tables) can mean many
+ * sequential round trips for a single ref; done one at a time, that alone
+ * can take longer than a client's `sendWithAck` timeout, even once
+ * provisioning itself is already cheap (see `createEnsureTablesProvisioned`
+ * above). This is safe: the `visited.has()`/`.add()` dedup pair below has
+ * no `await` between them, so it's atomic with respect to any other
+ * concurrently-running call of this function — two branches racing to
+ * visit the same shared node still only ever process it once.
  * @param db - A Db wrapping the Server's merged IoMulti (`server.io`).
  * @param tableKey - The table of the row to fetch.
  * @param ref - The `_hash` of the row to fetch.
@@ -134,9 +145,11 @@ const walkAndPersistByRef = async (
     ? [...childRefs, { tableKey: sliceIdsTable, ref: sliceIdsRef }]
     : childRefs;
 
-  for (const child of allChildren) {
-    await walkAndPersistByRef(db, child.tableKey, child.ref, visited);
-  }
+  await Promise.all(
+    allChildren.map((child) =>
+      walkAndPersistByRef(db, child.tableKey, child.ref, visited),
+    ),
+  );
 };
 
 /**

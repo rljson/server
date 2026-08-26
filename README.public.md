@@ -104,6 +104,19 @@ retries instead of being stuck failing forever — and a genuinely new
 table key (or a fresh process, e.g. after a restart) is always still
 picked up.
 
+Even with provisioning itself made cheap, one more sequential cost
+remained: the archival walk that pulls and persists a ref's whole subtree
+(`walkAndPersistByRef`) used to visit sibling children one after another.
+A deeply-nested chart (e.g. "Customer", with several address
+sub-entities each pulling in their own component tables) can mean many
+sequential round trips for a *single* ref — enough, under real traffic,
+to exceed the ACK timeout on its own, independent of provisioning. That
+walk is now concurrent too (`Promise.all` over sibling children, which
+recursively means the whole subtree), safe because the walker's
+visited-set dedup check has no `await` between checking and marking a
+node visited — so it stays atomic even when branches race to reach the
+same shared node.
+
 Together, this means the **only** step left that this project doesn't
 automate is creating the database/login/schema container itself (needs
 server-level `sysadmin`/`dbcreator` rights the app's own login
