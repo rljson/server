@@ -187,6 +187,19 @@ export class Server extends BaseNode {
 
   // Bootstrap state
   private _latestRef: string | undefined;
+  /**
+   * Origin of whoever produced {@link _latestRef}.
+   *
+   * The bootstrap used to announce itself as `__server__`, which is true about
+   * the messenger and useless about the message: a client receiving its own
+   * state back could not tell, applied it over a newer local edit, and
+   * destroyed that edit. `@rljson/fs-agent` works around it by remembering the
+   * last ref it sent, which only recognises the most recent one.
+   *
+   * Naming the originator lets the receiving connector's own self-filter do the
+   * job properly, for every ref rather than the latest.
+   */
+  private _latestRefOrigin: string | undefined;
 
   /**
    * Identity this server announces under, stable for its lifetime.
@@ -615,9 +628,11 @@ export class Server extends BaseNode {
           this._multicastedRefsPrevious.delete(this._latestRef);
         }
 
-        // Track latest ref for bootstrap
+        // Track latest ref for bootstrap, and WHO produced it — see
+        // `_latestRefOrigin`.
         if (this._latestRef !== ref) this._announceSeq++;
         this._latestRef = ref;
+        this._latestRefOrigin = (payload as { o?: string })?.o;
 
         const p = payload as any;
 
@@ -904,15 +919,35 @@ export class Server extends BaseNode {
     this._bootstrapRetries.delete(clientId);
   }
 
-  private _sendBootstrap(ioDown: SocketWithClientId) {
-    if (!this._latestRef) return;
-
-    const payload: ConnectorPayload = {
-      o: '__server__',
-      r: this._latestRef,
+  /**
+   * The announcement for a ref, addressed on behalf of whoever produced it.
+   *
+   * The origin is the CLIENT that produced this state, not the server relaying
+   * it. `__server__` was true about the messenger and useless about the
+   * message: a client sent its own state back could not tell, applied it over a
+   * newer local edit, and destroyed that edit. Naming the originator lets the
+   * receiving connector's self-filter do the job for every ref, rather than
+   * only the most recent one — which is all an agent-side workaround can
+   * manage.
+   *
+   * Falls back to the server for a ref the server itself seeded, so the field
+   * is never absent and a receiver always has something to compare against.
+   * @param ref - The ref being announced.
+   * @returns The payload both bootstrap paths send.
+   */
+  private _bootstrapPayload(ref: string): ConnectorPayload {
+    return {
+      o: this._latestRefOrigin ?? '__server__',
+      r: ref,
       c: this._announceId,
       seq: this._announceSeq,
     };
+  }
+
+  private _sendBootstrap(ioDown: SocketWithClientId) {
+    if (!this._latestRef) return;
+
+    const payload = this._bootstrapPayload(this._latestRef);
 
     this._logger.info('Server.Bootstrap', 'Sending bootstrap ref', {
       ref: this._latestRef,
@@ -930,12 +965,7 @@ export class Server extends BaseNode {
     /* v8 ignore if -- @preserve */
     if (!this._latestRef) return;
 
-    const payload: ConnectorPayload = {
-      o: '__server__',
-      r: this._latestRef,
-      c: this._announceId,
-      seq: this._announceSeq,
-    };
+    const payload = this._bootstrapPayload(this._latestRef);
 
     this._logger.info('Server.Bootstrap', 'Heartbeat broadcast', {
       ref: this._latestRef,
@@ -1537,6 +1567,7 @@ export class Server extends BaseNode {
 
     // Clear bootstrap state
     this._latestRef = undefined;
+    this._latestRefOrigin = undefined;
 
     this._tornDown = true;
 
