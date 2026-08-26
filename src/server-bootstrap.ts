@@ -201,10 +201,7 @@ const walkAndPersistByRef = async (
  * change *after* this process already provisioned it won't be picked up
  * until the process restarts — an acceptable trade-off here, matching how
  * `routesFromEnv()` below is also only ever read once at startup, not
- * hot-reloaded; a genuinely new key is still always picked up. A key is
- * only remembered after `createOrExtendTable()` actually succeeds, so a
- * failed attempt is retried on the next ref rather than silently skipped
- * forever.
+ * hot-reloaded; a genuinely new key is still always picked up.
  *
  * The per-table calls that do run still run concurrently (`Promise.all`),
  * not one after another, for the same reason: each table's SQL touches
@@ -212,19 +209,47 @@ const walkAndPersistByRef = async (
  * safe; the `mssql` package's `ConnectionPool` (which `IoMssql` holds one
  * of) is designed for exactly this — multiple concurrent `Request`s
  * sharing one pool.
+ *
+ * Memoized by (resolved-or-in-flight) `Promise`, not just a `Set` of
+ * already-*confirmed* keys — a real, reproduced bug: two `onRefArrived`
+ * invocations for different refs can run concurrently (see
+ * `BATCH_CONCURRENCY` in the Generator repo), each independently calling
+ * this function; both can see a genuinely new table's key as "not yet
+ * confirmed" (neither has finished creating it yet) and both then call
+ * `createOrExtendTable()` for it — two concurrent `CREATE TABLE`s for the
+ * same brand-new table crash with a primary-key violation on
+ * `tableCfgs_tbl`, taking the whole Server process down with them (an
+ * uncaught exception, not just a dropped ref). Storing the *promise* the
+ * moment a key is first seen — synchronously, before any `await`, exactly
+ * like `ensureMssqlAdminSchemaProvisioned`'s own memoization — means a
+ * second concurrent call for the same key finds and awaits that SAME
+ * promise instead of starting a second, colliding attempt. `rawTableCfgs()`
+ * can also report the same table more than once within a *single* call
+ * (e.g. once from the Server's own local Io, once from a connected peer),
+ * so results are deduplicated by key before mapping to attempts too.  A
+ * failed attempt is discarded (not cached), so the next ref retries it.
  */
 const createEnsureTablesProvisioned = (): ((io: Io) => Promise<void>) => {
-  const provisioned = new Set<string>();
+  const attempts = new Map<string, Promise<void>>();
 
   return async (io) => {
     const cfgs = await io.rawTableCfgs();
-    const pending = cfgs.filter((cfg) => !provisioned.has(cfg.key));
+    const uniqueByKey = new Map(cfgs.map((cfg) => [cfg.key, cfg]));
+
     await Promise.all(
-      pending.map((cfg) =>
-        io.createOrExtendTable({ tableCfg: cfg }).then(() => {
-          provisioned.add(cfg.key);
-        }),
-      ),
+      [...uniqueByKey.values()].map((cfg) => {
+        const existing = attempts.get(cfg.key);
+        if (existing) return existing;
+
+        const attempt = io.createOrExtendTable({ tableCfg: cfg }).catch(
+          (err: unknown) => {
+            attempts.delete(cfg.key);
+            throw err;
+          },
+        );
+        attempts.set(cfg.key, attempt);
+        return attempt;
+      }),
     );
   };
 };

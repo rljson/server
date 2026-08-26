@@ -565,6 +565,102 @@ describe('createOnRefArrived', () => {
     // both times -- the second ref must add zero further calls.
     expect(createOrExtendSpy.mock.calls.length).toBe(callsAfterFirst);
   });
+
+  it('retries table provisioning on the next ref after a failed attempt', async () => {
+    const { localIo, peerIo, serverIo } = await buildServerIo();
+    const peerDb = new Db(peerIo);
+    await peerDb.core.import({
+      testChild: {
+        _type: 'components',
+        _data: [{ value: 'leaf-1' }, { value: 'leaf-2' }],
+      },
+    } as any);
+    const [childRow, childRow2] = (await peerDb.core.dumpTable('testChild'))
+      .testChild._data as any[];
+
+    const getServer = () => ({ io: serverIo }) as any;
+    const onRefArrived = createOnRefArrived(getServer);
+    const createOrExtendSpy = vi.spyOn(serverIo, 'createOrExtendTable');
+    createOrExtendSpy.mockRejectedValueOnce(new Error('deadlocked'));
+
+    await expect(
+      onRefArrived({
+        route: 'testChild',
+        ref: childRow._hash,
+        sourceNodeId: 'client-a',
+      }),
+    ).rejects.toThrow('deadlocked');
+
+    // The failed attempt must not be remembered as done -- the next ref
+    // retries it (and this time it's allowed to succeed).
+    await onRefArrived({
+      route: 'testChild',
+      ref: childRow2._hash,
+      sourceNodeId: 'client-a',
+    });
+
+    const localChild = await localIo.dumpTable({ table: 'testChild' });
+    expect(localChild.testChild._data.length).toBeGreaterThan(0);
+  });
+
+  it('does not race two concurrent refs into both creating the same brand-new table', async () => {
+    // Regression test: two onRefArrived invocations for different refs
+    // running concurrently (not one awaited before the other starts) used
+    // to both see a genuinely new table's key as "not yet confirmed" and
+    // both call createOrExtendTable() for it -- a real, reproduced crash
+    // (a primary-key violation on tableCfgs_tbl, taking the whole Server
+    // process down with an uncaught exception, not just dropping a ref).
+    const localIo = new IoMem();
+    await localIo.init();
+    const peerIo = new IoMem();
+    await peerIo.init();
+
+    const peerDb = new Db(peerIo);
+    await peerDb.core.createTable(childCfg);
+    await peerDb.core.import({
+      testChild: {
+        _type: 'components',
+        _data: [{ value: 'leaf-1' }, { value: 'leaf-2' }],
+      },
+    } as any);
+    const [childRow, childRow2] = (await peerDb.core.dumpTable('testChild'))
+      .testChild._data as any[];
+
+    const serverIo = new IoMulti([
+      { io: localIo, priority: 1, read: true, write: true, dump: true },
+      { io: peerIo, priority: 2, read: true, write: false, dump: false },
+    ]);
+    await serverIo.init();
+    const getServer = () => ({ io: serverIo }) as any;
+    const createOrExtendSpy = vi.spyOn(serverIo, 'createOrExtendTable');
+
+    const onRefArrived = createOnRefArrived(getServer);
+    await Promise.all([
+      onRefArrived({
+        route: 'testChild',
+        ref: childRow._hash,
+        sourceNodeId: 'client-a',
+      }),
+      onRefArrived({
+        route: 'testChild',
+        ref: childRow2._hash,
+        sourceNodeId: 'client-a',
+      }),
+    ]);
+
+    const testChildCalls = createOrExtendSpy.mock.calls.filter(
+      ([request]: any) => request.tableCfg.key === 'testChild',
+    );
+    expect(testChildCalls).toHaveLength(1);
+
+    const localChild = await localIo.dumpTable({ table: 'testChild' });
+    const localChildHashes = localChild.testChild._data.map(
+      (row: any) => row._hash,
+    );
+    expect(localChildHashes).toEqual(
+      expect.arrayContaining([childRow._hash, childRow2._hash]),
+    );
+  });
 });
 
 describe('main sync integration', () => {
