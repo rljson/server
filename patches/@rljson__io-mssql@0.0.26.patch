@@ -1,5 +1,5 @@
 diff --git a/dist/io-mssql.js b/dist/io-mssql.js
-index 3eb8f5a1f5dfe2801b3e21434de60a509f5183f6..1b91346b6fdaa272039b9d6aa51aa132aa8a5410 100644
+index 3eb8f5a1f5dfe2801b3e21434de60a509f5183f6..c7c0b46eb890bbf94c7e891d37c0115511bdc263 100644
 --- a/dist/io-mssql.js
 +++ b/dist/io-mssql.js
 @@ -787,7 +787,7 @@ class DbStatements {
@@ -21,3 +21,12 @@ index 3eb8f5a1f5dfe2801b3e21434de60a509f5183f6..1b91346b6fdaa272039b9d6aa51aa132
      let constraint = " ";
      for (const [column, value] of whereClause) {
        const columnWithFix = this._map.addColumnSuffix(column);
+@@ -872,7 +875,7 @@ class DbStatements {
+   }
+ }
+ async function runScript(config, script, dbName) {
+-  const pool = await sql.connect(config);
++  const pool = await new sql.ConnectionPool(config).connect();
+   if (script.trim().length === 0) {
+     await pool.close();
+     return [];

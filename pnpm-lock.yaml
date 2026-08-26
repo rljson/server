@@ -10,7 +10,7 @@ overrides:
 
 patchedDependencies:
   '@rljson/io-mssql@0.0.26':
-    hash: 894e66d845003168575ec32a296edcdeaa035a4a850aed17cf5dbe65318c1e45
+    hash: 324bfcb0f824b0e98fe27039b6690ae5fbbbf67e489565ec7046d87ae0953447
     path: patches/@rljson__io-mssql@0.0.26.patch
   '@rljson/io@0.0.73':
     hash: 74fea07a1e7181426b940004647f3c32ff03deb11ba212c0e23998887de52181
@@ -34,7 +34,7 @@ importers:
         version: 0.0.73(patch_hash=74fea07a1e7181426b940004647f3c32ff03deb11ba212c0e23998887de52181)
       '@rljson/io-mssql':
         specifier: ^0.0.26
-        version: 0.0.26(patch_hash=894e66d845003168575ec32a296edcdeaa035a4a850aed17cf5dbe65318c1e45)
+        version: 0.0.26(patch_hash=324bfcb0f824b0e98fe27039b6690ae5fbbbf67e489565ec7046d87ae0953447)
       '@rljson/json':
         specifier: ^0.0.23
         version: 0.0.23
@@ -2839,7 +2839,7 @@ snapshots:
       '@rljson/json': 0.0.23
       js-base64: 3.7.8
 
-  '@rljson/io-mssql@0.0.26(patch_hash=894e66d845003168575ec32a296edcdeaa035a4a850aed17cf5dbe65318c1e45)':
+  '@rljson/io-mssql@0.0.26(patch_hash=324bfcb0f824b0e98fe27039b6690ae5fbbbf67e489565ec7046d87ae0953447)':
     dependencies:
       '@rljson/hash': 0.0.18
       '@rljson/io': 0.0.63
