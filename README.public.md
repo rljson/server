@@ -88,6 +88,22 @@ than a client's `sendWithAck` timeout, producing a misleading "ACK
 timeout" error even though the Server finishes and archives the ref
 correctly moments later.
 
+Both steps are also **memoized**, per Server/route instance (i.e. once
+per `createOnRefArrived` call, which `main()` makes exactly once per
+route): `createOrExtendTable()`/`DbBasics`' calls are individually
+idempotent, but each is still a real MSSQL round trip (and `DbBasics`
+opens a fresh connection per call, unlike `IoMssql`'s persistent pool) —
+unconditionally repeating all of them on *every single ref forever*, not
+just the first, adds enough latency under real traffic (several refs
+arriving close together, e.g. a `--count 30` generate run across two
+entity types) to blow past the ACK timeout again, even against a database
+that already has every table it needs. Step 1 caches its resolved (or
+in-flight) promise; step 2 remembers which table *keys* it already
+confirmed. Either cache is cleared on a failed attempt, so the next ref
+retries instead of being stuck failing forever — and a genuinely new
+table key (or a fresh process, e.g. after a restart) is always still
+picked up.
+
 Together, this means the **only** step left that this project doesn't
 automate is creating the database/login/schema container itself (needs
 server-level `sysadmin`/`dbcreator` rights the app's own login

@@ -468,6 +468,99 @@ describe('createOnRefArrived', () => {
 
     expect((DbBasics as any).mock.calls.length).toBe(callsBefore);
   });
+
+  it('memoizes admin-schema provisioning: only the first of several refs on the same onRefArrived hook triggers DbBasics', async () => {
+    const { serverIo } = await buildServerIo();
+    const getServer = () => ({ io: serverIo }) as any;
+    // One hook instance, exactly as main() creates it once per Server/route
+    // — later calls must reuse the same memoized attempt, not start fresh.
+    const onRefArrived = createOnRefArrived(getServer);
+    const callsBefore = (DbBasics as any).mock.calls.length;
+
+    await onRefArrived({
+      route: 'testParent',
+      ref: 'no-such-ref',
+      sourceNodeId: 'client-a',
+    });
+    await onRefArrived({
+      route: 'testParent',
+      ref: 'no-such-ref-2',
+      sourceNodeId: 'client-a',
+    });
+
+    expect((DbBasics as any).mock.calls.length).toBe(callsBefore + 1);
+  });
+
+  it('retries admin-schema provisioning on the next ref after a failed attempt', async () => {
+    const { serverIo } = await buildServerIo();
+    const getServer = () => ({ io: serverIo }) as any;
+    const onRefArrived = createOnRefArrived(getServer);
+    const callsBefore = (DbBasics as any).mock.calls.length;
+
+    // Make the very next `new DbBasics()` (the one this first ref
+    // triggers) fail once, instead of the always-succeeding default.
+    (DbBasics as any).mockImplementationOnce(function (this: any) {
+      this.createSchema = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('temporarily unreachable'));
+      this.installProcedures = vi.fn().mockResolvedValue(['ok']);
+    });
+
+    await expect(
+      onRefArrived({
+        route: 'testParent',
+        ref: 'no-such-ref',
+        sourceNodeId: 'client-a',
+      }),
+    ).rejects.toThrow('temporarily unreachable');
+
+    // The failed attempt must not be remembered as done -- the next ref
+    // (now hitting the always-succeeding default mock again) retries it.
+    await onRefArrived({
+      route: 'testParent',
+      ref: 'no-such-ref-2',
+      sourceNodeId: 'client-a',
+    });
+
+    expect((DbBasics as any).mock.calls.length).toBe(callsBefore + 2);
+  });
+
+  it('memoizes table provisioning: a table already confirmed on a prior ref is not re-sent to createOrExtendTable', async () => {
+    const { peerIo, serverIo } = await buildServerIo();
+    const peerDb = new Db(peerIo);
+    await peerDb.core.import({
+      testChild: {
+        _type: 'components',
+        _data: [{ value: 'leaf-1' }, { value: 'leaf-2' }],
+      },
+    } as any);
+    const [childRow, childRow2] = (await peerDb.core.dumpTable('testChild'))
+      .testChild._data as any[];
+
+    const getServer = () => ({ io: serverIo }) as any;
+    // One hook instance -- both refs share the same memoized "already
+    // provisioned" state, unlike calling createOnRefArrived() fresh twice.
+    const onRefArrived = createOnRefArrived(getServer);
+    const createOrExtendSpy = vi.spyOn(serverIo, 'createOrExtendTable');
+
+    await onRefArrived({
+      route: 'testChild',
+      ref: childRow._hash,
+      sourceNodeId: 'client-a',
+    });
+    const callsAfterFirst = createOrExtendSpy.mock.calls.length;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+
+    await onRefArrived({
+      route: 'testChild',
+      ref: childRow2._hash,
+      sourceNodeId: 'client-a',
+    });
+
+    // Same three tables (testParent/testChild/testSliceId) are reachable
+    // both times -- the second ref must add zero further calls.
+    expect(createOrExtendSpy.mock.calls.length).toBe(callsAfterFirst);
+  });
 });
 
 describe('main sync integration', () => {
