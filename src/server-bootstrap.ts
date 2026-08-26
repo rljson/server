@@ -22,6 +22,18 @@ import { SocketIoBridge } from './socket-io-bridge.ts';
 /**
  * Builds the mssql connection config from environment variables.
  * See .env.example for the full list of supported variables.
+ *
+ * `pool.max` is raised from the `mssql` package's own default (10) to 25:
+ * `walkAndPersistByRef`'s concurrent tree walk (see below) and
+ * `ensureTablesProvisioned`'s concurrent table creation both fan out many
+ * simultaneous requests against this one pool — a deeply-nested chart
+ * (e.g. "Customer", with several address sub-entities each pulling in
+ * their own component tables) can easily want more than 10 requests in
+ * flight at once. A pool that's too small doesn't break anything — extra
+ * requests just queue for a free connection — but it silently caps how
+ * much of that concurrency ever actually reaches MSSQL, which can matter
+ * for `sendWithAck` timeouts under real traffic just as much as the
+ * concurrency in application code does. `MSSQL_POOL_MAX` overrides it.
  */
 export const mssqlConfigFromEnv = (): MssqlConfig => ({
   server: process.env.MSSQL_HOST ?? 'localhost',
@@ -33,6 +45,9 @@ export const mssqlConfigFromEnv = (): MssqlConfig => ({
     encrypt: process.env.MSSQL_ENCRYPT !== 'false',
     trustServerCertificate:
       process.env.MSSQL_TRUST_SERVER_CERTIFICATE === 'true',
+  },
+  pool: {
+    max: process.env.MSSQL_POOL_MAX ? Number(process.env.MSSQL_POOL_MAX) : 25,
   },
 });
 

@@ -72,6 +72,7 @@ const ENV_KEYS = [
   'MSSQL_PASSWORD',
   'MSSQL_ENCRYPT',
   'MSSQL_TRUST_SERVER_CERTIFICATE',
+  'MSSQL_POOL_MAX',
   'RLJSON_ROUTE',
   'RLJSON_ROUTES',
   'PORT',
@@ -102,6 +103,7 @@ describe('mssqlConfigFromEnv', () => {
       user: undefined,
       password: undefined,
       options: { encrypt: true, trustServerCertificate: false },
+      pool: { max: 25 },
     });
   });
 
@@ -113,6 +115,7 @@ describe('mssqlConfigFromEnv', () => {
     process.env.MSSQL_PASSWORD = 'secret';
     process.env.MSSQL_ENCRYPT = 'false';
     process.env.MSSQL_TRUST_SERVER_CERTIFICATE = 'true';
+    process.env.MSSQL_POOL_MAX = '50';
 
     const cfg = mssqlConfigFromEnv();
     expect(cfg).toEqual({
@@ -122,6 +125,7 @@ describe('mssqlConfigFromEnv', () => {
       user: 'sa',
       password: 'secret',
       options: { encrypt: false, trustServerCertificate: true },
+      pool: { max: 50 },
     });
   });
 });
