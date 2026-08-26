@@ -772,12 +772,42 @@ describe('Server sync protocol', () => {
 
       expect(bootstrapReceived).toHaveLength(1);
       expect(bootstrapReceived[0].r).toBe('ref-abc');
-      expect(bootstrapReceived[0].o).toBe('__server__');
+      // The client that PRODUCED this state, not the server relaying it.
+      //
+      // `__server__` was true about the messenger and useless about the
+      // message: a client sent its own state back could not tell, applied it
+      // over a newer local edit, and destroyed that edit. Naming the originator
+      // lets the receiver's own self-filter do the job — for every ref, rather
+      // than only the most recent one, which is all the agent-side workaround
+      // could manage.
+      expect(bootstrapReceived[0].o).toBe('originA');
       // An announcement carries who is announcing and how many distinct
       // states they have announced, so a receiver can tell a repeat from
       // something new without inspecting the content.
       expect(bootstrapReceived[0].c).toMatch(/^__server__:/);
       expect(bootstrapReceived[0].seq).toBe(1);
+    });
+
+    // A ref the SERVER seeded has no originating client, so it still announces
+    // itself. The fallback matters: without it the origin would be undefined
+    // and a receiver's self-filter could not compare against anything.
+    it('falls back to the server for a ref no client produced', async () => {
+      const seededRoute = Route.fromFlat('seededBootstrap');
+      const { server } = await createSyncServer(seededRoute, {});
+      const seededEvents = syncEvents(seededRoute.flat);
+      (server as unknown as { _latestRef?: string })._latestRef = 'seeded-ref';
+
+      const socketC = new SocketMock() as unknown as SocketWithClientId;
+      socketC.__clientId = 'C';
+      const seen: ConnectorPayload[] = [];
+      socketC.on(seededEvents.bootstrap, (p: ConnectorPayload) => {
+        seen.push(p);
+      });
+
+      await server.addSocket(socketC);
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0].o).toBe('__server__');
     });
 
     // The number counts DISTINCT STATES, not messages. A repeat has to carry
