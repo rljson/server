@@ -1,6 +1,6 @@
 {
   "name": "@rljson/server",
-  "version": "0.0.49",
+  "version": "0.0.50",
   "description": "Rljson server description",
   "homepage": "https://github.com/rljson/server",
   "bugs": "https://github.com/rljson/server/issues",
