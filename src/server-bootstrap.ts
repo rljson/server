@@ -24,16 +24,13 @@ import { SocketIoBridge } from './socket-io-bridge.ts';
  * See .env.example for the full list of supported variables.
  *
  * `pool.max` is raised from the `mssql` package's own default (10) to 25:
- * `walkAndPersistByRef`'s concurrent tree walk (see below) and
- * `ensureTablesProvisioned`'s concurrent table creation both fan out many
- * simultaneous requests against this one pool — a deeply-nested chart
- * (e.g. "Customer", with several address sub-entities each pulling in
- * their own component tables) can easily want more than 10 requests in
- * flight at once. A pool that's too small doesn't break anything — extra
- * requests just queue for a free connection — but it silently caps how
- * much of that concurrency ever actually reaches MSSQL, which can matter
- * for `sendWithAck` timeouts under real traffic just as much as the
- * concurrency in application code does. `MSSQL_POOL_MAX` overrides it.
+ * `walkAndPersistByRef`'s tree walk and `ensureTablesProvisioned`'s table
+ * creation both fan out many concurrent requests against this one pool —
+ * a deeply-nested chart (several sub-entities, each with its own component
+ * tables) can want more than 10 in flight at once. A too-small pool queues
+ * extra requests rather than failing, but that queuing directly eats into
+ * a client's `sendWithAck` timeout budget under real traffic.
+ * `MSSQL_POOL_MAX` overrides the default.
  */
 export const mssqlConfigFromEnv = (): MssqlConfig => ({
   server: process.env.MSSQL_HOST ?? 'localhost',
@@ -117,15 +114,13 @@ type FetchedTable = { _data: Record<string, unknown>[]; _type: string };
  * server's own local, persistent one. Walking the graph via reads alone is
  * therefore enough to make it durable; no explicit write-back or raw dump
  * of the client's local storage is needed.
- * Sibling children (and, transitively, the whole rest of the tree below
- * this node) are walked concurrently (`Promise.all`), not one after
- * another — a deeply-nested chart (e.g. "Customer", with several address
- * sub-entities each pulling in their own component tables) can mean many
- * sequential round trips for a single ref; done one at a time, that alone
- * can take longer than a client's `sendWithAck` timeout, even once
- * provisioning itself is already cheap (see `createEnsureTablesProvisioned`
- * above). This is safe: the `visited.has()`/`.add()` dedup pair below has
- * no `await` between them, so it's atomic with respect to any other
+ *
+ * Sibling children (and, transitively, the whole subtree below this node)
+ * are walked concurrently (`Promise.all`), not one after another — a
+ * deeply-nested chart means many round trips per ref, and doing them
+ * sequentially risks exceeding a client's `sendWithAck` timeout on depth
+ * alone. This is race-safe: the `visited.has()`/`.add()` pair below has no
+ * `await` between them, so it's atomic with respect to any other
  * concurrently-running call of this function — two branches racing to
  * visit the same shared node still only ever process it once.
  * @param db - A Db wrapping the Server's merged IoMulti (`server.io`).
@@ -175,59 +170,43 @@ const walkAndPersistByRef = async (
  * already merges across all readables rather than stopping at the first
  * one, so a batch client's brand-new table configs (e.g. a chart the
  * Generator never synced before) are included as long as that client is
- * still connected.
+ * still connected. This is what lets a genuinely new entity type "just
+ * work" the first time it's generated, without a separate
+ * `setup-server-tables` run first (see that script for the one-time,
+ * all-registered-generators equivalent of this, done manually instead of
+ * automatically per ref).
  *
- * This is what lets a genuinely new entity type "just work" the first time
- * it's generated, without a separate `setup-server-tables` run first (see
- * that script for the one-time, all-registered-generators equivalent of
- * this — this does the same `rawTableCfgs()` + `createOrExtendTable()`
- * pairing, just scoped to what's reachable at this exact moment, and
- * triggered automatically instead of manually).
+ * Per-table calls run concurrently (`Promise.all`), not one after
+ * another: each table's SQL touches only that table (no cross-table
+ * constraints), so concurrent calls are safe, and the `mssql` package's
+ * `ConnectionPool` (which `IoMssql` holds one of) is designed for exactly
+ * this — multiple concurrent `Request`s sharing one pool.
  *
- * `createOrExtendTable()` is idempotent, so calling it again for a table
- * already at its current config is *correct* but not free — it's still a
- * real MSSQL round trip. Left unmemoized, a database with 50+ tables (a
- * chart like "Customer" with many nested sub-entities) means 50+ wasted
- * round trips on *every single ref forever*, not just the first — cheap
- * individually, but enough in aggregate (especially with several refs
- * arriving close together, e.g. a `--count 30` generate run) to exceed a
- * client's `sendWithAck` timeout again, the exact failure this was meant
- * to fix. The returned closure instead remembers which table *keys* it has
- * already confirmed, scoped to one Server/route instance (one
- * `createOnRefArrived` call), and only ever calls `createOrExtendTable()`
- * for a key it hasn't seen yet — a genuinely new table still gets
- * provisioned; one already confirmed does not get re-sent. Memoizing by
- * key alone (not also the config's content) means a table whose columns
- * change *after* this process already provisioned it won't be picked up
- * until the process restarts — an acceptable trade-off here, matching how
- * `routesFromEnv()` below is also only ever read once at startup, not
- * hot-reloaded; a genuinely new key is still always picked up.
- *
- * The per-table calls that do run still run concurrently (`Promise.all`),
- * not one after another, for the same reason: each table's SQL touches
- * only that table (no cross-table constraints), so concurrent calls are
- * safe; the `mssql` package's `ConnectionPool` (which `IoMssql` holds one
- * of) is designed for exactly this — multiple concurrent `Request`s
- * sharing one pool.
- *
- * Memoized by (resolved-or-in-flight) `Promise`, not just a `Set` of
- * already-*confirmed* keys — a real, reproduced bug: two `onRefArrived`
+ * Memoized per table *key*, by the (resolved-or-in-flight) `Promise`
+ * rather than just a `Set` of confirmed keys: two `onRefArrived`
  * invocations for different refs can run concurrently (see
- * `BATCH_CONCURRENCY` in the Generator repo), each independently calling
- * this function; both can see a genuinely new table's key as "not yet
- * confirmed" (neither has finished creating it yet) and both then call
- * `createOrExtendTable()` for it — two concurrent `CREATE TABLE`s for the
- * same brand-new table crash with a primary-key violation on
- * `tableCfgs_tbl`, taking the whole Server process down with them (an
- * uncaught exception, not just a dropped ref). Storing the *promise* the
- * moment a key is first seen — synchronously, before any `await`, exactly
- * like `ensureMssqlAdminSchemaProvisioned`'s own memoization — means a
- * second concurrent call for the same key finds and awaits that SAME
- * promise instead of starting a second, colliding attempt. `rawTableCfgs()`
- * can also report the same table more than once within a *single* call
- * (e.g. once from the Server's own local Io, once from a connected peer),
- * so results are deduplicated by key before mapping to attempts too.  A
- * failed attempt is discarded (not cached), so the next ref retries it.
+ * `BATCH_CONCURRENCY` in the Generator repo), each independently
+ * discovering the same genuinely-new table. Storing the promise the
+ * moment a key is first seen — synchronously, before any `await` — means
+ * a second concurrent call for that key finds and awaits the SAME
+ * promise instead of starting a colliding second `createOrExtendTable()`
+ * attempt (two concurrent `CREATE TABLE`s for the same new table would
+ * otherwise crash with a primary-key violation on `tableCfgs_tbl`,
+ * taking down the whole process, not just dropping the ref).
+ * `rawTableCfgs()` can also report the same table more than once within
+ * a *single* call (e.g. once from the Server's own local Io, once from a
+ * connected peer), so results are deduplicated by key before mapping to
+ * attempts too. A failed attempt is discarded (not cached), so the next
+ * ref retries it.
+ *
+ * Memoized by key alone, not also the config's content: a table whose
+ * columns change *after* this process already provisioned it won't be
+ * picked up until the process restarts — an acceptable trade-off here,
+ * matching how `routesFromEnv()` below is also only ever read once at
+ * startup, not hot-reloaded. A genuinely new key is still always picked
+ * up, and memoizing per-key (rather than doing real MSSQL round trips on
+ * every ref forever) is what keeps this cheap once a table is already
+ * known-good.
  */
 const createEnsureTablesProvisioned = (): ((io: Io) => Promise<void>) => {
   const attempts = new Map<string, Promise<void>>();
@@ -264,17 +243,15 @@ const createEnsureTablesProvisioned = (): ((io: Io) => Promise<void>) => {
  *
  * `DbBasics.createSchema()`/`installProcedures()` are individually
  * idempotent (`IF NOT EXISTS`/`CREATE OR ALTER PROCEDURE`), but each opens
- * its own fresh MSSQL connection (unlike `IoMssql`, `DbBasics` holds no
- * persistent pool) — five or more separate connections, every single time
- * this ran. That's fine once, but calling it unconditionally on every ref
- * forever adds real, avoidable latency to every ref after the first, which
- * — like the unmemoized table provisioning above — was enough on its own
- * to blow past a client's `sendWithAck` timeout under real traffic. The
- * returned closure instead runs the underlying provisioning at most once
- * per Server/route instance (one `createOnRefArrived` call) and caches the
- * in-flight/resolved promise so concurrent and later calls all await the
- * same attempt instead of starting their own; a failed attempt clears the
- * cache so the next ref retries rather than being stuck failing forever.
+ * its own fresh MSSQL connection (`DbBasics`, unlike `IoMssql`, holds no
+ * persistent pool) — five or more separate connections per call. Doing
+ * that unconditionally on every ref forever adds real, avoidable latency
+ * once a Server has been running a while. The returned closure instead
+ * runs the underlying provisioning at most once per Server/route instance
+ * (one `createOnRefArrived` call), caching the in-flight/resolved promise
+ * so concurrent and later calls all await the same attempt instead of
+ * starting their own; a failed attempt clears the cache so the next ref
+ * retries rather than being stuck failing forever.
  *
  * Uses the same `MSSQL_*`-derived config as the app's regular connection
  * (`mssqlConfigFromEnv()`); no elevated credentials needed, since the
@@ -318,25 +295,22 @@ const createEnsureMssqlAdminSchemaProvisioned = (): (() => Promise<void>) => {
  * The pull itself uses only official Db/Controller read APIs
  * (`walkAndPersistByRef`) against the Server's own merged IoMulti, relying
  * on its built-in hot-swap write-back — never a raw dump of everything the
- * client happens to hold locally, and no manual write() call here.
- * The memoized `ensureMssqlAdminSchemaProvisioned`/`ensureTablesProvisioned`
+ * client happens to hold locally, and no manual write() call here. The
+ * memoized `ensureMssqlAdminSchemaProvisioned`/`ensureTablesProvisioned`
  * closures below run first (concurrently with each other — they touch
  * disjoint schemas, "main" vs. the data tables, so there is no ordering
- * dependency between them) so that write-back never fails against a
- * completely fresh MSSQL database — one that has never had
- * `setup-server-tables` run against it at all, not even once — nor with a
- * missing-table error for a table this exact server has never seen yet.
- * Being memoized (see each factory's own doc comment for why) is what
- * keeps that safety net cheap on every ref after the first, instead of
- * paying for real provisioning work over and over.
+ * dependency) so write-back never fails against a completely fresh MSSQL
+ * database, or with a missing-table error for a table this server has
+ * never seen. Being memoized (see each factory's own doc for why) is what
+ * keeps that safety net cheap on every ref after the first.
  *
  * `server` is assigned right after construction (see `main`); the hook
  * itself only runs later, once a client actually sends a ref. The two
  * memoized closures are created once here, per `createOnRefArrived` call
- * — i.e. once per Server/route instance, exactly matching their intended
- * "at most once per running Server" scope; a fresh call (e.g. a new test,
- * or a real process restart) starts fresh, which is correct — a brand-new
- * process has no way to know whether provisioning already happened.
+ * — i.e. once per Server/route instance, matching their "at most once per
+ * running Server" scope; a fresh call (a new test, a real process
+ * restart) starts fresh, which is correct — a new process has no way to
+ * know whether provisioning already happened.
  * @param getServer - Lazily returns the Server instance once constructed.
  * @returns The onRefArrived hook to pass into ServerOptions.
  */
