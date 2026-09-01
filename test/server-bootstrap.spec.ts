@@ -661,6 +661,89 @@ describe('createOnRefArrived', () => {
       expect.arrayContaining([childRow._hash, childRow2._hash]),
     );
   });
+
+  it('handles a burst of many refs across many distinct brand-new tables concurrently, without crashing', async () => {
+    // Broader stress test, not just the one specific race already fixed
+    // above: a real generate run introducing several new entity types at
+    // once (see the Generator repo's BATCH_CONCURRENCY) means many
+    // concurrent onRefArrived calls, each possibly for a *different* new
+    // table, all racing through the same memoized closures at once. This
+    // sends a burst of refs across several distinct new tables, each with
+    // more than one row, and asserts the whole burst completes cleanly
+    // (Promise.all would reject if any single onRefArrived call threw)
+    // with exactly the right data landed and no redundant provisioning.
+    const localIo = new IoMem();
+    await localIo.init();
+    const peerIo = new IoMem();
+    await peerIo.init();
+
+    const tableCount = 6;
+    const rowsPerTable = 3;
+    const tableCfgs = Array.from({ length: tableCount }, (_, i) => ({
+      key: `stressTable${i}`,
+      type: 'components',
+      isHead: true,
+      isRoot: true,
+      columns: [
+        { key: '_hash', type: 'string' },
+        { key: 'value', type: 'string' },
+      ],
+    })) as unknown as TableCfg[];
+
+    const peerDb = new Db(peerIo);
+    const rowsByTable: Record<string, any[]> = {};
+    for (const cfg of tableCfgs) {
+      await peerDb.core.createTable(cfg);
+      await peerDb.core.import({
+        [cfg.key]: {
+          _type: 'components',
+          _data: Array.from({ length: rowsPerTable }, (_, i) => ({
+            value: `${cfg.key}-${i}`,
+          })),
+        },
+      } as any);
+      rowsByTable[cfg.key] = (await peerDb.core.dumpTable(cfg.key))[cfg.key]
+        ._data as any[];
+    }
+
+    const serverIo = new IoMulti([
+      { io: localIo, priority: 1, read: true, write: true, dump: true },
+      { io: peerIo, priority: 2, read: true, write: false, dump: false },
+    ]);
+    await serverIo.init();
+    const getServer = () => ({ io: serverIo }) as any;
+    const createOrExtendSpy = vi.spyOn(serverIo, 'createOrExtendTable');
+
+    const onRefArrived = createOnRefArrived(getServer);
+    const allRefCalls = tableCfgs.flatMap((cfg) =>
+      rowsByTable[cfg.key].map((row) =>
+        onRefArrived({
+          route: cfg.key,
+          ref: row._hash,
+          sourceNodeId: 'client-a',
+        }),
+      ),
+    );
+
+    await expect(Promise.all(allRefCalls)).resolves.toBeDefined();
+
+    for (const cfg of tableCfgs) {
+      const calls = createOrExtendSpy.mock.calls.filter(
+        ([request]: any) => request.tableCfg.key === cfg.key,
+      );
+      // Provisioned exactly once per table, no matter how many concurrent
+      // refs for it arrived in the same burst.
+      expect(calls).toHaveLength(1);
+
+      const localTable = await localIo.dumpTable({ table: cfg.key });
+      const localHashes = localTable[cfg.key]._data.map(
+        (row: any) => row._hash,
+      );
+      expect(localHashes.sort()).toEqual(
+        rowsByTable[cfg.key].map((row) => row._hash).sort(),
+      );
+    }
+  });
 });
 
 describe('main sync integration', () => {
