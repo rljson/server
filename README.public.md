@@ -117,12 +117,18 @@ visited-set dedup check has no `await` between checking and marking a
 node visited — so it stays atomic even when branches race to reach the
 same shared node.
 
-Together, this means the **only** step left that this project doesn't
-automate is creating the database/login/schema container itself (needs
-server-level `sysadmin`/`dbcreator` rights the app's own login
-intentionally doesn't have — see the top-level README's step 1). Once
-that container exists, the very first `generate` run against it does
-everything else — no `setup-server-tables` run required, ever.
+Taken together, this means the Server is *capable* of provisioning a
+completely fresh database's schema from nothing, the moment the first
+ref arrives. **That's a defensive fallback, not how this project's
+documented workflow actually operates it.** Schema changes reaching the
+Server as a side effect of a live client write is fine for this
+mechanism to survive by accident (someone forgot a step, a table was
+added since the schema was last provisioned) — it should not be the
+*normal* path. The documented workflow (see the top-level README) always
+runs `setup-server-tables` before the Server is started, precisely so
+this hook's provisioning calls are no-ops in ordinary operation: every
+table and the `main` schema already exist by the time any ref arrives,
+and the only thing this hook actually does per ref is the archival walk.
 
 See the top-level [README.md](../README.md) for the full walkthrough
 (one-time MSSQL setup, starting Server + generator-ui together, generating and
