@@ -35,6 +35,105 @@ found in the LICENSE file in the root of this package.
 pnpm add @rljson/server
 ```
 
+## Running this workspace's local dev server
+
+This repo also ships a **standalone local server process** on top of the
+library — [`src/start.ts`](src/start.ts) /
+[`src/server-bootstrap.ts`](src/server-bootstrap.ts) — used by this
+workspace's [generator](../data-generator) and [generator-ui](../generator-ui) to
+sync against a real MSSQL database. This is specific to this checkout, not
+part of what a consumer of the published `@rljson/server` package needs —
+skip this section if you're only using the library API below.
+
+```sh
+npm start
+```
+
+Configured entirely via `.env` (copy `.env.example`):
+
+| Variable | Purpose |
+|---|---|
+| `IO_BACKEND` | `mssql` (default, persistent) or `mem` (in-memory, lost on exit) |
+| `MSSQL_*` | Connection details — must match the Generator repo's own `.env` |
+| `RLJSON_ROUTES` | Comma-separated list of routes to host, one per independent entity type (e.g. `customerCake,productCake`) — each gets its own `Server` instance and Socket.IO namespace, since a `Server`/`Client` pair is single-route. `RLJSON_ROUTE` (singular) is also accepted for a single-route setup. |
+| `PORT` | HTTP/Socket.IO port (default `3000`) |
+
+`createOnRefArrived` (in `server-bootstrap.ts`) wires the
+[`onRefArrived` archival hook](#onrefarrived-archival-hook) below to
+recursively pull and persist every ref a client sends — necessary because
+batch clients (like the Generator) write locally and disconnect right
+away, so their data must be durable server-side *before* the ack, not
+just reachable while they happen to stay connected. Before that walk, it
+also provisions everything the persist step needs against a completely
+fresh MSSQL database, in two steps:
+
+1. `ensureMssqlAdminSchemaProvisioned` — for the `mssql` backend only
+   (a no-op under `IO_BACKEND=mem`) — installs the `main` schema and its
+   admin stored procedures (e.g. `GetContentType`) via the same
+   `DbBasics.createSchema()`/`installProcedures()` calls
+   `setup-server-tables` used to be the only thing that ran. Both are
+   idempotent, so this is safe on every ref, not just the first.
+2. `ensureTablesProvisioned` calls `IoMulti.rawTableCfgs()`/
+   `createOrExtendTable()` to provision any table config reachable from a
+   connected peer that this server doesn't have yet — so a genuinely new
+   entity type (e.g. a chart file the Generator never synced before) works
+   the first time too.
+
+Both steps run concurrently with each other, and every table within step
+2 is also provisioned concurrently (`Promise.all`, not a sequential
+loop): against a brand-new database, a chart with many sub-entities (e.g.
+"Customer", with its nested addresses) means 50+ tables, each its own
+MSSQL round trip — done one after another, that alone can take longer
+than a client's `sendWithAck` timeout, producing a misleading "ACK
+timeout" error even though the Server finishes and archives the ref
+correctly moments later.
+
+Both steps are also **memoized**, per Server/route instance (i.e. once
+per `createOnRefArrived` call, which `main()` makes exactly once per
+route): `createOrExtendTable()`/`DbBasics`' calls are individually
+idempotent, but each is still a real MSSQL round trip (and `DbBasics`
+opens a fresh connection per call, unlike `IoMssql`'s persistent pool) —
+unconditionally repeating all of them on *every single ref forever*, not
+just the first, adds enough latency under real traffic (several refs
+arriving close together, e.g. a `--count 30` generate run across two
+entity types) to blow past the ACK timeout again, even against a database
+that already has every table it needs. Step 1 caches its resolved (or
+in-flight) promise; step 2 remembers which table *keys* it already
+confirmed. Either cache is cleared on a failed attempt, so the next ref
+retries instead of being stuck failing forever — and a genuinely new
+table key (or a fresh process, e.g. after a restart) is always still
+picked up.
+
+Even with provisioning itself made cheap, one more sequential cost
+remained: the archival walk that pulls and persists a ref's whole subtree
+(`walkAndPersistByRef`) used to visit sibling children one after another.
+A deeply-nested chart (e.g. "Customer", with several address
+sub-entities each pulling in their own component tables) can mean many
+sequential round trips for a *single* ref — enough, under real traffic,
+to exceed the ACK timeout on its own, independent of provisioning. That
+walk is now concurrent too (`Promise.all` over sibling children, which
+recursively means the whole subtree), safe because the walker's
+visited-set dedup check has no `await` between checking and marking a
+node visited — so it stays atomic even when branches race to reach the
+same shared node.
+
+Taken together, this means the Server is *capable* of provisioning a
+completely fresh database's schema from nothing, the moment the first
+ref arrives. **That's a defensive fallback, not how this project's
+documented workflow actually operates it.** Schema changes reaching the
+Server as a side effect of a live client write is fine for this
+mechanism to survive by accident (someone forgot a step, a table was
+added since the schema was last provisioned) — it should not be the
+*normal* path. The documented workflow (see the top-level README) always
+runs `setup-server-tables` before the Server is started, precisely so
+this hook's provisioning calls are no-ops in ordinary operation: every
+table and the `main` schema already exist by the time any ref arrives,
+and the only thing this hook actually does per ref is the archival walk.
+
+See the top-level [README.md](../README.md) for the full walkthrough
+(one-time MSSQL setup, starting Server + generator-ui together, generating and
+viewing data, adding a new entity type).
+
 ## Quick start (Socket.IO example)
 
 Server setup:
