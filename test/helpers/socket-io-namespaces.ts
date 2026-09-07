@@ -45,6 +45,10 @@ export type NamespaceHarness = {
  */
 export async function createNamespaceHarness(
   clientCount: number,
+  options?: {
+    /** Client transports. Pass `['websocket']` to skip the polling upgrade. */
+    transports?: string[];
+  },
 ): Promise<NamespaceHarness> {
   const httpServer = createServer();
   // Increase buffer to accommodate large blob payloads in tests (default is 1MB)
@@ -83,19 +87,19 @@ export async function createNamespaceHarness(
     clientSockets.map(async (_, index) => {
       clientSockets[index].ioUp = SocketIoClient(
         `http://localhost:${port}${namespaces.ioUp}`,
-        { forceNew: true, auth: { idx: index } },
+        { forceNew: true, auth: { idx: index }, transports: options?.transports },
       );
       clientSockets[index].ioDown = SocketIoClient(
         `http://localhost:${port}${namespaces.ioDown}`,
-        { forceNew: true, auth: { idx: index } },
+        { forceNew: true, auth: { idx: index }, transports: options?.transports },
       );
       clientSockets[index].bsUp = SocketIoClient(
         `http://localhost:${port}${namespaces.bsUp}`,
-        { forceNew: true, auth: { idx: index } },
+        { forceNew: true, auth: { idx: index }, transports: options?.transports },
       );
       clientSockets[index].bsDown = SocketIoClient(
         `http://localhost:${port}${namespaces.bsDown}`,
-        { forceNew: true, auth: { idx: index } },
+        { forceNew: true, auth: { idx: index }, transports: options?.transports },
       );
 
       await Promise.all(

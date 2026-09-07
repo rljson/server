@@ -117,6 +117,20 @@ export interface ServerOptions {
   healthCheckTimeoutMs?: number;
 
   /**
+   * How many CONSECUTIVE health rounds a client may miss before it is pruned.
+   * Defaults to 3.
+   *
+   * One missed pong means very little. The hub blocks its own event loop
+   * whenever it serves a large read, and while it is blocked it neither sends
+   * pings nor reads the pongs that are already sitting in its socket buffers.
+   * Pruning on a single miss therefore punishes clients for the hub's own
+   * stalls — which is exactly how a ten-node lab collapsed to two live
+   * connections (field report 2026-09-07). A client that is genuinely wedged
+   * misses every round and is still pruned, just a few rounds later.
+   */
+  healthCheckMaxStrikes?: number;
+
+  /**
    * Optional hook invoked (awaited) for every new ref received by the server,
    * BEFORE the ref is multicast to other clients.
    *
@@ -290,6 +304,9 @@ export class Server extends BaseNode {
   private _healthCheckIntervalMs: number;
   private _healthCheckTimeoutMs: number;
   private _healthCheckTimer?: ReturnType<typeof setInterval>;
+  private _healthCheckMaxStrikes: number;
+  /** Consecutive missed health rounds, per client. */
+  private readonly _healthStrikes = new Map<string, number>();
 
   private _tornDown = false;
 
@@ -307,6 +324,7 @@ export class Server extends BaseNode {
     this._disableLocalCache = options?.disableLocalCache ?? false;
     this._healthCheckIntervalMs = options?.healthCheckIntervalMs ?? 30_000;
     this._healthCheckTimeoutMs = options?.healthCheckTimeoutMs ?? 10_000;
+    this._healthCheckMaxStrikes = options?.healthCheckMaxStrikes ?? 3;
     this._onRefArrived = options?.onRefArrived;
 
     // Sync protocol initialization
@@ -1074,10 +1092,36 @@ export class Server extends BaseNode {
    * the server force-disconnects and removes it.
    */
   private _runHealthCheck() {
-    for (const [clientId, { ioUp, ioDown }] of this._clients.entries()) {
-      // Skip broadcast (hub loopback) sockets — always local
-      if (clientId.startsWith('broadcast_')) continue;
+    const targets = [...this._clients.entries()].filter(
+      ([clientId]) => !clientId.startsWith('broadcast_'),
+    );
+    /* v8 ignore next -- @preserve nothing to ask, no timers to burn */
+    if (targets.length === 0) return;
 
+    // How long the hub's OWN event loop was blocked during this round. A
+    // health check measures whether a client answers in time, but the clock it
+    // measures with stops whenever the hub blocks — and a hub serving a large
+    // read blocks for seconds. Without this, the hub bills its own stall to
+    // every client at once and disconnects the lot.
+    const round = { lastTick: Date.now(), maxGap: 0 };
+    const tickMs = Math.max(10, Math.floor(this._healthCheckTimeoutMs / 10));
+    const ticker = setInterval(() => {
+      const now = Date.now();
+      round.maxGap = Math.max(round.maxGap, now - round.lastTick);
+      round.lastTick = now;
+    }, tickMs);
+    ticker.unref?.();
+    const stopTicker = setTimeout(
+      () => clearInterval(ticker),
+      this._healthCheckTimeoutMs * 2,
+    );
+    stopTicker.unref?.();
+
+    /** The longest the hub went unresponsive during this round. */
+    const hubStalledFor = (): number =>
+      Math.max(round.maxGap, Date.now() - round.lastTick);
+
+    for (const [clientId, { ioUp, ioDown }] of targets) {
       const nonce = Math.random().toString(36).slice(2);
       let resolved = false;
 
@@ -1086,29 +1130,67 @@ export class Server extends BaseNode {
         resolved = true;
         ioUp.off('__health:pong', handler);
         clearTimeout(timer);
+        // Answering clears the record — only CONSECUTIVE misses count.
+        this._healthStrikes.delete(clientId);
       };
 
       ioUp.on('__health:pong', handler);
 
       const timer = setTimeout(() => {
-        /* v8 ignore if -- @preserve */
-        if (resolved) return;
-        ioUp.off('__health:pong', handler);
-        this._logger.warn(
-          'Server.Health',
-          'Client failed health check — pruning',
-          { clientId },
-        );
+        // The timers phase runs BEFORE the poll phase. If the hub blocked its
+        // own event loop during this window — which it does on every large
+        // serve — the pongs that arrived meanwhile are still unread bytes in a
+        // socket buffer, and judging here condemns healthy clients for the
+        // hub's stall. setImmediate lands in the check phase, after poll, so
+        // whatever was already on the wire has been dispatched by then.
+        setImmediate(() => {
+          if (resolved) return;
+          ioUp.off('__health:pong', handler);
 
-        // Force-disconnect so the client's transport reconnects
-        /* v8 ignore if -- @preserve */
-        if ('disconnect' in ioUp) {
-          (
-            ioUp as unknown as { disconnect: (close?: boolean) => void }
-          ).disconnect(true);
-        }
+          // The hub spent more than half this client's window not running at
+          // all. Whatever that proves, it is not that the client is unhealthy,
+          // so the round does not count against it.
+          const stalled = hubStalledFor();
+          if (stalled > this._healthCheckTimeoutMs / 2) {
+            this._logger.warn(
+              'Server.Health',
+              'Hub stalled during health round — not counted',
+              { clientId, stalledMs: stalled, windowMs: this._healthCheckTimeoutMs },
+            );
+            return;
+          }
 
-        this.removeSocket(clientId);
+          const strikes = (this._healthStrikes.get(clientId) ?? 0) + 1;
+          this._healthStrikes.set(clientId, strikes);
+
+          // A client that is genuinely wedged misses every round and is still
+          // pruned. A client caught by one stall is not.
+          if (strikes < this._healthCheckMaxStrikes) {
+            this._logger.warn('Server.Health', 'Client missed a health round', {
+              clientId,
+              strikes,
+              of: this._healthCheckMaxStrikes,
+            });
+            return;
+          }
+
+          this._logger.warn(
+            'Server.Health',
+            'Client failed health check — pruning',
+            { clientId, strikes },
+          );
+          this._healthStrikes.delete(clientId);
+
+          // Force-disconnect so the client's transport reconnects
+          /* v8 ignore if -- @preserve */
+          if ('disconnect' in ioUp) {
+            (
+              ioUp as unknown as { disconnect: (close?: boolean) => void }
+            ).disconnect(true);
+          }
+
+          this.removeSocket(clientId);
+        });
       }, this._healthCheckTimeoutMs);
 
       ioDown.emit('__health:ping', { nonce });
@@ -1538,6 +1620,7 @@ export class Server extends BaseNode {
    * @param clientId - The client identifier (from server.clients keys).
    */
   async removeSocket(clientId: string): Promise<void> {
+    this._healthStrikes.delete(clientId);
     const client = this._clients.get(clientId);
     if (!client) return;
 
