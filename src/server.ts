@@ -27,7 +27,11 @@ import {
   timeId,
 } from '@rljson/rljson';
 
-import { BackpressureOptions, withBackpressure } from './backpressure.ts';
+import {
+  BackpressureOptions,
+  ServeGate,
+  withBackpressure,
+} from './backpressure.ts';
 import { BaseNode } from './base-node.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
 import {
@@ -56,6 +60,11 @@ export interface ServerOptions {
    * hub's off-heap send queue is what this bounds.
    */
   backpressure?: BackpressureOptions;
+  /**
+   * How many consumers may be served at the same time. Bounds the hub's
+   * serving peak across all of them; the per-consumer mark cannot.
+   */
+  maxConcurrentServes?: number;
 
   /**
    * Timeout in milliseconds for peer initialization during addSocket().
@@ -169,6 +178,13 @@ export class Server extends BaseNode {
   private _gatedIoDown: Map<Socket, Socket> = new Map();
   /** Flow-control settings applied to every consumer. */
   private readonly _backpressure: BackpressureOptions;
+  /**
+   * Shared by every consumer, so the COMBINED cost of serving is bounded. The
+   * per-socket mark bounds what one peer leaves on the wire; this bounds how
+   * much work is in flight at once, which is what the ~10 GB serving peak on
+   * the fleet actually was.
+   */
+  private readonly _serveGate: ServeGate;
   private _multicastedRefsCurrent: Set<string> = new Set();
   private _multicastedRefsPrevious: Set<string> = new Set();
   /**
@@ -307,6 +323,9 @@ export class Server extends BaseNode {
 
     // Start two-generation ref eviction
     this._backpressure = options?.backpressure ?? {};
+    this._serveGate =
+      this._backpressure.gate ??
+      new ServeGate(options?.maxConcurrentServes ?? 4);
     const evictionMs = options?.refEvictionIntervalMs ?? 60_000;
     /* v8 ignore if -- @preserve */
     if (evictionMs > 0) {
@@ -1454,6 +1473,7 @@ export class Server extends BaseNode {
         const clientId = (pending.ioDown as SocketWithClientId).__clientId;
         const gated = withBackpressure(pending.ioDown, {
           ...this._backpressure,
+          gate: this._serveGate,
           // A throttled consumer is the difference between a hub with nothing
           // to do and a hub whose every handler is waiting in the gate. Say
           // which, and for whom.
@@ -1462,6 +1482,8 @@ export class Server extends BaseNode {
               clientId,
               waitedMs,
               queuedBytes,
+              serving: this._serveGate.inFlight,
+              queuedRequests: this._serveGate.waiting,
             });
             this._backpressure.onThrottle?.(waitedMs, queuedBytes);
           },
