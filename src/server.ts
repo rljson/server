@@ -1451,7 +1451,21 @@ export class Server extends BaseNode {
         // peer during a large backfill used to accumulate an unbounded
         // off-heap send queue on the hub. The wrapper is remembered so
         // `removeSocket` can unregister the very handlers it registered.
-        const gated = withBackpressure(pending.ioDown, this._backpressure);
+        const clientId = (pending.ioDown as SocketWithClientId).__clientId;
+        const gated = withBackpressure(pending.ioDown, {
+          ...this._backpressure,
+          // A throttled consumer is the difference between a hub with nothing
+          // to do and a hub whose every handler is waiting in the gate. Say
+          // which, and for whom.
+          onThrottle: (waitedMs, queuedBytes) => {
+            this._logger.warn('Server.Io', 'Consumer throttled', {
+              clientId,
+              waitedMs,
+              queuedBytes,
+            });
+            this._backpressure.onThrottle?.(waitedMs, queuedBytes);
+          },
+        });
         this._gatedIoDown.set(pending.ioDown, gated);
         await this._ioServer.addSocket(gated);
         await this._bsServer.addSocket(pending.bsDown);

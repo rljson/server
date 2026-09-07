@@ -21,6 +21,13 @@ export interface BackpressureOptions {
   maxWaitMs?: number;
   /** How often the queue depth is re-checked while waiting. */
   pollMs?: number;
+  /**
+   * Called when a request had to wait, with how long it waited and how deep
+   * the consumer's queue was. This is the only way to tell a hub that is idle
+   * because there is nothing to do from one that is idle because every handler
+   * is sitting in the gate.
+   */
+  onThrottle?: (waitedMs: number, queuedBytes: number) => void;
 }
 
 /** A socket that can report how much it still owes the wire. */
@@ -44,6 +51,15 @@ interface Bufferable {
  * backpressure: the hub stops PRODUCING answers for a consumer that is not
  * keeping up, instead of queueing more of them. Other consumers are untouched
  * — each socket has its own queue and its own gate.
+ *
+ * The wait is CAPPED, so a consumer is only ever slowed, never starved. That
+ * cap is also the sharp edge: a consumer parked permanently above the mark is
+ * served once per `maxWaitMs`, which for a backfill of thousands of chunk
+ * requests is indistinguishable from a hang — and it leaves the hub looking
+ * idle, because every one of its handlers is asleep in this loop. The mark is
+ * therefore generous (64 MB, against the 11-12 GB that made it necessary), and
+ * `onThrottle` reports every wait so the difference between "nothing to do"
+ * and "everything is gated" is visible rather than inferred.
  * @param socket - The consumer's socket.
  * @param options - Water mark and wait bounds.
  * @returns A socket that defers handler invocation while the consumer is
@@ -59,6 +75,7 @@ class BackpressuredSocket implements Socket {
   private readonly _highWaterMark: number;
   private readonly _maxWaitMs: number;
   private readonly _pollMs: number;
+  private readonly _onThrottle: (waitedMs: number, queuedBytes: number) => void;
   /** Original handler → the gated wrapper, so `off` can find it again. */
   private readonly _wrapped = new Map<
     (...args: any[]) => void,
@@ -69,9 +86,10 @@ class BackpressuredSocket implements Socket {
     private readonly _socket: Socket,
     options: BackpressureOptions,
   ) {
-    this._highWaterMark = options.highWaterMark ?? 8 * 1024 * 1024;
+    this._highWaterMark = options.highWaterMark ?? 64 * 1024 * 1024;
     this._maxWaitMs = options.maxWaitMs ?? 5000;
     this._pollMs = options.pollMs ?? 25;
+    this._onThrottle = options.onThrottle ?? (() => {});
   }
 
   /** Bytes this consumer still owes the wire, 0 when unknown. */
@@ -84,10 +102,12 @@ class BackpressuredSocket implements Socket {
    */
   private async _awaitDrain(): Promise<void> {
     if (this._queued <= this._highWaterMark) return;
-    const until = Date.now() + this._maxWaitMs;
+    const started = Date.now();
+    const until = started + this._maxWaitMs;
     while (this._queued > this._highWaterMark && Date.now() < until) {
       await new Promise<void>((resolve) => setTimeout(resolve, this._pollMs));
     }
+    this._onThrottle(Date.now() - started, this._queued);
   }
 
   get connected(): boolean {

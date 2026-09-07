@@ -151,4 +151,38 @@ describe('withBackpressure', () => {
     await tick(5);
     expect(served).toHaveBeenCalledTimes(1);
   });
+  it('reports every wait, so a gated hub is not mistaken for an idle one', async () => {
+    // A hub whose handlers are all asleep in the gate looks exactly like a hub
+    // with nothing to do. That ambiguity is what made the field report point
+    // at a parked-forever state; the wait has always been capped, so what was
+    // missing was the ability to see it.
+    const raw = new FakeSocket();
+    raw.bufferedAmount = 5000;
+    const throttles: Array<[number, number]> = [];
+    const gated = withBackpressure(raw as unknown as Socket, {
+      highWaterMark: 100,
+      maxWaitMs: 20,
+      pollMs: 5,
+      onThrottle: (waitedMs, queued) => throttles.push([waitedMs, queued]),
+    });
+    gated.on('read', () => {});
+    raw.fire('read');
+    await tick(120);
+
+    expect(throttles).toHaveLength(1);
+    expect(throttles[0][0], 'the reported wait was not the real one').toBeGreaterThanOrEqual(15);
+    expect(throttles[0][1]).toBe(5000);
+  });
+
+  it('says nothing while the consumer keeps up', async () => {
+    const raw = new FakeSocket();
+    const throttles: number[] = [];
+    withBackpressure(raw as unknown as Socket, {
+      highWaterMark: 100,
+      onThrottle: (ms) => throttles.push(ms),
+    }).on('read', () => {});
+    raw.fire('read');
+    await tick(20);
+    expect(throttles).toEqual([]);
+  });
 });
