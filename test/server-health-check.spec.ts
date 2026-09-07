@@ -22,6 +22,7 @@ const route = Route.fromFlat('healthTest');
 const createServerWithHealth = async (options?: {
   healthCheckIntervalMs?: number;
   healthCheckTimeoutMs?: number;
+  healthCheckMaxStrikes?: number;
   refEvictionIntervalMs?: number;
 }) => {
   const io = new IoMem();
@@ -31,6 +32,10 @@ const createServerWithHealth = async (options?: {
     refEvictionIntervalMs: options?.refEvictionIntervalMs ?? 0,
     healthCheckIntervalMs: options?.healthCheckIntervalMs ?? 5_000,
     healthCheckTimeoutMs: options?.healthCheckTimeoutMs ?? 1_000,
+    // These tests are about the pruning mechanics, not about how much slack a
+    // client gets first, so they judge on a single round. The production
+    // default is 3 — 'should need three missed rounds…' below pins that.
+    healthCheckMaxStrikes: options?.healthCheckMaxStrikes ?? 1,
   });
   await server.init();
   return server;
@@ -59,13 +64,31 @@ const addZombieSocket = async (server: Server) => {
   return socket;
 };
 
+/** Lets the check phase run, where the health check reaches its verdict. */
+const flushImmediates = (): Promise<void> =>
+  new Promise((resolve) => setImmediate(resolve));
+
+/** Advances through `count` complete health rounds (interval + timeout). */
+const runRounds = async (count: number, intervalMs = 5_000, timeoutMs = 1_000) => {
+  for (let i = 0; i < count; i++) {
+    vi.advanceTimersByTime(intervalMs);
+    await vi.advanceTimersByTimeAsync(timeoutMs);
+    await flushImmediates();
+  }
+};
+
 // .............................................................................
 describe('Server health checks', () => {
   let server: Server | undefined;
   let clients: Client[] = [];
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    // setImmediate stays REAL. The health check deliberately defers its verdict
+    // into the check phase so the poll phase can first deliver pongs that are
+    // already on the wire; faking it away would test a different algorithm.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+    });
   });
 
   afterEach(async () => {
@@ -108,6 +131,7 @@ describe('Server health checks', () => {
       vi.advanceTimersByTime(5_000);
       // Advance past timeout
       await vi.advanceTimersByTimeAsync(1_000);
+      await flushImmediates();
 
       // Zombie should have been pruned
       expect(server.clients.size).toBe(0);
@@ -129,6 +153,7 @@ describe('Server health checks', () => {
       vi.advanceTimersByTime(5_000);
       // Advance past timeout for zombie
       await vi.advanceTimersByTimeAsync(1_000);
+      await flushImmediates();
 
       // Only healthy client remains
       expect(server.clients.size).toBe(1);
@@ -152,6 +177,7 @@ describe('Server health checks', () => {
       // Trigger health check + timeout
       vi.advanceTimersByTime(5_000);
       await vi.advanceTimersByTimeAsync(1_000);
+      await flushImmediates();
 
       expect(server.clients.size).toBe(0);
       expect(server.ioPeerCount).toBe(0);
@@ -164,6 +190,30 @@ describe('Server health checks', () => {
       expect(
         emitSpy.mock.calls.some(([event]) => event === 'rawTableCfgs'),
       ).toBe(false);
+    });
+
+    it('should need three missed rounds before pruning, by default', async () => {
+      // A hub blocks its own event loop on every large serve, and while it is
+      // blocked it neither sends pings nor reads the pongs already waiting in
+      // its socket buffers. One missed round is therefore weak evidence about
+      // the client; the default demands three in a row.
+      // Built without the option, so this pins the PRODUCTION default rather
+      // than the single-round setting the helper uses.
+      const io = new IoMem();
+      await io.init();
+      server = new Server(route, io, new BsMem(), {
+        refEvictionIntervalMs: 0,
+        healthCheckIntervalMs: 5_000,
+        healthCheckTimeoutMs: 1_000,
+      });
+      await server.init();
+      await addZombieSocket(server);
+
+      await runRounds(2);
+      expect(server.clients.size).toBe(1);
+
+      await runRounds(1);
+      expect(server.clients.size).toBe(0);
     });
   });
 
@@ -185,6 +235,7 @@ describe('Server health checks', () => {
       // Trigger health check + timeout
       vi.advanceTimersByTime(5_000);
       await vi.advanceTimersByTimeAsync(1_000);
+      await flushImmediates();
 
       // Broadcast socket should NOT be pruned
       expect(server.clients.size).toBe(1);
@@ -260,9 +311,42 @@ describe('Server health checks', () => {
       vi.advanceTimersByTime(5_000);
       // Advance past timeout
       await vi.advanceTimersByTimeAsync(1_000);
+      await flushImmediates();
 
       // Should be pruned because the correct nonce never arrived
       expect(server.clients.size).toBe(0);
+    });
+
+    it('should keep a client whose pong lands after the timeout but before the verdict', async () => {
+      // The whole reason the verdict is deferred into the check phase. The
+      // timers phase runs first, so on a busy hub the timeout fires while the
+      // client's pong is still an unread byte in a socket buffer. Reaching a
+      // verdict right there disconnects a client that answered in time.
+      server = await createServerWithHealth();
+
+      const socket = new SocketMock();
+      socket.connect();
+      await server.addSocket(socket);
+
+      // Answer nothing yet — just remember what was asked.
+      let nonce = '';
+      socket.on('__health:ping', (payload: { nonce: string }) => {
+        nonce = payload.nonce;
+      });
+
+      // Both advances are SYNCHRONOUS on purpose: awaiting would hand the loop
+      // back and let the deferred verdict run, which is the very window this
+      // test needs to reach into.
+      vi.advanceTimersByTime(5_000);
+      expect(nonce).not.toBe('');
+      vi.advanceTimersByTime(1_000);
+
+      // The timeout has fired; the verdict is queued behind the poll phase.
+      // This is the pong arriving in that poll phase.
+      socket.emit('__health:pong', { nonce });
+      await flushImmediates();
+
+      expect(server.clients.size).toBe(1);
     });
   });
 });
