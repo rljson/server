@@ -7,7 +7,7 @@
 import { Socket } from '@rljson/io';
 import { describe, expect, it, vi } from 'vitest';
 
-import { withBackpressure } from '../src/backpressure';
+import { ServeGate, withBackpressure } from '../src/backpressure';
 
 /** A socket whose send-queue depth the test controls. */
 class FakeSocket {
@@ -184,5 +184,88 @@ describe('withBackpressure', () => {
     raw.fire('read');
     await tick(20);
     expect(throttles).toEqual([]);
+  });
+  it('bounds how many consumers are served at once, and hands slots on in order', async () => {
+    // Per-consumer marks bound what one peer leaves on the wire; they say
+    // nothing about serving ten of them at the same time. Ten concurrent
+    // backfill reads each materialize their rows before a byte reaches a
+    // queue — on the fleet that peaked the hub at ~10 GB while serving, and it
+    // fell straight back to 283 MB the moment it went idle.
+    const gate = new ServeGate(2);
+    const acks: Array<(v?: unknown) => void> = [];
+    const running: number[] = [];
+    const raws: FakeSocket[] = [];
+    for (let i = 0; i < 5; i++) {
+      const raw = new FakeSocket();
+      const index = i;
+      withBackpressure(raw as unknown as Socket, { gate }).on(
+        'read',
+        (...args: unknown[]) => {
+          running.push(index);
+          acks.push(args[args.length - 1] as (v?: unknown) => void);
+        },
+      );
+      raws.push(raw);
+    }
+    for (const raw of raws) raw.fire('read', () => {});
+    await tick(20);
+
+    // Only two are in flight; the rest wait for a slot.
+    expect(running).toEqual([0, 1]);
+    expect(gate.inFlight).toBe(2);
+    expect(gate.waiting).toBe(3);
+
+    // The slot rides on the acknowledgement, not on the handler returning —
+    // otherwise it would be freed before a single row had been read.
+    acks[0]();
+    await tick(20);
+    expect(running).toEqual([0, 1, 2]);
+    acks[1]();
+    acks[2]();
+    await tick(20);
+    expect(running).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('frees a slot when a handler never acknowledges', async () => {
+    const gate = new ServeGate(1);
+    const raw = new FakeSocket();
+    withBackpressure(raw as unknown as Socket, {
+      gate,
+      serveTimeoutMs: 20,
+    }).on('read', () => {});
+    raw.fire('read', () => {});
+    await tick(5);
+    expect(gate.inFlight).toBe(1);
+    await tick(60);
+    expect(gate.inFlight, 'a lost acknowledgement kept its slot').toBe(0);
+  });
+
+  it('serves an event that carries no acknowledgement', async () => {
+    const gate = new ServeGate(1);
+    const raw = new FakeSocket();
+    const served = vi.fn();
+    withBackpressure(raw as unknown as Socket, { gate }).on('ping', served);
+    raw.fire('ping', 'not-a-callback');
+    await tick(20);
+    expect(served).toHaveBeenCalledWith('not-a-callback');
+    expect(gate.inFlight).toBe(0);
+  });
+
+  it('an acknowledgement that arrives twice frees its slot once', async () => {
+    const gate = new ServeGate(1);
+    const raw = new FakeSocket();
+    let ack: ((v?: unknown) => void) | undefined;
+    withBackpressure(raw as unknown as Socket, { gate }).on(
+      'read',
+      (...args: unknown[]) => {
+        ack = args[args.length - 1] as (v?: unknown) => void;
+      },
+    );
+    raw.fire('read', () => {});
+    await tick(10);
+    ack?.();
+    ack?.();
+    await tick(10);
+    expect(gate.inFlight).toBe(0);
   });
 });
