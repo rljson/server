@@ -27,6 +27,7 @@ import {
   timeId,
 } from '@rljson/rljson';
 
+import { BackpressureOptions, withBackpressure } from './backpressure.ts';
 import { BaseNode } from './base-node.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
 import {
@@ -50,6 +51,11 @@ export interface ServerOptions {
    * Defaults to 60 000 (60 s). Set to 0 to disable automatic eviction.
    */
   refEvictionIntervalMs?: number;
+  /**
+   * Per-consumer flow control for served reads. Omit for the defaults; the
+   * hub's off-heap send queue is what this bounds.
+   */
+  backpressure?: BackpressureOptions;
 
   /**
    * Timeout in milliseconds for peer initialization during addSocket().
@@ -156,6 +162,13 @@ export class Server extends BaseNode {
 
   // Two-generation ref dedup: refs in current or previous are considered seen.
   // On each eviction tick, previous is discarded and current becomes previous.
+  /**
+   * The backpressure wrapper registered for each client's `ioDown`, so
+   * `removeSocket` unregisters the very handlers `addSocket` registered.
+   */
+  private _gatedIoDown: Map<Socket, Socket> = new Map();
+  /** Flow-control settings applied to every consumer. */
+  private readonly _backpressure: BackpressureOptions;
   private _multicastedRefsCurrent: Set<string> = new Set();
   private _multicastedRefsPrevious: Set<string> = new Set();
   /**
@@ -293,6 +306,7 @@ export class Server extends BaseNode {
     });
 
     // Start two-generation ref eviction
+    this._backpressure = options?.backpressure ?? {};
     const evictionMs = options?.refEvictionIntervalMs ?? 60_000;
     /* v8 ignore if -- @preserve */
     if (evictionMs > 0) {
@@ -1433,7 +1447,13 @@ export class Server extends BaseNode {
       (this._bsServer as any)._bs = this._bsMulti;
 
       for (const pending of this._pendingSockets) {
-        await this._ioServer.addSocket(pending.ioDown);
+        // Serve this consumer's reads under backpressure: a slow or flapping
+        // peer during a large backfill used to accumulate an unbounded
+        // off-heap send queue on the hub. The wrapper is remembered so
+        // `removeSocket` can unregister the very handlers it registered.
+        const gated = withBackpressure(pending.ioDown, this._backpressure);
+        this._gatedIoDown.set(pending.ioDown, gated);
+        await this._ioServer.addSocket(gated);
         await this._bsServer.addSocket(pending.bsDown);
       }
 
@@ -1514,7 +1534,10 @@ export class Server extends BaseNode {
     // sockets registered here in the first place — io/bs is null for
     // those — so there is nothing to unregister.
     if (client.io) {
-      this._ioServer.removeSocket(client.ioDown);
+      this._ioServer.removeSocket(
+        this._gatedIoDown.get(client.ioDown) ?? client.ioDown,
+      );
+      this._gatedIoDown.delete(client.ioDown);
     }
     if (client.bs) {
       this._bsServer.removeSocket(client.bsDown);
