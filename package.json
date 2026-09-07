@@ -1,6 +1,6 @@
 {
   "name": "@rljson/server",
-  "version": "0.0.53",
+  "version": "0.0.54",
   "description": "Rljson server description",
   "homepage": "https://github.com/rljson/server",
   "bugs": "https://github.com/rljson/server/issues",
@@ -51,20 +51,20 @@
     "vitest-dom": "^0.1.1"
   },
   "dependencies": {
-    "@rljson/bs": "0.0.25",
-    "@rljson/db": "0.0.39",
+    "@rljson/bs": "0.0.26",
+    "@rljson/db": "0.0.40",
     "@rljson/hash": "0.0.19",
-    "@rljson/io": "0.0.75",
+    "@rljson/io": "0.0.76",
     "@rljson/json": "0.0.23",
     "@rljson/network": "0.0.20",
-    "@rljson/rljson": "0.0.80"
+    "@rljson/rljson": "0.0.81"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
     ],
     "overrides": {
-      "@rljson/rljson": "^0.0.79"
+      "@rljson/rljson": "0.0.81"
     }
   },
   "packageManager": "pnpm@10.11.0"
