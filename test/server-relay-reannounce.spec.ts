@@ -44,7 +44,11 @@ describe('Server — relayed re-announcements', () => {
     const io = new IoMem();
     await io.init();
     await io.isReady();
-    server = new Server(route, io, new BsMem());
+    // A water mark below zero gates every request, so the throttle path — and
+    // the log that makes it visible — is exercised by ordinary traffic.
+    server = new Server(route, io, new BsMem(), {
+      backpressure: { highWaterMark: -1, maxWaitMs: 0, pollMs: 1 },
+    });
     await server.init();
     for (const bundle of harness.serverSockets) {
       await server.addSocket({
@@ -129,5 +133,32 @@ describe('Server — relayed re-announcements', () => {
     )._lastSeqByOrigin;
     expect(seqs.size).toBe(1);
     expect([...seqs.keys()]).toEqual(['nodeB']);
+  });
+  it('logs which consumer was throttled while its request waited', async () => {
+    // Served reads run through the flow control. When one waits, the hub has
+    // to say so — otherwise a hub whose handlers are all in the gate is
+    // indistinguishable from one with nothing to do, which is exactly how the
+    // field report read it.
+    const warned: Array<Record<string, unknown>> = [];
+    (
+      server as unknown as {
+        _logger: { warn: (a: string, b: string, c: Record<string, unknown>) => void };
+      }
+    )._logger.warn = (_area, message, meta) => {
+      if (message === 'Consumer throttled') warned.push(meta);
+    };
+
+    await new Promise<void>((resolve) => {
+      (
+        harness.clientSockets[0] as never as Record<
+          string,
+          { emit: (e: string, cb: () => void) => void }
+        >
+      )['ioDown'].emit('rawTableCfgs', () => resolve());
+    });
+
+    expect(warned.length, 'a gated request was served silently').toBeGreaterThan(0);
+    expect(warned[0]).toHaveProperty('waitedMs');
+    expect(warned[0]).toHaveProperty('queuedBytes');
   });
 });
