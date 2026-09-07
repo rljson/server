@@ -24,6 +24,21 @@ export class SocketIoBridge implements Socket {
     return this._socket.connected;
   }
 
+  /**
+   * Bytes socket.io has accepted for this peer but not yet put on the wire.
+   *
+   * This is the number the hub's off-heap growth showed up in: it is the
+   * engine's own send queue, invisible to the V8 heap. `withBackpressure` uses
+   * it to stop serving a consumer that is not draining.
+   * @returns The queued byte count, 0 when the transport cannot report one.
+   */
+  get bufferedAmount(): number {
+    return (
+      (this._socket as unknown as { conn?: { bufferedAmount?: number } }).conn
+        ?.bufferedAmount ?? 0
+    );
+  }
+
   /* v8 ignore next -- @preserve */
   get disconnected(): boolean {
     return this._socket.disconnected;

@@ -27,6 +27,7 @@ import {
   timeId,
 } from '@rljson/rljson';
 
+import { BackpressureOptions, withBackpressure } from './backpressure.ts';
 import { BaseNode } from './base-node.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
 import {
@@ -50,6 +51,11 @@ export interface ServerOptions {
    * Defaults to 60 000 (60 s). Set to 0 to disable automatic eviction.
    */
   refEvictionIntervalMs?: number;
+  /**
+   * Per-consumer flow control for served reads. Omit for the defaults; the
+   * hub's off-heap send queue is what this bounds.
+   */
+  backpressure?: BackpressureOptions;
 
   /**
    * Timeout in milliseconds for peer initialization during addSocket().
@@ -156,8 +162,23 @@ export class Server extends BaseNode {
 
   // Two-generation ref dedup: refs in current or previous are considered seen.
   // On each eviction tick, previous is discarded and current becomes previous.
+  /**
+   * The backpressure wrapper registered for each client's `ioDown`, so
+   * `removeSocket` unregisters the very handlers `addSocket` registered.
+   */
+  private _gatedIoDown: Map<Socket, Socket> = new Map();
+  /** Flow-control settings applied to every consumer. */
+  private readonly _backpressure: BackpressureOptions;
   private _multicastedRefsCurrent: Set<string> = new Set();
   private _multicastedRefsPrevious: Set<string> = new Set();
+  /**
+   * Highest sequence seen from each sender, so a repeated ref can be told
+   * apart from an echo — see the multicast handler. FIFO-bounded: the key is a
+   * connector's client id, which is stable for the life of a process, so this
+   * grows with restarts rather than with traffic.
+   */
+  private _lastSeqByOrigin: Map<string, number> = new Map();
+  private readonly _maxOriginSeqs = 10_000;
   private _refEvictionTimer?: ReturnType<typeof setInterval>;
 
   private _refreshPromise?: Promise<void>;
@@ -285,6 +306,7 @@ export class Server extends BaseNode {
     });
 
     // Start two-generation ref eviction
+    this._backpressure = options?.backpressure ?? {};
     const evictionMs = options?.refEvictionIntervalMs ?? 60_000;
     /* v8 ignore if -- @preserve */
     if (evictionMs > 0) {
@@ -598,16 +620,48 @@ export class Server extends BaseNode {
         });
 
         // Avoid rebroadcasting the same ref multiple times (two-generation check)
-        /* v8 ignore if -- @preserve */
+        // A ref is a content hash: it names a STATE, not an event. The same
+        // ref therefore recurs legitimately, and re-announcing the state you
+        // are in is the only way a peer that joined — or rejoined — after your
+        // first announcement can ever learn it.
+        //
+        // Suppressing by ref value alone cannot tell that from an echo. It
+        // held such a re-announcement back for as long as the ref sat in these
+        // sets (two eviction generations, a minute each by default), so on a
+        // quiet cluster a node that missed the first announcement stayed on its
+        // old state for minutes. The ten-node fleet saw exactly that: senders
+        // logging their new head, every receiver still logging the previous
+        // root.
+        //
+        // The per-sender sequence tells the two apart, and it is the rule
+        // @rljson/db already applies on the receiving side ("a repeated ref
+        // from a sender that has moved on is not an echo"). A sender without a
+        // sequence gives us nothing to judge by, so for those the old
+        // suppression stands rather than becoming a broadcast storm.
+        const senderId = (payload as { c?: string })?.c;
+        const senderSeq = (payload as { seq?: number })?.seq;
+        const senderMovedOn =
+          senderId !== undefined &&
+          senderSeq !== undefined &&
+          senderSeq > (this._lastSeqByOrigin.get(senderId) ?? -1);
+
         if (
-          this._multicastedRefsCurrent.has(ref) ||
-          this._multicastedRefsPrevious.has(ref)
+          !senderMovedOn &&
+          (this._multicastedRefsCurrent.has(ref) ||
+            this._multicastedRefsPrevious.has(ref))
         ) {
           this._logger.warn('Server.Multicast', 'Duplicate ref suppressed', {
             ref,
             from: clientIdA,
           });
           return;
+        }
+        if (senderId !== undefined && senderSeq !== undefined) {
+          this._lastSeqByOrigin.set(senderId, senderSeq);
+          if (this._lastSeqByOrigin.size > this._maxOriginSeqs) {
+            const oldest = this._lastSeqByOrigin.keys().next().value as string;
+            this._lastSeqByOrigin.delete(oldest);
+          }
         }
         this._multicastedRefsCurrent.add(ref);
 
@@ -1393,7 +1447,13 @@ export class Server extends BaseNode {
       (this._bsServer as any)._bs = this._bsMulti;
 
       for (const pending of this._pendingSockets) {
-        await this._ioServer.addSocket(pending.ioDown);
+        // Serve this consumer's reads under backpressure: a slow or flapping
+        // peer during a large backfill used to accumulate an unbounded
+        // off-heap send queue on the hub. The wrapper is remembered so
+        // `removeSocket` can unregister the very handlers it registered.
+        const gated = withBackpressure(pending.ioDown, this._backpressure);
+        this._gatedIoDown.set(pending.ioDown, gated);
+        await this._ioServer.addSocket(gated);
         await this._bsServer.addSocket(pending.bsDown);
       }
 
@@ -1474,7 +1534,10 @@ export class Server extends BaseNode {
     // sockets registered here in the first place — io/bs is null for
     // those — so there is nothing to unregister.
     if (client.io) {
-      this._ioServer.removeSocket(client.ioDown);
+      this._ioServer.removeSocket(
+        this._gatedIoDown.get(client.ioDown) ?? client.ioDown,
+      );
+      this._gatedIoDown.delete(client.ioDown);
     }
     if (client.bs) {
       this._bsServer.removeSocket(client.bsDown);
