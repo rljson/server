@@ -73,14 +73,15 @@ export class Client extends BaseNode {
    * Creates a Client instance
    * @param _socketToServer - Socket or namespace bundle to connect to server
    * @param _localIo - Local Io for local storage
-   * @param _localBs - Local Bs for local blob storage
+   * @param _localBs - Local Bs for local blob storage. Omit on a route that
+   *   carries no blobs — the components/edits mongo sync never touches one.
    * @param _route - Optional route for automatic Db and Connector creation
    * @param options - Optional configuration including logger for monitoring
    */
   constructor(
     private _socketToServer: SocketLike,
     protected _localIo: Io,
-    protected _localBs: Bs,
+    protected _localBs?: Bs,
     private _route?: Route,
     options?: ClientOptions,
   ) {
@@ -380,18 +381,22 @@ export class Client extends BaseNode {
     try {
       const sockets = normalizeSocketBundle(this._socketToServer);
 
-      // Add LocalBs to MultiBs
-      this._bsMultiBss.push({
-        bs: this._localBs,
-        read: true,
-        write: true,
-        priority: 1,
-      });
+      // Add LocalBs to MultiBs — when there is one. A route that carries no
+      // blobs contributes no local store, and must not offer the server an
+      // upstream bridge to a store that does not exist.
+      if (this._localBs !== undefined) {
+        this._bsMultiBss.push({
+          bs: this._localBs,
+          read: true,
+          write: true,
+          priority: 1,
+        });
 
-      // Upstream: let the server pull from client local Bs
-      const bsPeerBridge = new BsPeerBridge(this._localBs, sockets.bsUp);
-      bsPeerBridge.start();
-      this._logger.info('Client.Bs', 'Bs peer bridge started (upstream)');
+        // Upstream: let the server pull from client local Bs
+        const bsPeerBridge = new BsPeerBridge(this._localBs, sockets.bsUp);
+        bsPeerBridge.start();
+        this._logger.info('Client.Bs', 'Bs peer bridge started (upstream)');
+      }
 
       // Downstream: pull from server
       const bsPeer = await this._createBsPeer(sockets.bsDown);

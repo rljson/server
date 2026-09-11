@@ -27,6 +27,27 @@ found in the LICENSE file in the root of this package.
 
 - **Server** hosts Io + Bs and exposes them over sockets.
 - **Client** combines local Io/Bs with server Io/Bs into unified interfaces.
+
+### Bs is optional
+
+A route that carries no blobs needs no blob store, and both constructors take
+`Bs` as an **optional** positional parameter:
+
+```ts
+// A relay route — documents are Io rows, no blobs anywhere.
+const server = new Server(route, new IoMem());
+const client = new Client(socket, new IoMem(), undefined, route);
+```
+
+Omitting it means this node contributes no *local* blob storage. It still joins
+remote blob peers if its route has them, and a write with nowhere to go fails
+loudly — `BsMulti` throws `No writable Bs available` rather than silently
+accepting content that was never stored.
+
+The motivating case is the components/edits mongo sync, which never calls
+`getBlob` or `setBlob`. Before this, it had to be handed a `Bs` purely to
+satisfy the constructor, so every relay route carried a blob directory that
+stayed empty for the life of the process.
 - **Sockets** are provided by your runtime (e.g., Socket.IO) and wrapped by `SocketIoBridge`.
 
 ## Install
