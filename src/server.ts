@@ -313,7 +313,21 @@ export class Server extends BaseNode {
   constructor(
     private _route: Route,
     protected _localIo: Io,
-    protected _localBs: Bs,
+  /**
+   * A node whose route carries no blobs needs no blob store.
+   *
+   * The components/edits mongo sync is exactly that: documents are Io rows and
+   * it never calls getBlob or setBlob. Until this was optional it still had to
+   * be handed a Bs purely to satisfy the constructor, so every relay route
+   * carried a blob directory that stayed empty — and the cloud EventHub would
+   * have had to provision a volume for a route that cannot use one.
+   *
+   * Omitted means: this node contributes no local blob storage. It still joins
+   * remote blob peers if its route has them, and a write with nowhere to go
+   * fails loudly from BsMulti ("No writable Bs available") rather than
+   * silently succeeding.
+   */
+    protected _localBs?: Bs,
     options?: ServerOptions,
   ) {
     //Call BaseNode constructor
@@ -371,7 +385,7 @@ export class Server extends BaseNode {
     // Initialize IoServer
     this._ioServer = new IoServer(this._ioMulti);
 
-    if (!this._disableLocalCache) {
+    if (!this._disableLocalCache && this._localBs !== undefined) {
       const bsMultiBsLocal = {
         bs: this._localBs,
         read: true,
@@ -1450,7 +1464,10 @@ export class Server extends BaseNode {
 
     const bsCountBefore = this._bss.length;
     this._bss = this._bss.filter((entry) => {
-      if (entry.bs === this._localBs) return true;
+      // `undefined !== undefined` is never reached: with no local Bs nothing
+      // was pushed for it, so no entry can match. The explicit check keeps a
+      // future undefined-bearing entry from being mistaken for the local one.
+      if (this._localBs !== undefined && entry.bs === this._localBs) return true;
       if ((entry.bs as { isOpen?: boolean }).isOpen === false) return false;
       return liveBss.has(entry.bs);
     });
