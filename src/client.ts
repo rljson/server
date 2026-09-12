@@ -45,6 +45,25 @@ export interface ClientOptions {
    * rejects. Defaults to 30 000 (30 s). Set to 0 to disable the timeout.
    */
   peerInitTimeoutMs?: number;
+
+  /**
+   * Whether this client OWNS the local stores it was handed, and may close
+   * them on `tearDown()`. Default `true` — the behaviour every existing caller
+   * already gets.
+   *
+   * Set `false` when the stores belong to something else and merely pass
+   * through. A hub's cloud bridge is exactly that: it hands the relay the
+   * server's own Io so the bridge mirrors what the hub holds, and that Io goes
+   * on serving the LAN after the bridge stops. Closing it is not a tidier
+   * teardown — it takes the node's store away from the node, and the next
+   * thing to touch it fails with `Local Io must be initialized and open`.
+   *
+   * Observed exactly that way: an election burst restarted the bridge, the
+   * stop closed the hub's Io, and both routes then refused to start. Nothing
+   * reported a closed store, because from the Io's side being closed is not an
+   * error — it is a state somebody asked for.
+   */
+  ownsStores?: boolean;
 }
 
 export class Client extends BaseNode {
@@ -60,6 +79,8 @@ export class Client extends BaseNode {
   private _logger: ServerLogger;
   private _syncConfig?: SyncConfig;
   private _clientIdentity?: ClientId;
+  /** Whether `tearDown` may close the local stores. See `ClientOptions`. */
+  private _ownsStores = true;
   private _peerInitTimeoutMs: number;
 
   // Connection state
@@ -91,6 +112,7 @@ export class Client extends BaseNode {
     this._logger = options?.logger ?? noopLogger;
     this._syncConfig = options?.syncConfig;
     this._clientIdentity = options?.clientIdentity;
+    this._ownsStores = options?.ownsStores ?? true;
     this._peerInitTimeoutMs = options?.peerInitTimeoutMs ?? 30_000;
 
     this._logger.info('Client', 'Constructing client', {
@@ -156,9 +178,14 @@ export class Client extends BaseNode {
     this._disconnectCallbacks = [];
     this._reconnectCallbacks = [];
 
-    //Close Io
+    // Close Io — but only when these stores are ours to close.
+    //
+    // A borrowed local Io belongs to whatever handed it over and keeps working
+    // after this client is gone. Closing it does not tidy up; it takes the
+    // store away from its owner, and the next thing to touch it fails with
+    // `Local Io must be initialized and open`.
     /* v8 ignore else -- @preserve */
-    if (this._ioMulti && this._ioMulti.isOpen) {
+    if (this._ownsStores && this._ioMulti && this._ioMulti.isOpen) {
       this._ioMulti.close();
     }
 
