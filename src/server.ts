@@ -155,6 +155,20 @@ export interface ServerOptions {
 }
 
 // .............................................................................
+/**
+ * Stores a server should cascade reads to, supplied by their owner.
+ *
+ * Named rather than inline so the two doc linters can agree: one wants every
+ * member of an inline object documented, the other rejects the dotted names
+ * that would take.
+ */
+export interface PeerStores {
+  /** Rows this server should fall through to. */
+  io?: Io;
+  /** Blobs this server should fall through to. */
+  bs?: Bs;
+}
+
 export class Server extends BaseNode {
   // Map of connected clients
   // socket => Push: Send new Refs through Route
@@ -170,6 +184,21 @@ export class Server extends BaseNode {
       bs: BsPeer;
     }
   > = new Map();
+
+  /**
+   * Stores attached by {@link attachPeerStores} rather than by a client
+   * socket.
+   *
+   * Kept so {@link _pruneDeadPeers} can tell them from an orphan. That prune
+   * drops every entry that is neither the local cache nor owned by a live
+   * client, which is right for a peer left behind by a closed socket and
+   * wrong for one an owner attached deliberately and still holds.
+   *
+   * Empty unless somebody calls `attachPeerStores`, so a server that never
+   * does behaves exactly as it did before this existed.
+   */
+  private readonly _attachedIos = new Set<Io>();
+  private readonly _attachedBss = new Set<Bs>();
 
   private _ios: IoMultiIo[] = [];
   private _ioMulti: IoMulti;
@@ -573,6 +602,58 @@ export class Server extends BaseNode {
     }
 
     return this;
+  }
+
+  // ...........................................................................
+  /**
+   * Cascade reads to stores this server does not own.
+   *
+   * A read the local cache cannot answer falls through to them, and what comes
+   * back is written into the local cache on the way — the ordinary
+   * `IoMulti`/`BsMulti` behaviour, which is why nothing here is new machinery.
+   * They are read-only and sit at the same priority as a socket peer, so a
+   * local hit always wins.
+   *
+   * The case this exists for is a hub bridged to a cloud EventHub. The bridge
+   * holds a `Client` whose stores cascade to the cloud; attaching them here is
+   * what lets the hub answer its LAN clients for data only the cloud has, and
+   * cache it once rather than per client. Without it the bridge had to run a
+   * full sync agent to pull that data in — a second agent over a folder some
+   * other process already owned.
+   *
+   * **A server that never calls this is unchanged.** The attached sets stay
+   * empty, `_ios`/`_bss` hold exactly what they held before, and the multis
+   * are built from the same list. That is the whole safety argument, and it is
+   * structural rather than a promise.
+   * @param stores - The stores to cascade to. Either may be omitted.
+   * @returns Detaches them again and rebuilds. Idempotent.
+   */
+  async attachPeerStores(stores: PeerStores): Promise<() => Promise<void>> {
+    const { io, bs } = stores;
+    if (io) {
+      this._attachedIos.add(io);
+      this._ios.push({ io, dump: false, read: true, write: false, priority: 2 });
+    }
+    if (bs) {
+      this._attachedBss.add(bs);
+      this._bss.push({ bs, read: true, write: false, priority: 2 });
+    }
+    if (io || bs) await this._rebuildMultis();
+
+    let detached = false;
+    return async (): Promise<void> => {
+      if (detached) return;
+      detached = true;
+      if (io) {
+        this._attachedIos.delete(io);
+        this._ios = this._ios.filter((entry) => entry.io !== io);
+      }
+      if (bs) {
+        this._attachedBss.delete(bs);
+        this._bss = this._bss.filter((entry) => entry.bs !== bs);
+      }
+      if (io || bs) await this._rebuildMultis();
+    };
   }
 
   // ...........................................................................
@@ -1459,6 +1540,8 @@ export class Server extends BaseNode {
     this._ios = this._ios.filter((entry) => {
       if (entry.io === this._localIo) return true;
       if (entry.io.isOpen === false) return false;
+      // Attached by an owner that still holds it — not an orphan.
+      if (this._attachedIos.has(entry.io)) return true;
       return liveIos.has(entry.io);
     });
 
@@ -1469,6 +1552,8 @@ export class Server extends BaseNode {
       // future undefined-bearing entry from being mistaken for the local one.
       if (this._localBs !== undefined && entry.bs === this._localBs) return true;
       if ((entry.bs as { isOpen?: boolean }).isOpen === false) return false;
+      // Attached by an owner that still holds it — not an orphan.
+      if (this._attachedBss.has(entry.bs)) return true;
       return liveBss.has(entry.bs);
     });
 
