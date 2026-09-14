@@ -5,11 +5,12 @@
 // found in the LICENSE file in the root of this package.
 
 import { BsMem } from '@rljson/bs';
-import { IoMem } from '@rljson/io';
+import { IoMem, SocketMock } from '@rljson/io';
 import { Route, exampleTableCfg } from '@rljson/rljson';
 
 import { describe, expect, it } from 'vitest';
 
+import { Client } from '../src/client';
 import { Server } from '../src/server';
 
 /**
@@ -189,6 +190,79 @@ describe('attachPeerStores', () => {
     await expect(server.bs.getBlob(stored.blobId)).rejects.toThrow();
 
     await server.tearDown();
+  });
+
+  it("REFUSES the server's own cascade, which would contain itself", async () => {
+    // The defect this guard exists for, found on a lab within an hour of the
+    // deploy. `Server.io` returns the multi, not the local store, so a bridge
+    // that passed it along and attached the result built a store containing
+    // itself — and the read recursed: multi → member → multi → …
+    //
+    // Refused here rather than at read time, because at read time it surfaces
+    // as "Maximum call stack size exceeded" on the first LAN read the hub
+    // cannot answer locally, which names nothing about the cause.
+    const server = await emptyServer();
+
+    await expect(server.attachPeerStores({ io: server.io })).rejects.toThrow(
+      /own Io cascade/,
+    );
+    await expect(server.attachPeerStores({ bs: server.bs })).rejects.toThrow(
+      /own Bs cascade/,
+    );
+
+    // And it did not half-attach on the way out.
+    expect(server.ioPeerCount).toBe(0);
+
+    await server.tearDown();
+  });
+
+  it('is what a Client offers for attaching: peers, not its multi', async () => {
+    // `Client.io` is a multi whose FIRST layer is the store it was given. On a
+    // hub that store is the server's own cascade, so attaching the multi
+    // builds a store containing itself. `peerStores` is the downstream peers
+    // alone, which is the acyclic thing to hand over.
+    const io = new IoMem();
+    await io.init();
+    const socket = new SocketMock();
+    socket.connect();
+    const client = new Client(socket, io, new BsMem(), Route.fromFlat('notesTree'));
+    await client.init();
+
+    const peers = client.peerStores;
+    expect(peers.io).toBeDefined();
+    expect(peers.io).not.toBe(client.io);
+    expect(peers.bs).not.toBe(client.bs);
+
+    // And a server accepts them, where it refused the multi.
+    const server = await emptyServer();
+    const detach = await server.attachPeerStores(peers);
+    await detach();
+
+    await server.tearDown();
+    await client.tearDown();
+  });
+
+  it('offers nothing until a Client has peers', async () => {
+    // Before `init`, and on a route with no blob store. Empty rather than
+    // undefined members: a bridge spreading these into an attach must not
+    // hand over an `io: undefined` that reads as "attach nothing" in one place
+    // and as a missing store in another.
+    const io = new IoMem();
+    await io.init();
+    const socket = new SocketMock();
+    socket.connect();
+
+    const notStarted = new Client(socket, io, undefined, Route.fromFlat('notesTree'));
+    expect(notStarted.peerStores).toEqual({});
+
+    // After init both exist — including on a route with no LOCAL blob store.
+    // The downstream peer is how this client reads the server's blobs, which
+    // it can do whether or not it keeps any of its own.
+    await notStarted.init();
+    expect(notStarted.peerStores.io).toBeDefined();
+    expect(notStarted.peerStores.bs).toBeDefined();
+
+    await notStarted.tearDown();
   });
 
   it('changes nothing when called with neither store', async () => {
