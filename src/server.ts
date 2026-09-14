@@ -630,6 +630,27 @@ export class Server extends BaseNode {
    */
   async attachPeerStores(stores: PeerStores): Promise<() => Promise<void>> {
     const { io, bs } = stores;
+
+    // Refused, loudly, rather than accepted and left to recurse at read time.
+    // A caller that hands back this server's OWN cascade builds a store that
+    // contains itself: the read goes multi → member → multi → … and dies with
+    // "Maximum call stack size exceeded", on the first LAN read the hub cannot
+    // answer locally rather than here. A hub bridged to a cloud did exactly
+    // that, because `Server.io` returns the multi and it looked like a store.
+    if (io !== undefined && io === this._ioMulti) {
+      throw new Error(
+        'attachPeerStores: refusing this server\'s own Io cascade — it would ' +
+          'contain itself. Attach the peer alone (see `Client.peerStores`), ' +
+          'not a multi built over this store.',
+      );
+    }
+    if (bs !== undefined && bs === this._bsMulti) {
+      throw new Error(
+        'attachPeerStores: refusing this server\'s own Bs cascade — it would ' +
+          'contain itself. Attach the peer alone (see `Client.peerStores`), ' +
+          'not a multi built over this store.',
+      );
+    }
     if (io) {
       this._attachedIos.add(io);
       this._ios.push({ io, dump: false, read: true, write: false, priority: 2 });

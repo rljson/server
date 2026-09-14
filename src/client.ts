@@ -69,7 +69,20 @@ export interface ClientOptions {
 export class Client extends BaseNode {
   private _ioMultiIos: IoMultiIo[] = [];
   private _ioMulti?: IoMulti;
+  /**
+   * The downstream peers alone — this client's view of the SERVER, with none
+   * of its own local layer in front.
+   *
+   * Kept because {@link peerStores} is the only safe thing to hand to another
+   * store's cascade. `io`/`bs` return the multis, and a multi built over a
+   * borrowed local store cannot be added as a member of that same store's
+   * cascade: the read recurses through itself. A hub bridged to a cloud did
+   * exactly that and every route died with "Maximum call stack size
+   * exceeded".
+   */
+  private _ioPeer?: Io;
 
+  private _bsPeer?: Bs;
   private _bsMultiBss: BsMultiBs[] = [];
   private _bsMulti?: BsMulti;
 
@@ -234,6 +247,30 @@ export class Client extends BaseNode {
   }
 
   /**
+   * This client's view of the SERVER, without its own local layer.
+   *
+   * {@link io} and {@link bs} return multis: local first, then these. That is
+   * right for reading, and wrong for handing to somebody else's cascade — a
+   * client whose local layer is a BORROWED store cannot have its multi added
+   * as a member of that same store's cascade, because the read then recurses
+   * through itself. A hub bridged to a cloud EventHub did exactly that and
+   * every route died with "Maximum call stack size exceeded".
+   *
+   * These are the peers alone, so attaching them is acyclic: the other
+   * store's cascade reaches this socket and stops.
+   *
+   * Empty before the peers exist — a client with no sockets, or one built
+   * without a blob store.
+   * @returns The downstream peers.
+   */
+  get peerStores(): { io?: Io; bs?: Bs } {
+    return {
+      ...(this._ioPeer === undefined ? {} : { io: this._ioPeer }),
+      ...(this._bsPeer === undefined ? {} : { bs: this._bsPeer }),
+    };
+  }
+
+  /**
    * Returns the route (if provided).
    */
   get route(): Route | undefined {
@@ -377,6 +414,7 @@ export class Client extends BaseNode {
 
       // Downstream: pull from server
       const ioPeer = await this._createIoPeer(sockets.ioDown);
+      this._ioPeer = ioPeer;
 
       this._ioMultiIos.push({
         io: ioPeer,
@@ -427,6 +465,7 @@ export class Client extends BaseNode {
 
       // Downstream: pull from server
       const bsPeer = await this._createBsPeer(sockets.bsDown);
+      this._bsPeer = bsPeer;
 
       this._bsMultiBss.push({
         bs: bsPeer,
