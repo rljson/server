@@ -34,6 +34,7 @@ import {
 } from './backpressure.ts';
 import { BaseNode } from './base-node.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
+import { liveView } from './live-view.ts';
 import {
   normalizeSocketBundle,
   SocketLike,
@@ -198,6 +199,13 @@ export class Server extends BaseNode {
    * does behaves exactly as it did before this existed.
    */
   private readonly _attachedIos = new Set<Io>();
+  /** See {@link ownIo}. Rebuilt beside `_ioMulti`. */
+  private _ownIoMulti!: IoMulti;
+  /** See {@link ownBs}. Rebuilt beside `_bsMulti`. */
+  private _ownBsMulti!: BsMulti;
+  /** Stable views over the two above, so a holder never goes stale. */
+  private _ownIoView?: Io;
+  private _ownBsView?: Bs;
   private readonly _attachedBss = new Set<Bs>();
 
   private _ios: IoMultiIo[] = [];
@@ -410,6 +418,9 @@ export class Server extends BaseNode {
       this._ios.push(ioMultiIoLocal);
     }
     this._ioMulti = new IoMulti(this._ios);
+    // Built here as well as in `_rebuildMultis`: nothing may have joined yet
+    // when a bridge asks for `ownIo`, and a view over `undefined` throws.
+    this._ownIoMulti = new IoMulti(this._ios);
 
     // Initialize IoServer
     this._ioServer = new IoServer(this._ioMulti);
@@ -424,6 +435,7 @@ export class Server extends BaseNode {
       this._bss.push(bsMultiBsLocal);
     }
     this._bsMulti = new BsMulti(this._bss);
+    this._ownBsMulti = new BsMulti(this._bss);
 
     // Initialize BsServer
     this._bsServer = new BsServer(this._bsMulti);
@@ -442,6 +454,12 @@ export class Server extends BaseNode {
 
       // Initialize BsServer
       await this._bsMulti.init();
+
+      // Opened alongside, or `ownIo` hands out a store that reports itself
+      // closed and every holder refuses it.
+      await this._ownIoMulti.init();
+      await this._ownIoMulti.isReady();
+      await this._ownBsMulti.init();
 
       await this.ready();
 
@@ -956,6 +974,38 @@ export class Server extends BaseNode {
    */
   get bs(): Bs {
     /* v8 ignore next -- @preserve */ return this._bsMulti;
+  }
+
+  /**
+   * What this hub holds ITSELF — its own store and its LAN clients, never the
+   * stores it cascades to.
+   *
+   * This is what a cloud bridge must publish. `io` is the whole cascade, and
+   * once the bridge has attached the cloud to it, serving the cloud FROM it
+   * is a loop: the cloud asks the hub, the hub asks the cloud.
+   *
+   * It is also LIVE. `io` is replaced on every client join and leave, so a
+   * bridge that captured it at start-up served the cloud from the hub as it
+   * was before its own clients connected — and answered "no such row" for
+   * everything those clients hold. Measured: a file that had crossed the
+   * EventHub could not be fetched from the hub that announced it, until some
+   * unrelated read happened to pull the row into the hub's local store and
+   * cache it there. This view is a stable object over a moving target, so a
+   * holder never goes stale.
+   * @returns A live, cascade-free view of this hub's own store.
+   */
+  get ownIo(): Io {
+    this._ownIoView ??= liveView<Io>(() => this._ownIoMulti);
+    return this._ownIoView;
+  }
+
+  /**
+   * The blob half of {@link ownIo}.
+   * @returns A live, cascade-free view of this hub's own blobs.
+   */
+  get ownBs(): Bs {
+    this._ownBsView ??= liveView<Bs>(() => this._ownBsMulti);
+    return this._ownBsView;
   }
 
   /**
@@ -1648,6 +1698,17 @@ export class Server extends BaseNode {
 
       this._bsMulti = new BsMulti(this._bss);
       await this._bsMulti.init();
+
+      // What this hub holds ITSELF: its own store and its LAN clients, never
+      // the stores it cascades TO. See {@link ownIo}.
+      this._ownIoMulti = new IoMulti(
+        this._ios.filter((entry) => !this._attachedIos.has(entry.io)),
+      );
+      await this._ownIoMulti.init();
+      this._ownBsMulti = new BsMulti(
+        this._bss.filter((entry) => !this._attachedBss.has(entry.bs)),
+      );
+      await this._ownBsMulti.init();
 
       this._logger.info('Server', 'Multis rebuilt successfully');
     } catch (error) {

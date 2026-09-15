@@ -5,7 +5,7 @@
 // found in the LICENSE file in the root of this package.
 
 import { BsMem } from '@rljson/bs';
-import { IoMem, SocketMock } from '@rljson/io';
+import { IoMem, SocketMock, createSocketPair } from '@rljson/io';
 import { Route, exampleTableCfg } from '@rljson/rljson';
 
 import { describe, expect, it } from 'vitest';
@@ -92,6 +92,93 @@ describe('attachPeerStores', () => {
       where: { _hash: hash },
     });
     expect(found[TABLE]?._data?.[0]).toMatchObject({ a: 'from the far side' });
+
+    await server.tearDown();
+  });
+
+  it('ownIo sees a client that joined AFTER it was handed out', async () => {
+    // What a cloud bridge publishes. It takes this once, at start-up, and a
+    // Server replaces its multis on every join and leave — so a captured
+    // `io` serves the hub as it was before its own clients connected, and
+    // answers "no such row" for everything those clients hold.
+    //
+    // Measured: a file that had crossed the EventHub could not be fetched
+    // from the hub that announced it, until an unrelated read happened to
+    // pull the row into the hub's local store and cache it there.
+    const server = await emptyServer();
+    const view = server.ownIo; // captured BEFORE anyone joins
+    // Plain properties come through too, not only methods.
+    expect(typeof view.isOpen).toBe('boolean');
+
+    const [serverSide, clientSide] = createSocketPair();
+    serverSide.connect();
+    await server.addSocket(serverSide);
+
+    const clientIo = new IoMem();
+    await clientIo.init();
+    await clientIo.isReady();
+    await clientIo.createOrExtendTable({
+      tableCfg: exampleTableCfg({ key: TABLE }),
+    });
+    await clientIo.write({
+      data: { [TABLE]: { _data: [{ a: 'held by the client', b: 2 }] } },
+    } as never);
+    const client = new Client(clientSide, clientIo, new BsMem());
+    await client.init();
+    const dumped = await clientIo.dumpTable({ table: TABLE });
+    const hash = (dumped[TABLE]._data[0] as { _hash: string })._hash;
+
+    const found = await view.readRows({ table: TABLE, where: { _hash: hash } });
+    expect(
+      found[TABLE]?._data?.[0],
+      'the view was a snapshot taken before the client joined',
+    ).toMatchObject({ a: 'held by the client' });
+
+    await client.tearDown();
+    await server.tearDown();
+  });
+
+  it('ownBs is the same view for blobs', async () => {
+    // A file route carries its bytes in the blob store, so the bridge needs
+    // both halves live and both cascade-free.
+    const server = await emptyServer();
+    const view = server.ownBs;
+    expect(view).toBe(server.ownBs);
+
+    const remoteBs = new BsMem();
+    await server.attachPeerStores({ bs: remoteBs });
+
+    // Still this hub's own blobs, and still usable after the rebuild.
+    expect(typeof view.setBlob).toBe('function');
+    await server.tearDown();
+  });
+
+  it('ownIo does NOT include what the hub cascades to', async () => {
+    // The other half, and the reason this is not simply `io`. Once the bridge
+    // has attached the cloud, serving the cloud FROM the full cascade is a
+    // loop: the cloud asks the hub, the hub asks the cloud.
+    const { io: remote, hash } = await remoteWithRow();
+    const server = await emptyServer();
+
+    await server.attachPeerStores({ io: remote });
+
+    // Asked FIRST, because a cascade read caches what it pulled into the hub's
+    // own store — correctly — and would make this pass for the wrong reason.
+    const viaOwn = await server.ownIo.readRows({
+      table: TABLE,
+      where: { _hash: hash },
+    });
+    expect(
+      viaOwn[TABLE]?._data,
+      'the hub published the store it cascades to, which is a loop',
+    ).toEqual([]);
+
+    // The whole cascade still answers.
+    const viaAll = await server.io.readRows({
+      table: TABLE,
+      where: { _hash: hash },
+    });
+    expect(viaAll[TABLE]?._data?.[0]).toMatchObject({ a: 'from the far side' });
 
     await server.tearDown();
   });
