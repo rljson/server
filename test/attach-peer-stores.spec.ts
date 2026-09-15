@@ -183,6 +183,66 @@ describe('attachPeerStores', () => {
     await server.tearDown();
   });
 
+  it('does not make a LAN read wait on the cloud', async () => {
+    // `IoMulti` races the readables in one priority group and waits for ALL of
+    // them to settle. A cloud store at the SAME priority as the LAN client
+    // peers therefore puts every LAN read on the far side of a WAN hop, and a
+    // read the LAN could answer in milliseconds takes as long as the cloud
+    // does. Measured on the lab, on every node at once:
+    //
+    //   syncFromDb: attempt 1/4 failed for ref=P_cngmlr…: Timeout after 10000ms
+    //
+    // Files sitting on a peer two metres away never arrived, because the hub
+    // was waiting on a continent.
+    const server = await emptyServer();
+
+    // A real LAN client, holding the row — the hub reaches it at priority 2.
+    const [serverSide, clientSide] = createSocketPair();
+    serverSide.connect();
+    await server.addSocket(serverSide);
+    const clientIo = new IoMem();
+    await clientIo.init();
+    await clientIo.isReady();
+    await clientIo.createOrExtendTable({
+      tableCfg: exampleTableCfg({ key: TABLE }),
+    });
+    await clientIo.write({
+      data: { [TABLE]: { _data: [{ a: 'two metres away', b: 1 }] } },
+    } as never);
+    const client = new Client(clientSide, clientIo, new BsMem());
+    await client.init();
+    const dumped = await clientIo.dumpTable({ table: TABLE });
+    const hash = (dumped[TABLE]._data[0] as { _hash: string })._hash;
+
+    // And a "cloud" that never answers at all.
+    let cloudAsked = false;
+    const stuck = {
+      isOpen: true,
+      init: async () => {},
+      close: async () => {},
+      isReady: async () => {},
+      readRows: () => {
+        cloudAsked = true;
+        return new Promise(() => {});
+      },
+      readRowsByHashes: () => {
+        cloudAsked = true;
+        return new Promise(() => {});
+      },
+    } as unknown as Io;
+    await server.attachPeerStores({ io: stuck });
+
+    const found = await server.io.readRows({
+      table: TABLE,
+      where: { _hash: hash },
+    });
+    expect(found[TABLE]?._data?.[0]).toMatchObject({ a: 'two metres away' });
+    expect(cloudAsked, 'the cloud was asked for a row the LAN had').toBe(false);
+
+    await client.tearDown();
+    await server.tearDown();
+  });
+
   it('caches what it pulled, so the far side is asked once', async () => {
     // `IoMulti` writes a peer's answer back into the local cache. That is why
     // attaching a store is enough — the hub does not have to copy anything in
