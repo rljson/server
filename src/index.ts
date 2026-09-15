@@ -43,3 +43,4 @@ export type {
   SyncConfig,
   SyncEventNames,
 } from '@rljson/rljson';
+export * from './live-view.ts';
