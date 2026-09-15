@@ -671,11 +671,27 @@ export class Server extends BaseNode {
     }
     if (io) {
       this._attachedIos.add(io);
-      this._ios.push({ io, dump: false, read: true, write: false, priority: 2 });
+      // Priority 3, BELOW the LAN client peers at 2.
+      //
+      // `IoMulti` races the readables within one priority group and waits for
+      // all of them to settle, so a cloud store at 2 puts every LAN read on
+      // the far side of a WAN hop — and a read the LAN could answer in
+      // milliseconds instead takes as long as the cloud does, or times out.
+      // Measured on the lab, on every node at once:
+      //
+      //   syncFromDb: attempt 1/4 failed for ref=P_cngmlr…:
+      //   Timeout after 10000ms
+      //
+      // Files that were sitting on a peer two metres away never arrived,
+      // because the hub was waiting on a continent. At 3 the cloud is asked
+      // only once the LAN has genuinely missed, which is what "answer my
+      // clients for data only the cloud holds" was always supposed to mean.
+      this._ios.push({ io, dump: false, read: true, write: false, priority: 3 });
     }
     if (bs) {
       this._attachedBss.add(bs);
-      this._bss.push({ bs, read: true, write: false, priority: 2 });
+      // Below the LAN peers, for the reason above.
+      this._bss.push({ bs, read: true, write: false, priority: 3 });
     }
     if (io || bs) await this._rebuildMultis();
 
