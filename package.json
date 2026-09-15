@@ -1,6 +1,6 @@
 {
   "name": "@rljson/server",
-  "version": "0.0.60",
+  "version": "0.0.61",
   "description": "Rljson server description",
   "homepage": "https://github.com/rljson/server",
   "bugs": "https://github.com/rljson/server/issues",
@@ -52,9 +52,9 @@
   },
   "dependencies": {
     "@rljson/bs": "0.0.26",
-    "@rljson/db": "0.0.41",
+    "@rljson/db": "0.0.42",
     "@rljson/hash": "0.0.19",
-    "@rljson/io": "0.0.77",
+    "@rljson/io": "0.0.78",
     "@rljson/json": "0.0.23",
     "@rljson/network": "0.0.20",
     "@rljson/rljson": "0.0.81"
