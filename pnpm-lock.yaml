@@ -15,14 +15,14 @@ importers:
         specifier: 0.0.26
         version: 0.0.26
       '@rljson/db':
-        specifier: 0.0.41
-        version: 0.0.41
+        specifier: 0.0.42
+        version: 0.0.42
       '@rljson/hash':
         specifier: 0.0.19
         version: 0.0.19
       '@rljson/io':
-        specifier: 0.0.77
-        version: 0.0.77
+        specifier: 0.0.78
+        version: 0.0.78
       '@rljson/json':
         specifier: 0.0.23
         version: 0.0.23
@@ -415,8 +415,8 @@ packages:
     resolution: {integrity: sha512-LN+HGv6vkhAOX5CmykUqrXtdaeUpqJJWSSJEWh00oGxmPmhNAJCHIeAVrmk1LGPszMsRU7fsCT6zxxQOCbJ/FA==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/db@0.0.41':
-    resolution: {integrity: sha512-tMCqSYeTeAXniXAZKFV+9DbhLXbKAdlagYNlIn25PEU+4+88mdhlYAEgx/VCOcmBvWobNihwongf4mgG8rkTmA==}
+  '@rljson/db@0.0.42':
+    resolution: {integrity: sha512-jd1B6xv6/cyzzw80W2ydG85oXpIJP3vetkAbpdmdUY1rAjOw7++UM1VuGTttu0GnB/1u5dTkj68WMXCqrdKqDg==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/hash@0.0.16':
@@ -427,8 +427,8 @@ packages:
     resolution: {integrity: sha512-1bBHWbzzaOE3ba2niyvmu4d9VYv5atLzzHDI2ka3AlHLyBDD8Q9qI/HCjimULJlprIGVeN4+jN8sth4CdnGxOQ==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/io@0.0.77':
-    resolution: {integrity: sha512-EJmYtIWIr9QG3Dm5wm2NfhalPr7G6DWL2QVwlCkky0i6jMm1+XgSAHUhBYdYdaGIq22vyVzMTprCW2q8YF+j+w==}
+  '@rljson/io@0.0.78':
+    resolution: {integrity: sha512-lvQTjI4EuAccedXCInaEA7rQB3GACJYh1rGuzSo+1mnuYn+bZ/gr0j1JfG2Yb/CzxOU2HkP0OVDA3nY/Ahmj6Q==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/is-ready@0.0.17':
@@ -2377,10 +2377,10 @@ snapshots:
       '@rljson/json': 0.0.23
       '@rljson/rljson': 0.0.81
 
-  '@rljson/db@0.0.41':
+  '@rljson/db@0.0.42':
     dependencies:
       '@rljson/hash': 0.0.19
-      '@rljson/io': 0.0.77
+      '@rljson/io': 0.0.78
       '@rljson/json': 0.0.23
       '@rljson/rljson': 0.0.81
       '@rljson/validate': 0.0.11
@@ -2397,7 +2397,7 @@ snapshots:
     dependencies:
       '@rljson/json': 0.0.23
 
-  '@rljson/io@0.0.77':
+  '@rljson/io@0.0.78':
     dependencies:
       '@rljson/hash': 0.0.19
       '@rljson/is-ready': 0.0.17
