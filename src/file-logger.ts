@@ -164,10 +164,29 @@ export class FileLogger implements ServerLogger {
 
   /**
    * Append a JSON line to the log file.
+   *
+   * BEST-EFFORT. A log line is never worth more than the call that emitted it,
+   * and this one runs inside socket handlers — so a throw here surfaces as an
+   * unhandled rejection far from the thing that actually failed. The case that
+   * bites is a log directory that goes away underneath a still-live server
+   * (a test's temp dir, a rotated/cleaned log path): every subsequent socket
+   * error then raises ENOENT instead of being recorded. Try once to put the
+   * directory back — that recovers the ordinary rotation case and keeps
+   * logging — and otherwise drop the line.
    * @param entry - The log entry object to serialize
    */
   private _write(entry: Record<string, unknown>): void {
-    appendFileSync(this._filePath, JSON.stringify(entry) + '\n', 'utf-8');
+    const line = JSON.stringify(entry) + '\n';
+    try {
+      appendFileSync(this._filePath, line, 'utf-8');
+    } catch {
+      try {
+        mkdirSync(dirname(this._filePath), { recursive: true });
+        appendFileSync(this._filePath, line, 'utf-8');
+      } catch {
+        // Nothing left to do: writing a log must not break the caller.
+      }
+    }
   }
 
   /**

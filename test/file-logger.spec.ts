@@ -4,7 +4,13 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -308,6 +314,37 @@ describe('FileLogger', () => {
       const lines = readLines();
       expect(lines).toHaveLength(1);
       expect(lines[0]!['level']).toBe('error');
+    });
+  });
+  // ...........................................................................
+  describe('a log directory that disappears underneath a live logger', () => {
+    it('recreates it and keeps logging', () => {
+      const logger = new FileLogger({ filePath: logFile });
+      logger.info('A', 'before');
+
+      // Exactly what a test's temp dir (or a log cleaner) does to a server
+      // that is still up and still handling sockets.
+      rmSync(testDir, { recursive: true, force: true });
+
+      expect(() => logger.error('A', 'after')).not.toThrow();
+      // The line is not lost either — the directory comes back.
+      expect(readLines().map((l) => l['message'])).toEqual(['after']);
+    });
+
+    it('drops the line rather than throwing when it cannot be recreated', () => {
+      const nested = join(testDir, 'sub');
+      const nestedLog = join(nested, 'test.log');
+      const logger = new FileLogger({ filePath: nestedLog });
+      logger.info('A', 'before');
+
+      // Put a regular FILE where the log directory was: the append fails, and
+      // so does recreating the directory. A log line is never worth more than
+      // the socket handler that emitted it, so it goes on the floor.
+      rmSync(nested, { recursive: true, force: true });
+      writeFileSync(nested, 'not a directory');
+
+      expect(() => logger.error('A', 'dropped')).not.toThrow();
+      expect(readFileSync(nested, 'utf-8')).toBe('not a directory');
     });
   });
 });
