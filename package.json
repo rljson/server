@@ -28,6 +28,8 @@
     "updateGoldens": "cross-env UPDATE_GOLDENS=true pnpm test"
   },
   "devDependencies": {
+    "@rljson/dna-rljson": "^0.2.0",
+    "@tssuite/helix-js": "^0.3.0",
     "@types/node": "^25.9.2",
     "@typescript-eslint/eslint-plugin": "^8.60.1",
     "@typescript-eslint/parser": "^8.60.1",
@@ -64,7 +66,8 @@
       "esbuild"
     ],
     "overrides": {
-      "@rljson/rljson": "0.0.81"
+      "@rljson/rljson": "0.0.81",
+      "eslint-plugin-tsdoc>@typescript-eslint/utils": "^8.60.1"
     }
   },
   "packageManager": "pnpm@10.11.0"
