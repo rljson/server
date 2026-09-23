@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+- **The heartbeat carries the ancestry of the state it announces** (`p`, ONE-446).
+  The server records the predecessors a ref's producer declared, alongside its
+  origin, and every bootstrap / heartbeat announcement includes them when there
+  were any. A client that lost a message needs them to tell "the hub is ahead
+  of me" from "the hub holds a state I already left" — refs are content hashes,
+  so both look like a ref it has seen before. Cleared when a later ref declares
+  none; never set for a seeded ref, whose announcement is unchanged.
+
 ## [0.0.14] — 2026-03-20
 
 ### Fixed

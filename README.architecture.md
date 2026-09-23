@@ -1494,6 +1494,19 @@ When `bootstrapHeartbeatMs > 0` in `SyncConfig`, `_startBootstrapHeartbeat()` st
        └─ _startBootstrapHeartbeat()  →  setInterval(broadcastBootstrapHeartbeat, ms)
 ```
 
+**What an announcement carries** (`_bootstrapPayload`): `r` = `_latestRef`,
+`o` = the origin of the client that produced it (`_latestRefOrigin`, or
+`'__server__'` when seeded), `c` = `_announceId`, `seq` = `_announceSeq`, and
+`p` = `_latestRefPredecessors` when the producer declared any. `p` is recorded
+from the multicast payload alongside `_latestRefOrigin`, cleared when a later
+ref declares none, and never set for a seeded ref.
+
+It exists for the receiver that lost a message. The heartbeat is the only
+thing that reaches such a client, and without ancestry it cannot decide
+whether the hub is ahead of it or holds a state it already left — refs are
+content hashes, so both are "a ref I have seen before", and guessing wrong
+either loses a deletion or brings a deleted file back.
+
 **Design decisions:**
 
 - `_events` is always initialized (even without `syncConfig`) because bootstrap needs event names regardless of sync config

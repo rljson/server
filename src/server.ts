@@ -290,6 +290,19 @@ export class Server extends BaseNode {
   private _latestRefOrigin: string | undefined;
 
   /**
+   * What {@link _latestRef} declared it descends from, as its producer sent it.
+   *
+   * The heartbeat is the only thing that reaches a client which lost a
+   * message, and without ancestry it cannot answer the one question such a
+   * client has to ask: *is the hub ahead of me, or is it holding a state I
+   * already left?* Refs are content hashes, so both look like "a ref I have
+   * seen before" — and guessing wrong either loses a deletion or brings a
+   * deleted file back. Forwarding the producer's own predecessors lets the
+   * receiver decide from the history instead of from the hash.
+   */
+  private _latestRefPredecessors: string[] | undefined;
+
+  /**
    * Identity this server announces under, stable for its lifetime.
    *
    * Receivers key their per-sender staleness on it. A restarted server is
@@ -874,6 +887,10 @@ export class Server extends BaseNode {
         if (this._latestRef !== ref) this._announceSeq++;
         this._latestRef = ref;
         this._latestRefOrigin = (payload as { o?: string })?.o;
+        const predecessors = (payload as { p?: unknown })?.p;
+        this._latestRefPredecessors = Array.isArray(predecessors)
+          ? predecessors.filter((r): r is string => typeof r === 'string')
+          : undefined;
 
         const p = payload as any;
 
@@ -1123,6 +1140,7 @@ export class Server extends BaseNode {
     // seed would clobber the client's more-recent tree.
     if (!this._latestRef) {
       this._latestRef = ref;
+      this._latestRefPredecessors = undefined;
       this._announceSeq++;
     }
     // Always mark the seeded ref as already-multicast so that stale
@@ -1209,12 +1227,19 @@ export class Server extends BaseNode {
    * @returns The payload both bootstrap paths send.
    */
   private _bootstrapPayload(ref: string): ConnectorPayload {
-    return {
+    const payload: ConnectorPayload = {
       o: this._latestRefOrigin ?? '__server__',
       r: ref,
       c: this._announceId,
       seq: this._announceSeq,
     };
+    // Only when the producer declared any: an absent field and an empty one
+    // mean the same thing to a receiver, and the absent one keeps a seeded
+    // or ancestry-free announcement byte-identical to what it always was.
+    if (this._latestRefPredecessors?.length) {
+      payload.p = [...this._latestRefPredecessors];
+    }
+    return payload;
   }
 
   private _sendBootstrap(ioDown: SocketWithClientId) {
@@ -1950,6 +1975,7 @@ export class Server extends BaseNode {
     // Clear bootstrap state
     this._latestRef = undefined;
     this._latestRefOrigin = undefined;
+    this._latestRefPredecessors = undefined;
 
     this._tornDown = true;
 

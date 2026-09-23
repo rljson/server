@@ -788,6 +788,68 @@ describe('Server sync protocol', () => {
       expect(bootstrapReceived[0].seq).toBe(1);
     });
 
+    // The heartbeat is what reaches a client that lost a message, and it has
+    // to say where the hub's state came from. Without the producer's ancestry
+    // a client cannot tell "the hub is ahead of me" from "the hub holds a
+    // state I already left" — both are a content hash it has seen before.
+    it('carries the ancestry its producer declared', async () => {
+      const route = Route.fromFlat('bootstrapAncestry');
+      const result = await createSyncServer(route, { causalOrdering: true });
+      server = result.server;
+      const events = syncEvents(route.flat);
+
+      const socketA = await addClient(server);
+      socketA.emit(route.flat, {
+        o: 'originA',
+        r: 'ref-2',
+        c: 'client-A',
+        seq: 1,
+        p: ['ref-1', 42 as unknown as string],
+      } as ConnectorPayload);
+
+      const seen: ConnectorPayload[] = [];
+      const socketB = new SocketMock();
+      socketB.connect();
+      socketB.on(events.bootstrap, (p: ConnectorPayload) => seen.push(p));
+      await server.addSocket(socketB);
+
+      // Only what is a ref survives: a malformed entry is not ancestry.
+      expect(seen[0].p).toEqual(['ref-1']);
+
+      // A later state that declares nothing must not inherit the old claim.
+      socketA.emit(route.flat, {
+        o: 'originA',
+        r: 'ref-3',
+        c: 'client-A',
+        seq: 2,
+      } as ConnectorPayload);
+      const socketC = new SocketMock();
+      socketC.connect();
+      const later: ConnectorPayload[] = [];
+      socketC.on(events.bootstrap, (p: ConnectorPayload) => later.push(p));
+      await server.addSocket(socketC);
+
+      expect(later[0].r).toBe('ref-3');
+      expect(later[0]).not.toHaveProperty('p');
+    });
+
+    it('announces a seeded ref without ancestry', async () => {
+      const route = Route.fromFlat('bootstrapSeededAncestry');
+      const result = await createSyncServer(route, { causalOrdering: true });
+      server = result.server;
+      const events = syncEvents(route.flat);
+      server.seedLatestRef('seeded');
+
+      const seen: ConnectorPayload[] = [];
+      const socketB = new SocketMock();
+      socketB.connect();
+      socketB.on(events.bootstrap, (p: ConnectorPayload) => seen.push(p));
+      await server.addSocket(socketB);
+
+      expect(seen[0].r).toBe('seeded');
+      expect(seen[0]).not.toHaveProperty('p');
+    });
+
     // A ref the SERVER seeded has no originating client, so it still announces
     // itself. The fallback matters: without it the origin would be undefined
     // and a receiver's self-filter could not compare against anything.

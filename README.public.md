@@ -504,7 +504,14 @@ const syncConfig: SyncConfig = {
 
 **Key details:**
 
-- Bootstrap payload uses origin `'__server__'` (not a real client)
+- Bootstrap payload names the client that **produced** the state as its
+  origin (`o`), and falls back to `'__server__'` for a ref the server seeded
+- It carries `c` (the server's announce id) and `seq` (a count of distinct
+  states), so a repeat of the same state is recognisably not news
+- It carries `p`, the predecessors its producer declared, when there were
+  any. A client that lost a message needs them to tell "the hub is ahead of
+  me" from "the hub holds a state I already left" — both are a content hash
+  it has seen before. `@rljson/fs-agent`'s anti-entropy relies on this
 - The Connector's `_processIncoming()` handles dedup automatically
 - If no ref has been seen yet (empty server), no bootstrap is sent
 - Heartbeat timer calls `.unref()` so it doesn't keep the process alive
