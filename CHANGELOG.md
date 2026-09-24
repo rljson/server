@@ -10,6 +10,11 @@
   of me" from "the hub holds a state I already left" — refs are content hashes,
   so both look like a ref it has seen before. Cleared when a later ref declares
   none; never set for a seeded ref, whose announcement is unchanged.
+- **State beacon** (`stateBeaconMs`, `stateBeaconEvent`, ONE-446). The hub's
+  state, sent periodically on `${route}:state` — an event the connector does
+  not listen to, so nothing is applied because of it. It lets a client notice
+  that it disagrees with the hub for good, without the side effects that made
+  a periodic bootstrap heartbeat net-harmful. Off by default.
 
 ## [0.0.14] — 2026-03-20
 

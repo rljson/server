@@ -46,6 +46,18 @@ export type SocketWithClientId = Socket & { __clientId?: string };
 /**
  * Options for the Server constructor.
  */
+/**
+ * The event the state beacon is sent on, for a route.
+ *
+ * Deliberately NOT one of the connector's sync events, so the connector never
+ * processes it. `@rljson/fs-agent` derives the same name itself (it does not
+ * depend on this package at runtime): change both together.
+ * @param routeFlat - The route, as `Route.flat`.
+ * @returns The event name.
+ */
+export const stateBeaconEvent = (routeFlat: string): string =>
+  `${routeFlat}:state`;
+
 export interface ServerOptions {
   /** Logger instance for monitoring (defaults to NoopLogger). */
   logger?: ServerLogger;
@@ -56,6 +68,19 @@ export interface ServerOptions {
    * Defaults to 60 000 (60 s). Set to 0 to disable automatic eviction.
    */
   refEvictionIntervalMs?: number;
+  /**
+   * Interval in ms of the **state beacon**: the state this hub holds, sent to
+   * every client on {@link stateBeaconEvent} — `r`, `o`, `c`, `seq` and `p`,
+   * exactly as a bootstrap carries them. Defaults to 0 (off).
+   *
+   * Not the bootstrap heartbeat, on purpose. A heartbeat is delivered through
+   * the connector into every agent's apply path, and a periodic one was
+   * measured net-harmful three times for that reason. The beacon goes on an
+   * event the connector does not listen to, so nothing is applied because of
+   * it: it only lets a client NOTICE that it disagrees with the hub for good —
+   * which is what `@rljson/fs-agent`'s anti-entropy needs, and all it needs.
+   */
+  stateBeaconMs?: number;
   /**
    * Per-consumer flow control for served reads. Omit for the defaults; the
    * hub's off-heap send queue is what this bounds.
@@ -350,6 +375,10 @@ export class Server extends BaseNode {
   >();
   private _bootstrapHeartbeatTimer?: ReturnType<typeof setInterval>;
 
+  /** Interval of the state beacon, 0 when off. See {@link ServerOptions.stateBeaconMs}. */
+  private readonly _stateBeaconMs: number;
+  private _stateBeaconTimer?: ReturnType<typeof setInterval>;
+
   // Health check state
   private _healthCheckIntervalMs: number;
   private _healthCheckTimeoutMs: number;
@@ -408,6 +437,7 @@ export class Server extends BaseNode {
     this._serveGate =
       this._backpressure.gate ??
       new ServeGate(options?.maxConcurrentServes ?? 4);
+    this._stateBeaconMs = options?.stateBeaconMs ?? 0;
     const evictionMs = options?.refEvictionIntervalMs ?? 60_000;
     /* v8 ignore if -- @preserve */
     if (evictionMs > 0) {
@@ -607,6 +637,7 @@ export class Server extends BaseNode {
 
     // Start heartbeat timer if configured and not already running
     this._startBootstrapHeartbeat();
+    this._startStateBeacon();
 
     // Start application-level health checks
     this._startHealthChecks();
@@ -777,6 +808,7 @@ export class Server extends BaseNode {
     this._sendBootstrap(ioDown);
     this._scheduleBootstrapRetries(clientId, ioDown);
     this._startBootstrapHeartbeat();
+    this._startStateBeacon();
     this._startHealthChecks();
 
     this._logger.info('Server', 'Broadcast-only socket added', {
@@ -1404,6 +1436,23 @@ export class Server extends BaseNode {
     }
   }
 
+  /** Starts the state beacon if configured and not already running. */
+  private _startStateBeacon() {
+    if (this._stateBeaconMs <= 0 || this._stateBeaconTimer) return;
+    const event = stateBeaconEvent(this._route.flat);
+    this._stateBeaconTimer = setInterval(() => {
+      if (!this._latestRef) return;
+      const payload = this._bootstrapPayload(this._latestRef);
+      for (const { ioDown } of this._clients.values()) {
+        ioDown.emit(event, payload);
+      }
+    }, this._stateBeaconMs);
+    this._stateBeaconTimer.unref();
+    this._logger.info('Server.Beacon', 'State beacon started', {
+      intervalMs: this._stateBeaconMs,
+    });
+  }
+
   /**
    * Starts the periodic bootstrap heartbeat timer if configured
    * and not already running.
@@ -1934,6 +1983,10 @@ export class Server extends BaseNode {
     if (this._bootstrapHeartbeatTimer) {
       clearInterval(this._bootstrapHeartbeatTimer);
       this._bootstrapHeartbeatTimer = undefined;
+    }
+    if (this._stateBeaconTimer) {
+      clearInterval(this._stateBeaconTimer);
+      this._stateBeaconTimer = undefined;
     }
 
     // Stop health check timer

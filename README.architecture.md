@@ -1507,6 +1507,15 @@ whether the hub is ahead of it or holds a state it already left — refs are
 content hashes, so both are "a ref I have seen before", and guessing wrong
 either loses a deletion or brings a deleted file back.
 
+**State beacon** (`ServerOptions.stateBeaconMs`, off by default):
+`_startStateBeacon()` runs next to `_startBootstrapHeartbeat()` in `addSocket`
+and `addBroadcastSocket`, and emits `_bootstrapPayload(_latestRef)` on
+`stateBeaconEvent(route)` = `${route}:state` to every client's `ioDown`. Same
+payload, different event — and that is the whole design: the connector never
+subscribes to it, so a beacon can make a client *notice* a lasting
+disagreement without entering its apply path, which is where the periodic
+heartbeat did its damage. `tearDown()` clears the timer.
+
 **Design decisions:**
 
 - `_events` is always initialized (even without `syncConfig`) because bootstrap needs event names regardless of sync config
