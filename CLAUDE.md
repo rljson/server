@@ -206,6 +206,21 @@ Also:
 
 ---
 
+## Hub announcements (ONE-446)
+
+- **The bootstrap payload carries `p`** (the producer's predecessors) and
+  `@rljson/fs-agent`'s anti-entropy decides with it who is behind. Never drop
+  or rewrite it: without it a client cannot tell "the hub is ahead" from "the
+  hub holds a state I left", and guessing wrong resurrects deleted files.
+- **The state beacon is not the heartbeat, and must not become one.** It goes
+  on `stateBeaconEvent(route)` = `${route}:state`, which the connector does
+  not listen to. Never send it on `events.bootstrap` or `events.ref`: a
+  periodic announcement that enters the apply path was measured net-harmful.
+- **`stateBeaconEvent` is duplicated in `@rljson/fs-agent`** (it does not
+  depend on this package at runtime). Change both together.
+
+---
+
 ## Publish Workflow (MANDATORY)
 
 ### Hard rules (NEVER SKIP)
