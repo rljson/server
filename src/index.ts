@@ -29,7 +29,7 @@ export type {
   NodeEvents,
   ReadyContext,
 } from './node.ts';
-export { Server, stateBeaconEvent } from './server.ts';
+export { Server } from './server.ts';
 export type { ServerOptions } from './server.ts';
 export { SocketIoBridge } from './socket-io-bridge.ts';
 

@@ -5,6 +5,7 @@
 // found in the LICENSE file in the root of this package.
 
 import { Bs, BsMem, BsMulti, BsMultiBs, BsPeer, BsServer } from '@rljson/bs';
+import { stateBeaconEvent } from '@rljson/db';
 import {
   Io,
   IoMem,
@@ -46,18 +47,6 @@ export type SocketWithClientId = Socket & { __clientId?: string };
 /**
  * Options for the Server constructor.
  */
-/**
- * The event the state beacon is sent on, for a route.
- *
- * Deliberately NOT one of the connector's sync events, so the connector never
- * processes it. `@rljson/fs-agent` derives the same name itself (it does not
- * depend on this package at runtime): change both together.
- * @param routeFlat - The route, as `Route.flat`.
- * @returns The event name.
- */
-export const stateBeaconEvent = (routeFlat: string): string =>
-  `${routeFlat}:state`;
-
 export interface ServerOptions {
   /** Logger instance for monitoring (defaults to NoopLogger). */
   logger?: ServerLogger;

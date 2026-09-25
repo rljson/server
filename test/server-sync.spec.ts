@@ -20,7 +20,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Client } from '../src/client';
 import { BufferedLogger } from '../src/logger';
-import { Server, ServerOptions, stateBeaconEvent } from '../src/server';
+import { stateBeaconEvent } from '@rljson/db';
+
+import { Server, ServerOptions } from '../src/server';
 
 // .............................................................................
 // Helpers
@@ -1164,10 +1166,6 @@ describe('Server sync protocol', () => {
         await server.tearDown();
         await new Promise((resolve) => setTimeout(resolve, 80));
         expect(beacons).toHaveLength(0);
-      });
-
-      it('names its event after the route', () => {
-        expect(stateBeaconEvent('/sharedTree')).toBe('/sharedTree:state');
       });
     });
 
