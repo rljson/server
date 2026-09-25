@@ -54,11 +54,11 @@
   },
   "dependencies": {
     "@rljson/bs": "0.0.26",
-    "@rljson/db": "0.0.44",
+    "@rljson/db": "0.0.45",
     "@rljson/hash": "0.0.19",
-    "@rljson/io": "0.0.78",
+    "@rljson/io": "0.0.79",
     "@rljson/json": "0.0.23",
-    "@rljson/network": "0.0.20",
+    "@rljson/network": "0.0.23",
     "@rljson/rljson": "0.0.81"
   },
   "pnpm": {

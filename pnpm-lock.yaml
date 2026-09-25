@@ -16,20 +16,20 @@ importers:
         specifier: 0.0.26
         version: 0.0.26
       '@rljson/db':
-        specifier: 0.0.44
-        version: 0.0.44
+        specifier: 0.0.45
+        version: 0.0.45
       '@rljson/hash':
         specifier: 0.0.19
         version: 0.0.19
       '@rljson/io':
-        specifier: 0.0.78
-        version: 0.0.78
+        specifier: 0.0.79
+        version: 0.0.79
       '@rljson/json':
         specifier: 0.0.23
         version: 0.0.23
       '@rljson/network':
-        specifier: 0.0.20
-        version: 0.0.20
+        specifier: 0.0.23
+        version: 0.0.23
       '@rljson/rljson':
         specifier: 0.0.81
         version: 0.0.81
@@ -454,8 +454,8 @@ packages:
     resolution: {integrity: sha512-LN+HGv6vkhAOX5CmykUqrXtdaeUpqJJWSSJEWh00oGxmPmhNAJCHIeAVrmk1LGPszMsRU7fsCT6zxxQOCbJ/FA==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/db@0.0.44':
-    resolution: {integrity: sha512-wGz0ObiBi1anWecU+KutY9pUTcYTaExx60KZbxVAblRnAIqcB0F377Rg7VCdPimCGGv2BE32R2Pu46cuc8UzfA==}
+  '@rljson/db@0.0.45':
+    resolution: {integrity: sha512-y5mF0VvaOIocrA+OCUf2AyGTV9tjqeWLR4CtbE7tuZ2nDHTvpOlmojGobygphQcV2HmBX9q/JQF+x6Eev0tqGQ==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/dna-rljson@0.2.0':
@@ -470,8 +470,8 @@ packages:
     resolution: {integrity: sha512-1bBHWbzzaOE3ba2niyvmu4d9VYv5atLzzHDI2ka3AlHLyBDD8Q9qI/HCjimULJlprIGVeN4+jN8sth4CdnGxOQ==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/io@0.0.78':
-    resolution: {integrity: sha512-lvQTjI4EuAccedXCInaEA7rQB3GACJYh1rGuzSo+1mnuYn+bZ/gr0j1JfG2Yb/CzxOU2HkP0OVDA3nY/Ahmj6Q==}
+  '@rljson/io@0.0.79':
+    resolution: {integrity: sha512-yOTojQ8yMYB1rZcEo5c8PDkqsti5zPpPiCTyeW7jU4MoJotKUNmHFAPJev8+jDx8Go+BlVEh+xvx1FsfIayVWw==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/is-ready@0.0.17':
@@ -486,8 +486,8 @@ packages:
     resolution: {integrity: sha512-ViYo8zx0z/SomjpS2f+xK+tS7HTwZI1HzRarHpXO3spVjpaF+GKCa7HgDXoV/Wc+zsliDzo8wz7S5NFb0yZaow==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/network@0.0.20':
-    resolution: {integrity: sha512-/alRohiHNMEvhxfBZF+Q0MLrZX79yoxjwGlBRrEP8zf1Txz/9/vLWB9pk0EoUfYLXeElKQjHYT9ISULWxuDSPA==}
+  '@rljson/network@0.0.23':
+    resolution: {integrity: sha512-t1l90kpRT531emoSxT46X/lwIAS0DGhIqdi1SV3MukGtdy0fsCuzHXGmbLLpdZKT756qx3zSlpzOXa2papHBmw==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/rljson@0.0.81':
@@ -2406,10 +2406,10 @@ snapshots:
       '@rljson/json': 0.0.23
       '@rljson/rljson': 0.0.81
 
-  '@rljson/db@0.0.44':
+  '@rljson/db@0.0.45':
     dependencies:
       '@rljson/hash': 0.0.19
-      '@rljson/io': 0.0.78
+      '@rljson/io': 0.0.79
       '@rljson/json': 0.0.23
       '@rljson/rljson': 0.0.81
       '@rljson/validate': 0.0.11
@@ -2437,7 +2437,7 @@ snapshots:
     dependencies:
       '@rljson/json': 0.0.23
 
-  '@rljson/io@0.0.78':
+  '@rljson/io@0.0.79':
     dependencies:
       '@rljson/hash': 0.0.19
       '@rljson/is-ready': 0.0.17
@@ -2451,7 +2451,7 @@ snapshots:
 
   '@rljson/json@0.0.23': {}
 
-  '@rljson/network@0.0.20': {}
+  '@rljson/network@0.0.23': {}
 
   '@rljson/rljson@0.0.81':
     dependencies:

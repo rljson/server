@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`@rljson` dependencies lifted to the published releases**: `db` 0.0.45,
+  `io` 0.0.79, `network` 0.0.23. `db` and `io` move together — `db` declares
+  `io` itself, so lifting only one leaves a package running against a version
+  it never declared. `network` 0.0.20 was simply stale: the consuming app has
+  been pinning 0.0.23 through its overrides for some time, so the server's own
+  declaration described a stack nobody ran.
+
 ### Added
 - **The heartbeat carries the ancestry of the state it announces** (`p`, ONE-446).
   The server records the predecessors a ref's producer declared, alongside its
