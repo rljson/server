@@ -5,6 +5,7 @@
 // found in the LICENSE file in the root of this package.
 
 import { Bs, BsMem, BsMulti, BsMultiBs, BsPeer, BsServer } from '@rljson/bs';
+import { stateBeaconEvent } from '@rljson/db';
 import {
   Io,
   IoMem,
@@ -56,6 +57,19 @@ export interface ServerOptions {
    * Defaults to 60 000 (60 s). Set to 0 to disable automatic eviction.
    */
   refEvictionIntervalMs?: number;
+  /**
+   * Interval in ms of the **state beacon**: the state this hub holds, sent to
+   * every client on {@link stateBeaconEvent} — `r`, `o`, `c`, `seq` and `p`,
+   * exactly as a bootstrap carries them. Defaults to 0 (off).
+   *
+   * Not the bootstrap heartbeat, on purpose. A heartbeat is delivered through
+   * the connector into every agent's apply path, and a periodic one was
+   * measured net-harmful three times for that reason. The beacon goes on an
+   * event the connector does not listen to, so nothing is applied because of
+   * it: it only lets a client NOTICE that it disagrees with the hub for good —
+   * which is what `@rljson/fs-agent`'s anti-entropy needs, and all it needs.
+   */
+  stateBeaconMs?: number;
   /**
    * Per-consumer flow control for served reads. Omit for the defaults; the
    * hub's off-heap send queue is what this bounds.
@@ -290,6 +304,19 @@ export class Server extends BaseNode {
   private _latestRefOrigin: string | undefined;
 
   /**
+   * What {@link _latestRef} declared it descends from, as its producer sent it.
+   *
+   * The heartbeat is the only thing that reaches a client which lost a
+   * message, and without ancestry it cannot answer the one question such a
+   * client has to ask: *is the hub ahead of me, or is it holding a state I
+   * already left?* Refs are content hashes, so both look like "a ref I have
+   * seen before" — and guessing wrong either loses a deletion or brings a
+   * deleted file back. Forwarding the producer's own predecessors lets the
+   * receiver decide from the history instead of from the hash.
+   */
+  private _latestRefPredecessors: string[] | undefined;
+
+  /**
    * Identity this server announces under, stable for its lifetime.
    *
    * Receivers key their per-sender staleness on it. A restarted server is
@@ -336,6 +363,10 @@ export class Server extends BaseNode {
     Array<ReturnType<typeof setTimeout>>
   >();
   private _bootstrapHeartbeatTimer?: ReturnType<typeof setInterval>;
+
+  /** Interval of the state beacon, 0 when off. See {@link ServerOptions.stateBeaconMs}. */
+  private readonly _stateBeaconMs: number;
+  private _stateBeaconTimer?: ReturnType<typeof setInterval>;
 
   // Health check state
   private _healthCheckIntervalMs: number;
@@ -395,6 +426,7 @@ export class Server extends BaseNode {
     this._serveGate =
       this._backpressure.gate ??
       new ServeGate(options?.maxConcurrentServes ?? 4);
+    this._stateBeaconMs = options?.stateBeaconMs ?? 0;
     const evictionMs = options?.refEvictionIntervalMs ?? 60_000;
     /* v8 ignore if -- @preserve */
     if (evictionMs > 0) {
@@ -594,6 +626,7 @@ export class Server extends BaseNode {
 
     // Start heartbeat timer if configured and not already running
     this._startBootstrapHeartbeat();
+    this._startStateBeacon();
 
     // Start application-level health checks
     this._startHealthChecks();
@@ -764,6 +797,7 @@ export class Server extends BaseNode {
     this._sendBootstrap(ioDown);
     this._scheduleBootstrapRetries(clientId, ioDown);
     this._startBootstrapHeartbeat();
+    this._startStateBeacon();
     this._startHealthChecks();
 
     this._logger.info('Server', 'Broadcast-only socket added', {
@@ -874,6 +908,10 @@ export class Server extends BaseNode {
         if (this._latestRef !== ref) this._announceSeq++;
         this._latestRef = ref;
         this._latestRefOrigin = (payload as { o?: string })?.o;
+        const predecessors = (payload as { p?: unknown })?.p;
+        this._latestRefPredecessors = Array.isArray(predecessors)
+          ? predecessors.filter((r): r is string => typeof r === 'string')
+          : undefined;
 
         const p = payload as any;
 
@@ -1123,6 +1161,7 @@ export class Server extends BaseNode {
     // seed would clobber the client's more-recent tree.
     if (!this._latestRef) {
       this._latestRef = ref;
+      this._latestRefPredecessors = undefined;
       this._announceSeq++;
     }
     // Always mark the seeded ref as already-multicast so that stale
@@ -1209,12 +1248,19 @@ export class Server extends BaseNode {
    * @returns The payload both bootstrap paths send.
    */
   private _bootstrapPayload(ref: string): ConnectorPayload {
-    return {
+    const payload: ConnectorPayload = {
       o: this._latestRefOrigin ?? '__server__',
       r: ref,
       c: this._announceId,
       seq: this._announceSeq,
     };
+    // Only when the producer declared any: an absent field and an empty one
+    // mean the same thing to a receiver, and the absent one keeps a seeded
+    // or ancestry-free announcement byte-identical to what it always was.
+    if (this._latestRefPredecessors?.length) {
+      payload.p = [...this._latestRefPredecessors];
+    }
+    return payload;
   }
 
   private _sendBootstrap(ioDown: SocketWithClientId) {
@@ -1377,6 +1423,23 @@ export class Server extends BaseNode {
 
       ioDown.emit('__health:ping', { nonce });
     }
+  }
+
+  /** Starts the state beacon if configured and not already running. */
+  private _startStateBeacon() {
+    if (this._stateBeaconMs <= 0 || this._stateBeaconTimer) return;
+    const event = stateBeaconEvent(this._route.flat);
+    this._stateBeaconTimer = setInterval(() => {
+      if (!this._latestRef) return;
+      const payload = this._bootstrapPayload(this._latestRef);
+      for (const { ioDown } of this._clients.values()) {
+        ioDown.emit(event, payload);
+      }
+    }, this._stateBeaconMs);
+    this._stateBeaconTimer.unref();
+    this._logger.info('Server.Beacon', 'State beacon started', {
+      intervalMs: this._stateBeaconMs,
+    });
   }
 
   /**
@@ -1910,6 +1973,10 @@ export class Server extends BaseNode {
       clearInterval(this._bootstrapHeartbeatTimer);
       this._bootstrapHeartbeatTimer = undefined;
     }
+    if (this._stateBeaconTimer) {
+      clearInterval(this._stateBeaconTimer);
+      this._stateBeaconTimer = undefined;
+    }
 
     // Stop health check timer
     if (this._healthCheckTimer) {
@@ -1950,6 +2017,7 @@ export class Server extends BaseNode {
     // Clear bootstrap state
     this._latestRef = undefined;
     this._latestRefOrigin = undefined;
+    this._latestRefPredecessors = undefined;
 
     this._tornDown = true;
 

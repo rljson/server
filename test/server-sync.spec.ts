@@ -20,6 +20,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Client } from '../src/client';
 import { BufferedLogger } from '../src/logger';
+import { stateBeaconEvent } from '@rljson/db';
+
 import { Server, ServerOptions } from '../src/server';
 
 // .............................................................................
@@ -788,6 +790,68 @@ describe('Server sync protocol', () => {
       expect(bootstrapReceived[0].seq).toBe(1);
     });
 
+    // The heartbeat is what reaches a client that lost a message, and it has
+    // to say where the hub's state came from. Without the producer's ancestry
+    // a client cannot tell "the hub is ahead of me" from "the hub holds a
+    // state I already left" — both are a content hash it has seen before.
+    it('carries the ancestry its producer declared', async () => {
+      const route = Route.fromFlat('bootstrapAncestry');
+      const result = await createSyncServer(route, { causalOrdering: true });
+      server = result.server;
+      const events = syncEvents(route.flat);
+
+      const socketA = await addClient(server);
+      socketA.emit(route.flat, {
+        o: 'originA',
+        r: 'ref-2',
+        c: 'client-A',
+        seq: 1,
+        p: ['ref-1', 42 as unknown as string],
+      } as ConnectorPayload);
+
+      const seen: ConnectorPayload[] = [];
+      const socketB = new SocketMock();
+      socketB.connect();
+      socketB.on(events.bootstrap, (p: ConnectorPayload) => seen.push(p));
+      await server.addSocket(socketB);
+
+      // Only what is a ref survives: a malformed entry is not ancestry.
+      expect(seen[0].p).toEqual(['ref-1']);
+
+      // A later state that declares nothing must not inherit the old claim.
+      socketA.emit(route.flat, {
+        o: 'originA',
+        r: 'ref-3',
+        c: 'client-A',
+        seq: 2,
+      } as ConnectorPayload);
+      const socketC = new SocketMock();
+      socketC.connect();
+      const later: ConnectorPayload[] = [];
+      socketC.on(events.bootstrap, (p: ConnectorPayload) => later.push(p));
+      await server.addSocket(socketC);
+
+      expect(later[0].r).toBe('ref-3');
+      expect(later[0]).not.toHaveProperty('p');
+    });
+
+    it('announces a seeded ref without ancestry', async () => {
+      const route = Route.fromFlat('bootstrapSeededAncestry');
+      const result = await createSyncServer(route, { causalOrdering: true });
+      server = result.server;
+      const events = syncEvents(route.flat);
+      server.seedLatestRef('seeded');
+
+      const seen: ConnectorPayload[] = [];
+      const socketB = new SocketMock();
+      socketB.connect();
+      socketB.on(events.bootstrap, (p: ConnectorPayload) => seen.push(p));
+      await server.addSocket(socketB);
+
+      expect(seen[0].r).toBe('seeded');
+      expect(seen[0]).not.toHaveProperty('p');
+    });
+
     // A ref the SERVER seeded has no originating client, so it still announces
     // itself. The fallback matters: without it the origin would be undefined
     // and a receiver's self-filter could not compare against anything.
@@ -1017,6 +1081,92 @@ describe('Server sync protocol', () => {
       expect(heartbeatsB.length).toBeGreaterThanOrEqual(1);
       expect(heartbeatsA[0].r).toBe('heartbeat-ref');
       expect(heartbeatsB[0].r).toBe('heartbeat-ref');
+    });
+
+    // The state beacon: what the hub holds, on an event the connector does
+    // not listen to. It lets a client notice a lasting disagreement without
+    // putting anything into its apply path — which is what made a periodic
+    // heartbeat harmful.
+    describe('state beacon', () => {
+      it('is off unless configured', async () => {
+        const route = Route.fromFlat('beaconOff');
+        server = (await createSyncServer(route, { causalOrdering: true }))
+          .server;
+        const socketA = await addClient(server);
+        socketA.emit(route.flat, { o: 'originA', r: 'some-ref' });
+        const beacons: ConnectorPayload[] = [];
+        socketA.on(stateBeaconEvent(route.flat), (p: ConnectorPayload) =>
+          beacons.push(p),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(beacons).toHaveLength(0);
+      });
+
+      it('sends the hub state, with its ancestry, to every client', async () => {
+        const route = Route.fromFlat('beaconOn');
+        server = (
+          await createSyncServer(
+            route,
+            { causalOrdering: true },
+            { stateBeaconMs: 30 },
+          )
+        ).server;
+        const events = syncEvents(route.flat);
+        const socketA = await addClient(server);
+        const socketB = await addClient(server);
+
+        const beaconsB: ConnectorPayload[] = [];
+        const bootstrapsB: ConnectorPayload[] = [];
+        socketB.on(stateBeaconEvent(route.flat), (p: ConnectorPayload) =>
+          beaconsB.push(p),
+        );
+        socketB.on(events.bootstrap, (p: ConnectorPayload) =>
+          bootstrapsB.push(p),
+        );
+
+        // Nothing to announce before a state exists.
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        expect(beaconsB).toHaveLength(0);
+
+        socketA.emit(route.flat, {
+          o: 'originA',
+          r: 'ref-2',
+          c: 'client-A',
+          seq: 1,
+          p: ['ref-1'],
+        } as ConnectorPayload);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        expect(beaconsB.length).toBeGreaterThanOrEqual(1);
+        expect(beaconsB[0]).toMatchObject({
+          o: 'originA',
+          r: 'ref-2',
+          p: ['ref-1'],
+        });
+        expect(beaconsB[0].c).toMatch(/^__server__:/);
+        // …and never on the bootstrap channel the connector acts on.
+        expect(bootstrapsB).toHaveLength(0);
+      });
+
+      it('stops on tearDown', async () => {
+        const route = Route.fromFlat('beaconTearDown');
+        server = (
+          await createSyncServer(
+            route,
+            { causalOrdering: true },
+            { stateBeaconMs: 20 },
+          )
+        ).server;
+        const socketA = await addClient(server);
+        socketA.emit(route.flat, { o: 'originA', r: 'ref' });
+        const beacons: ConnectorPayload[] = [];
+        socketA.on(stateBeaconEvent(route.flat), (p: ConnectorPayload) =>
+          beacons.push(p),
+        );
+        await server.tearDown();
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        expect(beacons).toHaveLength(0);
+      });
     });
 
     it('should not start heartbeat when bootstrapHeartbeatMs is not set', async () => {
