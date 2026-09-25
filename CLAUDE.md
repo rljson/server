@@ -216,8 +216,8 @@ Also:
   on `stateBeaconEvent(route)` = `${route}:state`, which the connector does
   not listen to. Never send it on `events.bootstrap` or `events.ref`: a
   periodic announcement that enters the apply path was measured net-harmful.
-- **`stateBeaconEvent` is duplicated in `@rljson/fs-agent`** (it does not
-  depend on this package at runtime). Change both together.
+- **`stateBeaconEvent` comes from `@rljson/db`**, next to the Connector that
+  deliberately ignores it. Never spell the event name out here.
 
 ---
 

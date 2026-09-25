@@ -519,7 +519,7 @@ const syncConfig: SyncConfig = {
 ### State beacon (noticing a lasting disagreement)
 
 `stateBeaconMs` sends the same announcement — `r`, `o`, `c`, `seq`, `p` — to
-every client on its own event, `stateBeaconEvent(route)` (`${route}:state`).
+every client on its own event, `stateBeaconEvent(route)` from `@rljson/db` (`${route}:state`).
 Off by default.
 
 ```ts
