@@ -4,6 +4,13 @@
 
 ### Changed
 
+- **Dependencies lifted to the current releases**: `db` 0.0.47 (which carries
+  the gap-fill fix), `io` 0.0.80, `rljson` 0.0.83 — the set the newest `io`
+  itself declares. The `rljson` override moves with the dependency, so `bs`,
+  which still declares 0.0.81, does not put a second copy in the tree.
+
+### Changed
+
 - **`@rljson` dependencies lifted to the published releases**: `db` 0.0.45,
   `io` 0.0.79, `network` 0.0.23. `db` and `io` move together — `db` declares
   `io` itself, so lifting only one leaves a package running against a version
