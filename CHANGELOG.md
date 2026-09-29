@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.0.71]
+
+### Changed
+
+- **`@rljson/db` lifted to 0.0.48**, which bounds the RATE of gap-fill requests
+  where 0.0.70 bounded their SIZE. Each half is sufficient on its own to survive
+  the storm that killed the cloud EventHub; together a reconnect costs a couple
+  of 25 kB messages instead of 858 x 150 kB.
+- **Every `@rljson` dependency is mirrored in `pnpm.overrides`.** Only `rljson`
+  was pinned there, so a dependent's own exact pin decided what actually got
+  installed for everything else — the arrangement that left `@rljson/fs-agent`
+  serving blobs through a nested `bs` 0.0.26 while its manifest said 0.0.27.
+  `@rljson/dna-rljson` is deliberately NOT in the list: an override pins one
+  exact version for the whole tree, which is right for packages that pin each
+  other exactly and wrong for a `^`-ranged dev tool whose range the manifest
+  leaves open on purpose.
+
 ## [0.0.70]
 
 ### A gap-fill response no longer arrives as one oversized packet

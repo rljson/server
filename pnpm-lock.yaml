@@ -5,6 +5,12 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
+  '@rljson/bs': 0.0.27
+  '@rljson/db': 0.0.48
+  '@rljson/hash': 0.0.19
+  '@rljson/io': 0.0.80
+  '@rljson/json': 0.0.23
+  '@rljson/network': 0.0.23
   '@rljson/rljson': 0.0.83
   eslint-plugin-tsdoc>@typescript-eslint/utils: ^8.60.1
 
@@ -16,8 +22,8 @@ importers:
         specifier: 0.0.27
         version: 0.0.27
       '@rljson/db':
-        specifier: 0.0.47
-        version: 0.0.47
+        specifier: 0.0.48
+        version: 0.0.48
       '@rljson/hash':
         specifier: 0.0.19
         version: 0.0.19
@@ -443,8 +449,8 @@ packages:
     resolution: {integrity: sha512-qM01n2CaKI4i0tGHYV8mPcuovo2yz/OqYhnZvQcxLwFytsvUPf+fIa32GSMDPPTETKQ70GExNUFSneWyMdpNYw==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/db@0.0.47':
-    resolution: {integrity: sha512-zpBhcJNATkoRkFNl/3/VnlExV1XyNPlVtqSXiOMCcEKr3M+Fx33MItEJEacJCMSFTmIOUb3ZYKh3U6VuSUx1xw==}
+  '@rljson/db@0.0.48':
+    resolution: {integrity: sha512-GQdHFDBa7E3qHyyJ0M4wGZlQtK9GvRdZUgYqOf1k2HQC6kYl5pdfFM31TOJoTReQhq5o/UvhW6FKuMI/68JJhQ==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/dna-rljson@0.2.0':
@@ -2351,7 +2357,7 @@ snapshots:
       '@rljson/json': 0.0.23
       '@rljson/rljson': 0.0.83
 
-  '@rljson/db@0.0.47':
+  '@rljson/db@0.0.48':
     dependencies:
       '@rljson/hash': 0.0.19
       '@rljson/io': 0.0.80
