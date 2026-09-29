@@ -13,8 +13,8 @@ importers:
   .:
     dependencies:
       '@rljson/bs':
-        specifier: 0.0.26
-        version: 0.0.26
+        specifier: 0.0.27
+        version: 0.0.27
       '@rljson/db':
         specifier: 0.0.47
         version: 0.0.47
@@ -439,8 +439,8 @@ packages:
   '@oxc-project/types@0.133.0':
     resolution: {integrity: sha512-KzkdCd6Uxqnf6l3HOw1xfatAlUURA0g14cvBYFyJ5SaNOQbOUvBr9PKArcPcrNIeRsBdgcUzOGrhKveVpvOIGA==}
 
-  '@rljson/bs@0.0.26':
-    resolution: {integrity: sha512-LN+HGv6vkhAOX5CmykUqrXtdaeUpqJJWSSJEWh00oGxmPmhNAJCHIeAVrmk1LGPszMsRU7fsCT6zxxQOCbJ/FA==}
+  '@rljson/bs@0.0.27':
+    resolution: {integrity: sha512-qM01n2CaKI4i0tGHYV8mPcuovo2yz/OqYhnZvQcxLwFytsvUPf+fIa32GSMDPPTETKQ70GExNUFSneWyMdpNYw==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/db@0.0.47':
@@ -2345,7 +2345,7 @@ snapshots:
 
   '@oxc-project/types@0.133.0': {}
 
-  '@rljson/bs@0.0.26':
+  '@rljson/bs@0.0.27':
     dependencies:
       '@rljson/hash': 0.0.19
       '@rljson/json': 0.0.23

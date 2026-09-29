@@ -241,6 +241,23 @@ export class Server extends BaseNode {
    * `removeSocket` unregisters the very handlers `addSocket` registered.
    */
   private _gatedIoDown: Map<Socket, Socket> = new Map();
+  /**
+   * The same, for the BLOB channel.
+   *
+   * **Blob serving was the one channel with no bound at all**, which is the
+   * channel that moves the largest payloads in the system. Rows were gated
+   * from the day the gate existed; blobs went out raw beside them, and the
+   * asymmetry is invisible at a glance because both lines sit together in
+   * `_refreshServers`.
+   *
+   * Measured on the cloud EventHub, 2026-09-29: 136 MB resident while idle,
+   * 1 194 MB nine seconds later, of which 487 MB was ArrayBuffers that never
+   * fell — ten concurrent blob reads, each materialised in full before a byte
+   * reached a socket queue. The process died of `Ineffective mark-compacts`
+   * with full collections reclaiming 1.5 MB of 1020 MB, because none of it was
+   * garbage: it was all work in flight.
+   */
+  private _gatedBsDown: Map<Socket, Socket> = new Map();
   /** Flow-control settings applied to every consumer. */
   private readonly _backpressure: BackpressureOptions;
   /**
@@ -1835,7 +1852,28 @@ export class Server extends BaseNode {
         });
         this._gatedIoDown.set(pending.ioDown, gated);
         await this._ioServer.addSocket(gated);
-        await this._bsServer.addSocket(pending.bsDown);
+
+        // **The same gate, deliberately.** A separate gate per channel would
+        // bound each and neither: the memory that kills a hub is the total of
+        // what it is materialising, and rows and blobs come out of the same
+        // heap. Sharing `_serveGate` makes `maxConcurrentServes` mean what it
+        // says — how many serves this process runs at once, of any kind.
+        const gatedBs = withBackpressure(pending.bsDown, {
+          ...this._backpressure,
+          gate: this._serveGate,
+          onThrottle: (waitedMs, queuedBytes) => {
+            this._logger.warn('Server.Bs', 'Consumer throttled', {
+              clientId,
+              waitedMs,
+              queuedBytes,
+              serving: this._serveGate.inFlight,
+              queuedRequests: this._serveGate.waiting,
+            });
+            this._backpressure.onThrottle?.(waitedMs, queuedBytes);
+          },
+        });
+        this._gatedBsDown.set(pending.bsDown, gatedBs);
+        await this._bsServer.addSocket(gatedBs);
       }
 
       this._pendingSockets = [];
@@ -1922,7 +1960,12 @@ export class Server extends BaseNode {
       this._gatedIoDown.delete(client.ioDown);
     }
     if (client.bs) {
-      this._bsServer.removeSocket(client.bsDown);
+      // The wrapper, not the raw socket: `removeSocket` has to unregister the
+      // very handlers `addSocket` registered, exactly as on the io side.
+      this._bsServer.removeSocket(
+        this._gatedBsDown.get(client.bsDown) ?? client.bsDown,
+      );
+      this._gatedBsDown.delete(client.bsDown);
     }
 
     // Remove peers from multi arrays

@@ -161,4 +161,38 @@ describe('Server — relayed re-announcements', () => {
     expect(warned[0]).toHaveProperty('waitedMs');
     expect(warned[0]).toHaveProperty('queuedBytes');
   });
+
+  it('gates BLOB serving too, on the same gate as rows', async () => {
+    // Blobs were the one channel with no bound at all — and the channel that
+    // moves the largest payloads. `_refreshServers` gated `ioDown` and handed
+    // `bsDown` to the blob server raw, two lines apart, which is why nobody
+    // saw it. On the cloud EventHub that was 487 MB of ArrayBuffers that never
+    // fell while the heap climbed to 926 MB and the process died of
+    // `Ineffective mark-compacts` reclaiming 1.5 MB of 1020 MB — none of it
+    // garbage, all of it work in flight.
+    //
+    // The same gate as rows, not a second one: the memory that kills a hub is
+    // the total of what it is materialising, and both come out of one heap.
+    const areas: string[] = [];
+    (
+      server as unknown as {
+        _logger: { warn: (a: string, b: string, c: Record<string, unknown>) => void };
+      }
+    )._logger.warn = (area, message) => {
+      if (message === 'Consumer throttled') areas.push(area);
+    };
+
+    (
+      harness.clientSockets[0] as never as Record<
+        string,
+        { emit: (e: string, a: unknown, cb: () => void) => void }
+      >
+    )['bsDown'].emit('blobExists', 'no-such-blob', () => {});
+
+    // Waiting on the throttle log rather than on the acknowledgement: what is
+    // under test is that the request passed through the gate at all, and this
+    // fixture's BsMulti has no readable member to answer it.
+    await vi.waitUntil(() => areas.length > 0, { timeout: 2000, interval: 20 });
+    expect(areas, 'a blob request was served with no bound').toContain('Server.Bs');
+  });
 });

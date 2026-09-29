@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.0.69]
+
+### Blob serving is bounded
+
+`_refreshServers` gated `ioDown` with `withBackpressure` and handed `bsDown` to
+the blob server raw, two lines apart. Rows were bounded from the day the gate
+existed; blobs — the channel that moves the largest payloads in the system — went
+out beside them with no limit at all, and the asymmetry is invisible at a glance
+because both lines sit together.
+
+Measured on the cloud EventHub on 2026-09-29: 136 MB resident while idle,
+1 194 MB nine seconds later, of which 487 MB was ArrayBuffers that never fell.
+The process died of `Ineffective mark-compacts`, full collections reclaiming
+1.5 MB of 1020 MB — none of it garbage, all of it work in flight.
+
+- `bsDown` is now wrapped with `withBackpressure`, sharing the **same**
+  `ServeGate` as `ioDown`. One gate deliberately: the memory that kills a hub is
+  the total of what it is materialising, and rows and blobs come out of one heap,
+  so `maxConcurrentServes` now means what it says — how many serves this process
+  runs at once, of any kind.
+- Throttling on the blob channel logs as `Server.Bs`.
+- `removeSocket` unregisters the wrapper rather than the raw socket, so the blob
+  CRUD listeners actually come off — the same bug the io side had.
+
+Pairs with `@rljson/bs` 0.0.27, where a blob read becomes a series of ranged
+pulls. Each pull passes this gate on its own, so the bound is now chunk-sized
+rather than blob-sized.
+
 ## [Unreleased]
 
 ### Changed
