@@ -42,6 +42,22 @@ import {
   SocketNamespaceBundle,
 } from './socket-bundle.ts';
 
+/**
+ * How many ref-log entries one gap-fill response carries.
+ *
+ * **The number that decides how much a single outbound packet weighs.** A full
+ * ref log is 1000 entries (`refLogSize`'s default) and serialises to 124 kB — or
+ * 154 kB when each entry carries one predecessor, which an ordinary linear
+ * history does. socket.io stringifies every packet it sends, once per receiver,
+ * so a whole-log answer is a 150 kB string built synchronously on the event loop.
+ *
+ * 200 keeps one message around 25-30 kB: comfortably under the 64 kB at which
+ * this became worth instrumenting, and few enough messages that a full catch-up
+ * is five packets rather than five thousand.
+ */
+export const GAP_FILL_BATCH_SIZE = 200;
+
+
 export type SocketWithClientId = Socket & { __clientId?: string };
 
 /**
@@ -1567,16 +1583,43 @@ export class Server extends BaseNode {
         (p) => p.seq != null && p.seq > req.afterSeq,
       );
 
-      const res: GapFillResponse = {
-        route: req.route,
-        refs,
-      };
-
       // Respond on the same client's ioDown
       const clientEntry = this._clients.get(clientId);
       /* v8 ignore if -- @preserve */
-      if (clientEntry) {
+      if (!clientEntry) return;
+
+      // **Several messages, not one.** The whole answer still goes out; what
+      // changes is that no single `emit` carries all of it.
+      //
+      // A full ref log — 1000 entries, the steady state of any long-lived hub —
+      // weighs 124 kB on the wire, and 154 kB once entries carry one predecessor
+      // each. socket.io serialises every outbound packet with `JSON.stringify`,
+      // once per receiver, so one answer of that size is one 150 kB string
+      // allocated synchronously. On 2026-09-29 the cloud EventHub did 858 of
+      // them in 18.2 seconds and died of `FATAL ERROR: Reached heap limit` with
+      // the heap at 990 MB — inside socket.io's encoder, where the serving gate
+      // cannot reach, because that gate wraps `socket.on` and this is `emit`.
+      //
+      // Batching rather than paging, deliberately: the receiver's handler reads
+      // `res.refs` and processes each entry independently, so N smaller
+      // responses are already indistinguishable from one large one to every
+      // client that exists. A cursor would need both ends to agree, and a plain
+      // CAP would silently drop the newest refs — the mistake the EventHub's own
+      // replay documents having made.
+      for (let at = 0; at < refs.length; at += GAP_FILL_BATCH_SIZE) {
+        const res: GapFillResponse = {
+          route: req.route,
+          refs: refs.slice(at, at + GAP_FILL_BATCH_SIZE),
+        };
         clientEntry.ioDown.emit(this._events.gapFillRes, res);
+      }
+      // An empty log still gets one answer: a client that asked must not be left
+      // waiting on a message that never comes.
+      if (refs.length === 0) {
+        clientEntry.ioDown.emit(this._events.gapFillRes, {
+          route: req.route,
+          refs: [],
+        });
       }
     });
   }

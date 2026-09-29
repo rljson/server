@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.0.70]
+
+### A gap-fill response no longer arrives as one oversized packet
+
+On 2026-09-29 the cloud EventHub died nine minutes after a deploy: **858
+oversized `JSON.stringify` calls in 18.2 seconds**, heap to 990 MB,
+`FATAL ERROR: Reached heap limit`, inside socket.io's **outbound** packet
+encoder. It began four seconds after a second hub joined a route that already
+had one.
+
+The serving gate added in 0.0.69 cannot reach that: `withBackpressure` wraps
+`socket.on` — inbound handlers — and this is `socket.emit` going out. So the
+size of what is emitted is the only thing left to bound.
+
+`_registerGapFillListener` answered every request with `_refLog.filter(...)` in a
+single message. Measured, not assumed:
+
+| ref log | predecessors/entry | wire size |
+| --- | --- | --- |
+| 500 | 0 | 62 kB |
+| 1000 | 0 | **124 kB** |
+| 500 | 1 | **77 kB** |
+| 1000 | 1 | **154 kB** |
+| 1000 | 3 | **203 kB** |
+
+1000 is `refLogSize`'s default, so that is the steady state of any long-lived
+hub, not a pathological case. socket.io stringifies every packet once per
+receiver, so one answer of that size is a 150 kB string built synchronously on
+the event loop.
+
+- **Added** `GAP_FILL_BATCH_SIZE` (200). The whole answer still goes out; no
+  single `emit` carries all of it. One message now weighs 25-30 kB.
+- Batching rather than paging, deliberately: the receiver reads `res.refs` and
+  processes each entry independently, so N smaller responses are already
+  indistinguishable from one large one to every client that exists. A cursor
+  would need both ends to agree; a plain cap would silently drop the newest
+  refs, which is the mistake the EventHub's own replay documents having made.
+- An empty log still gets exactly one answer, so a client that asked is never
+  left waiting on a message that never comes.
+
+The tests measure the wire bytes of each packet rather than trusting the shape,
+and assert that every ref still arrives in sequence — losing the newest half of
+a hub's history is the failure mode a bound invites.
+
+### Still open, in `@rljson/db`
+
+`_registerGapFillHandler` calls `_processIncoming(p)` for every ref in a
+response, with `fromBootstrap` defaulting to false — so a gap-filled ref is
+treated as a live announcement and can itself trigger another `gapFillReq`. The
+bootstrap handler passes `fromBootstrap = true` specifically to prevent that;
+gap-fill never did. That is the amplifier which turned a handful of reconnect
+gaps into 858 responses, and it is a separate change in a separate package.
+
 ## [0.0.69]
 
 ### Blob serving is bounded
