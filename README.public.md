@@ -412,11 +412,15 @@ const client = new Client(socket, io, bs, route, {
   peerInitTimeoutMs: 30_000,       // Peer handshake timeout (default: 30 s, 0 = disable)
   syncConfig,                      // Sync protocol config (default: undefined)
   clientIdentity: 'my-client-id',  // Stable client identity (default: auto-generated)
+  maxConcurrentServes: 4,          // Hub requests served at once (default: 4)
+  backpressure: {},                // Flow control for served reads (default: the hub's)
 });
 ```
 
-| Option              | Default    | Description                                                                                                                         |
-| ------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Option                | Default    | Description                                                                                                                         |
+| --------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `maxConcurrentServes` | 4          | How many of the hub's requests this client serves at once, rows and blobs together. The hub's own limit, applied to the workstation. |
+| `backpressure`        | hub's      | Flow control for those served reads (`highWaterMark`, `maxWaitMs`, `pollMs`, `onThrottle`, `serveTimeoutMs`). A wait is logged as `Hub throttled`. |
 | `logger`            | NoopLogger | Structured logger for lifecycle, traffic, and error events.                                                                         |
 | `peerInitTimeoutMs` | 30 000     | Maximum time `init()` waits for Io/Bs peers to initialize. Prevents hanging when the server is unreachable. Set to 0 to disable.    |
 | `syncConfig`        | undefined  | Sync protocol configuration (see below). Passed through to the Connector for enriched payloads.                                     |

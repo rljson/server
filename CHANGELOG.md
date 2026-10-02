@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.0.72]
+
+### The client gets the hub's brake (ONE-441)
+
+**What now works that did not.** A `Client` bounds what serving the hub costs
+its own machine. The hub pulls from a client's local stores through the
+upstream bridges — `IoPeerBridge` on `ioUp`, `BsPeerBridge` on `bsUp` — and
+both are now wrapped with `withBackpressure` and share **one** `ServeGate`, the
+same construction the hub uses on `ioDown`/`bsDown`. New `ClientOptions`:
+`maxConcurrentServes` (default 4, the hub's own) and `backpressure`. A wait is
+logged on `Client.Io` / `Client.Bs` as `Hub throttled`, with what was serving
+and what was queued.
+
+**What was wrong.** The hub has bounded its serving since ten concurrent
+backfills peaked it at ~10 GB; the client had nothing. Every request the hub
+sent up ran at once, each materialising its rows in a workstation's heap. That
+was harmless only as long as the hub did not pull hard — and the hub's own gate
+is exactly what lets it pull harder. Without this, a relieved hub would have
+moved its peak onto a workplace.
+
+**Measured** in `test/client-backpressure.spec.ts`: ten simultaneous hub reads
+against a client with a limit of 2 peak at 2 and are all answered; the control
+without a real limit peaks at 10. Without the change, three of the four tests
+fail.
+
+**No change in `@rljson/io` or `@rljson/bs`.** The bridges stay as they are;
+the brake sits in front of them, in this package, where the hub's already is.
+
 ## [0.0.71]
 
 ### Changed
