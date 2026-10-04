@@ -5,10 +5,10 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@rljson/bs': 0.0.27
-  '@rljson/db': 0.0.49
+  '@rljson/bs': 0.0.29
+  '@rljson/db': 0.0.51
   '@rljson/hash': 0.0.19
-  '@rljson/io': 0.0.81
+  '@rljson/io': 0.0.83
   '@rljson/json': 0.0.23
   '@rljson/network': 0.0.23
   '@rljson/rljson': 0.0.83
@@ -19,17 +19,17 @@ importers:
   .:
     dependencies:
       '@rljson/bs':
-        specifier: 0.0.27
-        version: 0.0.27
+        specifier: 0.0.29
+        version: 0.0.29
       '@rljson/db':
-        specifier: 0.0.49
-        version: 0.0.49
+        specifier: 0.0.51
+        version: 0.0.51
       '@rljson/hash':
         specifier: 0.0.19
         version: 0.0.19
       '@rljson/io':
-        specifier: 0.0.81
-        version: 0.0.81
+        specifier: 0.0.83
+        version: 0.0.83
       '@rljson/json':
         specifier: 0.0.23
         version: 0.0.23
@@ -445,12 +445,12 @@ packages:
   '@oxc-project/types@0.133.0':
     resolution: {integrity: sha512-KzkdCd6Uxqnf6l3HOw1xfatAlUURA0g14cvBYFyJ5SaNOQbOUvBr9PKArcPcrNIeRsBdgcUzOGrhKveVpvOIGA==}
 
-  '@rljson/bs@0.0.27':
-    resolution: {integrity: sha512-qM01n2CaKI4i0tGHYV8mPcuovo2yz/OqYhnZvQcxLwFytsvUPf+fIa32GSMDPPTETKQ70GExNUFSneWyMdpNYw==}
+  '@rljson/bs@0.0.29':
+    resolution: {integrity: sha512-DXVqDc9oeyxVF75XXVuRxHi9KLFIQbw/zVQNHRYSPAvu2gWVFfzodU9CQxbgYdmMJBR9efWMoNCfvE7lB2DMew==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/db@0.0.49':
-    resolution: {integrity: sha512-y7MxmBjX3b5NKNM70iV5+LV0VFndlj4fz9tD7oT7sYO9vL0QgGITQGLHTB2y7ouuJnBCu/dc4TRDOVwT3vQ+qw==}
+  '@rljson/db@0.0.51':
+    resolution: {integrity: sha512-Niim8VeW5j0sSsdUKzPVEt08NbmqCqeCrxGiq/qStwY4b6a3MgmT4v9GklDFvIv+FQ8D/oxbjRzMHOnjK2MVpg==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/dna-rljson@0.2.0':
@@ -461,8 +461,8 @@ packages:
     resolution: {integrity: sha512-1bBHWbzzaOE3ba2niyvmu4d9VYv5atLzzHDI2ka3AlHLyBDD8Q9qI/HCjimULJlprIGVeN4+jN8sth4CdnGxOQ==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/io@0.0.81':
-    resolution: {integrity: sha512-Cat2Gdcug4773ihQj7DS/DbtW1qsKhVGssK8sgsXbY3MZL3PlHRB5r8/6KzkN07eg/AbIjY8a12N5Eu4ssEqFg==}
+  '@rljson/io@0.0.83':
+    resolution: {integrity: sha512-qeonuNY/zZil8Z1VtFgZI8nioiyczW3mnF3GAOaVi5nMn1jMzXjlYrI6cRp5pQCL0c28zutUS+ChfB7+FXYQsQ==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/is-ready@0.0.19':
@@ -2351,16 +2351,16 @@ snapshots:
 
   '@oxc-project/types@0.133.0': {}
 
-  '@rljson/bs@0.0.27':
+  '@rljson/bs@0.0.29':
     dependencies:
       '@rljson/hash': 0.0.19
       '@rljson/json': 0.0.23
       '@rljson/rljson': 0.0.83
 
-  '@rljson/db@0.0.49':
+  '@rljson/db@0.0.51':
     dependencies:
       '@rljson/hash': 0.0.19
-      '@rljson/io': 0.0.81
+      '@rljson/io': 0.0.83
       '@rljson/json': 0.0.23
       '@rljson/rljson': 0.0.83
       '@rljson/validate': 0.0.12
@@ -2382,7 +2382,7 @@ snapshots:
     dependencies:
       '@rljson/json': 0.0.23
 
-  '@rljson/io@0.0.81':
+  '@rljson/io@0.0.83':
     dependencies:
       '@rljson/hash': 0.0.19
       '@rljson/is-ready': 0.0.19
