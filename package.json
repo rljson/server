@@ -53,10 +53,10 @@
     "vitest-dom": "^0.1.1"
   },
   "dependencies": {
-    "@rljson/bs": "0.0.28",
-    "@rljson/db": "0.0.50",
+    "@rljson/bs": "0.0.29",
+    "@rljson/db": "0.0.51",
     "@rljson/hash": "0.0.19",
-    "@rljson/io": "0.0.82",
+    "@rljson/io": "0.0.83",
     "@rljson/json": "0.0.23",
     "@rljson/network": "0.0.23",
     "@rljson/rljson": "0.0.83"
@@ -66,10 +66,10 @@
       "esbuild"
     ],
     "overrides": {
-      "@rljson/bs": "0.0.28",
-      "@rljson/db": "0.0.50",
+      "@rljson/bs": "0.0.29",
+      "@rljson/db": "0.0.51",
       "@rljson/hash": "0.0.19",
-      "@rljson/io": "0.0.82",
+      "@rljson/io": "0.0.83",
       "@rljson/json": "0.0.23",
       "@rljson/network": "0.0.23",
       "@rljson/rljson": "0.0.83",
