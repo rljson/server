@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.0.74]
+## [0.0.75]
 
 ### The client gets the hub's brake (ONE-441)
 
