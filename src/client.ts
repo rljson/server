@@ -79,10 +79,29 @@ export interface ClientOptions {
 
   /**
    * How many of the hub's requests this client serves at the same time, rows
-   * and blobs together. Default 4, the hub's own limit.
+   * and blobs together. When omitted: `SL_CLIENT_MAX_SERVES` from the
+   * environment if it is a positive number, else 4, the hub's own limit.
    */
   maxConcurrentServes?: number;
 }
+
+/**
+ * The serving limit a client starts with when the caller passes none.
+ *
+ * An application embeds `Client` in several places and none of them exposes
+ * this option, so after a release every workstation would sit at 4 with no way
+ * to change it short of a new build. `SL_CLIENT_MAX_SERVES` is that way —
+ * set per machine, like the other `SL_*` switches. Anything that is not a
+ * positive number falls back to 4 rather than to "unlimited" or "none".
+ * @param env - The environment to read.
+ * @returns The limit.
+ */
+export const clientMaxServes = (
+  env: Record<string, string | undefined> = process.env,
+): number => {
+  const n = Number(env['SL_CLIENT_MAX_SERVES']);
+  return Number.isInteger(n) && n > 0 ? n : 4;
+};
 
 export class Client extends BaseNode {
   private _ioMultiIos: IoMultiIo[] = [];
@@ -158,7 +177,9 @@ export class Client extends BaseNode {
     this._ownsStores = options?.ownsStores ?? true;
     this._peerInitTimeoutMs = options?.peerInitTimeoutMs ?? 30_000;
     this._backpressure = options?.backpressure ?? {};
-    this._serveGate = new ServeGate(options?.maxConcurrentServes ?? 4);
+    this._serveGate = new ServeGate(
+      options?.maxConcurrentServes ?? clientMaxServes(),
+    );
 
     this._logger.info('Client', 'Constructing client', {
       hasRoute: !!this._route,

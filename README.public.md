@@ -419,7 +419,7 @@ const client = new Client(socket, io, bs, route, {
 
 | Option                | Default    | Description                                                                                                                         |
 | --------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `maxConcurrentServes` | 4          | How many of the hub's requests this client serves at once, rows and blobs together. The hub's own limit, applied to the workstation. |
+| `maxConcurrentServes` | 4          | How many of the hub's requests this client serves at once, rows and blobs together. When omitted, `SL_CLIENT_MAX_SERVES` from the environment (a positive whole number), else 4 — the hub's own limit. |
 | `backpressure`        | hub's      | Flow control for those served reads (`highWaterMark`, `maxWaitMs`, `pollMs`, `onThrottle`, `serveTimeoutMs`). A wait is logged as `Hub throttled`. |
 | `logger`            | NoopLogger | Structured logger for lifecycle, traffic, and error events.                                                                         |
 | `peerInitTimeoutMs` | 30 000     | Maximum time `init()` waits for Io/Bs peers to initialize. Prevents hanging when the server is unreachable. Set to 0 to disable.    |

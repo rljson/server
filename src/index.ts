@@ -4,7 +4,7 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-export { Client } from './client.ts';
+export { Client, clientMaxServes } from './client.ts';
 export type { ClientOptions } from './client.ts';
 export { FileLogger } from './file-logger.ts';
 export type { FileLoggerOptions } from './file-logger.ts';

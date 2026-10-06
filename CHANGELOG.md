@@ -28,6 +28,13 @@ fail.
 **No change in `@rljson/io` or `@rljson/bs`.** The bridges stay as they are;
 the brake sits in front of them, in this package, where the hub's already is.
 
+**A switch an application can reach: `SL_CLIENT_MAX_SERVES`.** An application
+embeds `Client` in several places and none of them passes
+`maxConcurrentServes`, so every workstation would have sat at 4 after the
+release with no way to change it short of a new build. When the option is
+omitted the limit now comes from `SL_CLIENT_MAX_SERVES` (a positive whole
+number), else 4; an explicit option still wins. Exported as `clientMaxServes`.
+
 ## [0.0.71]
 
 ### Changed

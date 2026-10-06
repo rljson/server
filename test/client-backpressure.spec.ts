@@ -8,7 +8,7 @@ import { BsMem } from '@rljson/bs';
 import { IoMem, SocketMock } from '@rljson/io';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { Client } from '../src/client.ts';
+import { Client, clientMaxServes } from '../src/client.ts';
 import { ServerLogger } from '../src/logger.ts';
 
 // .............................................................................
@@ -126,5 +126,83 @@ describe('Client — serving the hub under a brake', () => {
       expect.objectContaining({ queuedBytes: 1 }),
     );
     expect(onThrottle).toHaveBeenCalled();
+  });
+});
+
+// .............................................................................
+
+/**
+ * The switch an application can reach (ONE-441 review). `Client` is embedded
+ * in several places and none of them exposes `maxConcurrentServes`, so without
+ * this every workstation would sit at 4 after the release, unchangeable short
+ * of a new build.
+ */
+describe('clientMaxServes — SL_CLIENT_MAX_SERVES', () => {
+  it('takes a positive whole number from the environment', () => {
+    expect(clientMaxServes({ SL_CLIENT_MAX_SERVES: '12' })).toBe(12);
+  });
+
+  it('falls back to 4 when unset, and never to "none" or "unlimited"', () => {
+    expect(clientMaxServes({})).toBe(4);
+    for (const bad of ['', '0', '-3', '2.5', 'many', 'Infinity']) {
+      expect(clientMaxServes({ SL_CLIENT_MAX_SERVES: bad }), bad).toBe(4);
+    }
+  });
+
+  it('reads process.env by default', () => {
+    process.env['SL_CLIENT_MAX_SERVES'] = '7';
+    try {
+      expect(clientMaxServes()).toBe(7);
+    } finally {
+      delete process.env['SL_CLIENT_MAX_SERVES'];
+    }
+  });
+});
+
+describe('Client — the switch reaches the gate', () => {
+  afterEach(() => {
+    delete process.env['SL_CLIENT_MAX_SERVES'];
+  });
+
+  it('serves as many at once as SL_CLIENT_MAX_SERVES says, when no option is passed', async () => {
+    process.env['SL_CLIENT_MAX_SERVES'] = '3';
+    const io = new IoMem();
+    await io.init();
+    const socket = new SocketMock();
+    const client = new Client(socket, io, new BsMem());
+    await client.init();
+    let running = 0;
+    let peak = 0;
+    vi.spyOn(io, 'readRows').mockImplementation(async () => {
+      running++;
+      peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, 20));
+      running--;
+      return {} as never;
+    });
+    await Promise.all(
+      Array.from(
+        { length: 10 },
+        () =>
+          new Promise<void>((resolve) =>
+            socket.emit('readRows', { table: 't', where: {} }, () => resolve()),
+          ),
+      ),
+    );
+    await client.tearDown();
+    expect(peak).toBe(3);
+  });
+
+  it('lets an explicit option win over the environment', async () => {
+    process.env['SL_CLIENT_MAX_SERVES'] = '9';
+    const io = new IoMem();
+    await io.init();
+    const client = new Client(new SocketMock(), io, new BsMem(), undefined, {
+      maxConcurrentServes: 2,
+    });
+    expect(
+      (client as unknown as { _serveGate: { _maxConcurrent: number } })
+        ._serveGate._maxConcurrent,
+    ).toBe(2);
   });
 });
