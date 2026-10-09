@@ -1531,10 +1531,11 @@ heartbeat did its damage. `tearDown()` clears the timer.
 
 ### Client-side integration
 
-The `Client` class accepts `syncConfig`, `clientIdentity`, and `peerInitTimeoutMs` in `ClientOptions`.
+The `Client` class accepts `syncConfig`, `clientIdentity`, `peerInitTimeoutMs`, `maxConcurrentServes` and `backpressure` in `ClientOptions`.
 
 - **`peerInitTimeoutMs`** (default 30 s, 0 = disable): Guards `IoPeer` and `BsPeer` initialization during `init()` with a `Promise.race`-based timeout. If the server is unreachable, `init()` rejects cleanly instead of hanging indefinitely. Uses the same `_withTimeout()` pattern as the server.
 - **`syncConfig`** + **`clientIdentity`**: When a route is provided, these are passed through to the `Connector` constructor, activating enriched payloads (sequence numbers, causal ordering, client identity) on the client side.
+- **`maxConcurrentServes`** + **`backpressure`** (ONE-441): the hub's brake, pointed the other way. A client also SERVES — the hub pulls from its local stores through the upstream `IoPeerBridge` (`ioUp`) and `BsPeerBridge` (`bsUp`). Both upstream sockets are wrapped with `withBackpressure` and share **one** `ServeGate` (default 4), for the hub's reason: rows and blobs come out of the same heap. Without it every request the hub sent up ran at once, so a hub relieved by its own gate would move its peak onto the workstation. A wait is logged on `Client.Io` / `Client.Bs` as `Hub throttled`.
 - **`tearDown()`**: Calls `connector.tearDown()` to remove all socket listeners before clearing internal references. This prevents leaked listeners that would keep the socket alive after the client is disposed.
 
 ## Future Considerations

@@ -9,6 +9,11 @@ import { Connector, Db } from '@rljson/db';
 import { Io, IoMulti, IoMultiIo, IoPeer, IoPeerBridge } from '@rljson/io';
 import { ClientId, Route, SyncConfig } from '@rljson/rljson';
 
+import {
+  BackpressureOptions,
+  ServeGate,
+  withBackpressure,
+} from './backpressure.ts';
 import { BaseNode } from './base-node.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
 import {
@@ -64,7 +69,39 @@ export interface ClientOptions {
    * error — it is a state somebody asked for.
    */
   ownsStores?: boolean;
+
+  /**
+   * Flow control for the reads this client SERVES — the hub pulling from this
+   * machine's local stores through the upstream bridges. Omit for the
+   * defaults, the same as the hub's.
+   */
+  backpressure?: BackpressureOptions;
+
+  /**
+   * How many of the hub's requests this client serves at the same time, rows
+   * and blobs together. When omitted: `SL_CLIENT_MAX_SERVES` from the
+   * environment if it is a positive number, else 4, the hub's own limit.
+   */
+  maxConcurrentServes?: number;
 }
+
+/**
+ * The serving limit a client starts with when the caller passes none.
+ *
+ * An application embeds `Client` in several places and none of them exposes
+ * this option, so after a release every workstation would sit at 4 with no way
+ * to change it short of a new build. `SL_CLIENT_MAX_SERVES` is that way —
+ * set per machine, like the other `SL_*` switches. Anything that is not a
+ * positive number falls back to 4 rather than to "unlimited" or "none".
+ * @param env - The environment to read.
+ * @returns The limit.
+ */
+export const clientMaxServes = (
+  env: Record<string, string | undefined> = process.env,
+): number => {
+  const n = Number(env['SL_CLIENT_MAX_SERVES']);
+  return Number.isInteger(n) && n > 0 ? n : 4;
+};
 
 export class Client extends BaseNode {
   private _ioMultiIos: IoMultiIo[] = [];
@@ -95,6 +132,18 @@ export class Client extends BaseNode {
   /** Whether `tearDown` may close the local stores. See `ClientOptions`. */
   private _ownsStores = true;
   private _peerInitTimeoutMs: number;
+  private _backpressure: BackpressureOptions;
+  /**
+   * Bounds what serving the hub costs THIS machine (ONE-441).
+   *
+   * The hub has had this since it peaked at ~10 GB serving ten backfills at
+   * once; the client had nothing. Every request the hub sent up the bridge ran
+   * at once, each materialising its rows in a workplace's heap, so a hub that
+   * pulls harder — relieved by its own gate — would simply move the peak onto
+   * the workstation. One gate for rows and blobs, for the hub's reason: they
+   * come out of the same heap.
+   */
+  private _serveGate: ServeGate;
 
   // Connection state
   private _isConnected: boolean = true;
@@ -127,6 +176,10 @@ export class Client extends BaseNode {
     this._clientIdentity = options?.clientIdentity;
     this._ownsStores = options?.ownsStores ?? true;
     this._peerInitTimeoutMs = options?.peerInitTimeoutMs ?? 30_000;
+    this._backpressure = options?.backpressure ?? {};
+    this._serveGate = new ServeGate(
+      options?.maxConcurrentServes ?? clientMaxServes(),
+    );
 
     this._logger.info('Client', 'Constructing client', {
       hasRoute: !!this._route,
@@ -408,7 +461,10 @@ export class Client extends BaseNode {
       });
 
       // Upstream: let the server pull from client local Io
-      const ioPeerBridge = new IoPeerBridge(this._localIo, sockets.ioUp);
+      const ioPeerBridge = new IoPeerBridge(
+        this._localIo,
+        this._gatedUpstream(sockets.ioUp, 'Client.Io'),
+      );
       ioPeerBridge.start();
       this._logger.info('Client.Io', 'Io peer bridge started (upstream)');
 
@@ -438,6 +494,35 @@ export class Client extends BaseNode {
   }
 
   /**
+   * Puts the hub's requests on an upstream channel under this client's
+   * backpressure and serving gate — the hub's own brake, pointed the other
+   * way.
+   * @param socket - The upstream socket a peer bridge serves on.
+   * @param channel - Log label: `Client.Io` or `Client.Bs`.
+   * @returns The socket to hand the bridge.
+   */
+  private _gatedUpstream(
+    socket: ReturnType<typeof normalizeSocketBundle>['ioUp'],
+    channel: string,
+  ): ReturnType<typeof normalizeSocketBundle>['ioUp'] {
+    return withBackpressure(socket, {
+      ...this._backpressure,
+      gate: this._serveGate,
+      // A throttled hub is the difference between a workstation with nothing
+      // to serve and one whose every handler is waiting in the gate.
+      onThrottle: (waitedMs, queuedBytes) => {
+        this._logger.warn(channel, 'Hub throttled', {
+          waitedMs,
+          queuedBytes,
+          serving: this._serveGate.inFlight,
+          queuedRequests: this._serveGate.waiting,
+        });
+        this._backpressure.onThrottle?.(waitedMs, queuedBytes);
+      },
+    });
+  }
+
+  /**
    * Builds the Bs multi with local and peer layers.
    */
   private async _setupBs() {
@@ -458,7 +543,10 @@ export class Client extends BaseNode {
         });
 
         // Upstream: let the server pull from client local Bs
-        const bsPeerBridge = new BsPeerBridge(this._localBs, sockets.bsUp);
+        const bsPeerBridge = new BsPeerBridge(
+          this._localBs,
+          this._gatedUpstream(sockets.bsUp, 'Client.Bs'),
+        );
         bsPeerBridge.start();
         this._logger.info('Client.Bs', 'Bs peer bridge started (upstream)');
       }
