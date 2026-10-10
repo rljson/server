@@ -1,6 +1,6 @@
 {
   "name": "@rljson/server",
-  "version": "0.0.75",
+  "version": "0.0.76",
   "description": "Rljson server description",
   "homepage": "https://github.com/rljson/server",
   "bugs": "https://github.com/rljson/server/issues",
@@ -54,12 +54,12 @@
   },
   "dependencies": {
     "@rljson/bs": "0.0.29",
-    "@rljson/db": "0.0.52",
+    "@rljson/db": "0.1.1",
     "@rljson/hash": "0.0.19",
-    "@rljson/io": "0.0.84",
+    "@rljson/io": "0.0.85",
     "@rljson/json": "0.0.23",
-    "@rljson/network": "0.0.23",
-    "@rljson/rljson": "0.0.83"
+    "@rljson/network": "0.0.24",
+    "@rljson/rljson": "0.0.86"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -67,12 +67,12 @@
     ],
     "overrides": {
       "@rljson/bs": "0.0.29",
-      "@rljson/db": "0.0.52",
+      "@rljson/db": "0.1.1",
       "@rljson/hash": "0.0.19",
-      "@rljson/io": "0.0.84",
+      "@rljson/io": "0.0.85",
       "@rljson/json": "0.0.23",
-      "@rljson/network": "0.0.23",
-      "@rljson/rljson": "0.0.83",
+      "@rljson/network": "0.0.24",
+      "@rljson/rljson": "0.0.86",
       "eslint-plugin-tsdoc>@typescript-eslint/utils": "^8.60.1"
     }
   },

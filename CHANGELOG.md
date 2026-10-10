@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.0.76]
+
+### One order for the fleet, from no clock
+
+**What now works that did not.** A hub can order the refs it relays without
+asking any clock. With `ServerOptions.stamp`, every relayed ref gets a
+`RefStamp` — `(domain, epoch, hub, n)` from `@rljson/rljson`, compared with
+`compareRefStamp`. The first stamping hub that relays a ref sets it, and no
+later one replaces it, so a ref that crosses a bridge keeps one stamp.
+
+- **Every receiver hears it**, on the forwarded payload. So do the ref log (and
+  with it every gap-fill), the `onRefArrived` context, the bootstrap and the
+  state beacon.
+- **The sender is told** on `${route}:stamp` (`StampPayload` `{ r, stamp }`),
+  because the fan-out skips it. It is told again when it announces a ref the
+  hub already relayed: the duplicate is not forwarded, but a sender announces
+  again exactly when it lacks the stamp.
+- **The epoch** is one more than the higher of the epoch in `stateFile` and
+  `minEpoch`, written at construction, so a restart takes the next one. A
+  carried stamp of this domain from this epoch or a later one moves the hub
+  above it. A `stateFile` that cannot be written fails the construction: an old
+  epoch would hand out duplicate stamps.
+- **Off by default.** Without `stamp` the server relays exactly as before. It
+  passes a carried stamp on unchanged and sends no `:stamp` notice.
+- **Added** `ServerOptions.stamp` and the `StampOptions` type.
+
+### Dependencies
+
+`@rljson/rljson` 0.0.86, `@rljson/io` 0.0.85, `@rljson/db` 0.1.1,
+`@rljson/network` 0.0.24.
+
 ## [0.0.75]
 
 ### The client gets the hub's brake (ONE-441)
