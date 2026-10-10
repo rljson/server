@@ -21,6 +21,8 @@ import {
   ConnectorPayload,
   GapFillRequest,
   GapFillResponse,
+  isRefStamp,
+  RefStamp,
   Route,
   SyncConfig,
   SyncEventNames,
@@ -34,6 +36,7 @@ import {
   withBackpressure,
 } from './backpressure.ts';
 import { BaseNode } from './base-node.ts';
+import { RefStamper, StampOptions } from './ref-stamper.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
 import { liveView } from './live-view.ts';
 import {
@@ -182,7 +185,25 @@ export interface ServerOptions {
     route: string;
     ref: string;
     sourceNodeId: string;
+    /**
+     * The ref's stamp: the one this server gave it, or — on a server that
+     * does not stamp — the one its payload carried. Absent when neither.
+     */
+    stamp?: RefStamp;
   }) => Promise<void> | void;
+
+  /**
+   * Stamp every ref this server relays, so the fleet shares one order that
+   * no clock decides — see `RefStamp` in `@rljson/rljson`.
+   *
+   * Off when omitted: the server relays exactly as before and writes no
+   * stamp. A payload that already carries a stamp is forwarded with it on
+   * either kind of server; a stamping server never replaces one.
+   *
+   * The sender of a ref is told its stamp on `${route}:stamp`, because the
+   * relay forwards a ref to everybody but its sender.
+   */
+  stamp?: StampOptions;
 }
 
 // .............................................................................
@@ -319,6 +340,9 @@ export class Server extends BaseNode {
 
   // Archival hook (EventHub etc.)
   private _onRefArrived?: ServerOptions['onRefArrived'];
+  private readonly _stamper?: RefStamper;
+  /** The stamp {@link _latestRef} was relayed with, keyed by that ref. */
+  private _latestRefStamp?: { ref: string; stamp: RefStamp };
 
   // Bootstrap state
   private _latestRef: string | undefined;
@@ -441,6 +465,7 @@ export class Server extends BaseNode {
     this._healthCheckTimeoutMs = options?.healthCheckTimeoutMs ?? 10_000;
     this._healthCheckMaxStrikes = options?.healthCheckMaxStrikes ?? 3;
     this._onRefArrived = options?.onRefArrived;
+    this._stamper = options?.stamp ? new RefStamper(options.stamp) : undefined;
 
     // Sync protocol initialization
     this._syncConfig = options?.syncConfig;
@@ -860,7 +885,10 @@ export class Server extends BaseNode {
    * syncConfig is provided.
    */
   private _multicastRefs = () => {
-    for (const [clientIdA, { ioUp: socketA }] of this._clients.entries()) {
+    for (const [
+      clientIdA,
+      { ioUp: socketA, ioDown: downA },
+    ] of this._clients.entries()) {
       socketA.on(this._route.flat, async (payload: ConnectorPayload) => {
         const ref = payload.r;
         const senderTenantId = (socketA as any).data?.tenantId as
@@ -908,6 +936,13 @@ export class Server extends BaseNode {
             ref,
             from: clientIdA,
           });
+          // Not relayed again, but its sender may never have heard its stamp:
+          // a sender re-announces exactly when it lacks one. A payload this
+          // server forwarded itself is an echo, not a sender.
+          const known = this._stamper?.stampOf(ref);
+          if (known && !(payload as { __origin?: string }).__origin) {
+            downA.emit(this._events.stamp, { r: ref, stamp: known });
+          }
           return;
         }
         if (senderId !== undefined && senderSeq !== undefined) {
@@ -959,6 +994,23 @@ export class Server extends BaseNode {
           return;
         }
 
+        // The stamp, before anything sees the ref, so the archive hook, the
+        // ref log and every receiver get the same one. A server that does not
+        // stamp still passes a carried stamp on.
+        const stamp = this._stamper
+          ? this._stamper.stampFor(ref, payload.stamp)
+          : isRefStamp(payload.stamp)
+            ? payload.stamp
+            : undefined;
+        const relayed: ConnectorPayload = stamp
+          ? { ...payload, stamp }
+          : payload;
+        if (stamp) this._latestRefStamp = { ref, stamp };
+        if (this._stamper && stamp) {
+          // Fan-out skips the sender, so it is told its stamp here.
+          downA.emit(this._events.stamp, { r: ref, stamp });
+        }
+
         // Archival hook — must succeed before fan-out
         if (this._onRefArrived) {
           try {
@@ -967,6 +1019,7 @@ export class Server extends BaseNode {
               route: this._route.flat,
               ref,
               sourceNodeId: clientIdA,
+              ...(stamp ? { stamp } : {}),
             });
           } catch (err) {
             this._logger.error(
@@ -981,7 +1034,7 @@ export class Server extends BaseNode {
 
         // Append to ref log (ring buffer) for gap-fill
         if (this._syncConfig) {
-          this._appendToRefLog(payload);
+          this._appendToRefLog(relayed);
         }
 
         // Count receivers (all OTHER clients with matching tenant scope)
@@ -1010,7 +1063,7 @@ export class Server extends BaseNode {
           if (receiverTenantId !== senderTenantId) continue;
 
           // clone and mark the forwarded payload with the origin to prevent loops
-          const forwarded = Object.assign({}, payload, {
+          const forwarded = Object.assign({}, relayed, {
             __origin: clientIdA,
           });
 
@@ -1292,6 +1345,9 @@ export class Server extends BaseNode {
     // or ancestry-free announcement byte-identical to what it always was.
     if (this._latestRefPredecessors?.length) {
       payload.p = [...this._latestRefPredecessors];
+    }
+    if (this._latestRefStamp?.ref === ref) {
+      payload.stamp = this._latestRefStamp.stamp;
     }
     return payload;
   }

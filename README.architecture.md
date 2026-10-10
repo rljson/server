@@ -179,6 +179,8 @@ The `Server` class acts as a central coordination point that:
 
 **Relay mode (`disableLocalCache: true`):** When the `disableLocalCache` option is set, the server omits the local IoMem/BsMem from its IoMulti/BsMulti stacks. In this mode the server reads all data exclusively from connected client peers, acting as a pure relay without caching any data locally. This is useful for memory-constrained deployments where the server should not retain copies of client data.
 
+**Stamping (`stamp`):** With `ServerOptions.stamp`, a `RefStamper` gives each relayed ref a `RefStamp` `(domain, epoch, hub, n)` before anything else sees the ref, so the `onRefArrived` hook, the ref log (and with it every gap-fill), the forwarded payloads, the bootstrap and the state beacon carry the same one. A payload that arrives with a stamp keeps it, and a ref relayed again keeps the stamp it got while the stamper remembers it (`REF_STAMPER_MEMORY`, 10 000 refs). The fan-out skips the sender, so the server tells it on `${route}:stamp` — also when it suppresses a duplicate announcement, unless the payload is its own forward (`__origin`). The epoch is one more than the higher of the epoch in `stateFile` and `minEpoch`, written at construction; a carried stamp of this domain from the same epoch or a later one moves the stamper above it and restarts `n`. Without `stamp`, a carried stamp is passed on unchanged and no `:stamp` notice is sent.
+
 **Data Flow Architecture:**
 
 ```text
