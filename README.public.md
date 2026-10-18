@@ -204,6 +204,7 @@ This is implemented with `IoMulti` and `BsMulti` internally, but the public API 
 - `logger` – the `ServerLogger` instance (defaults to `noopLogger`)
 - `ioPeerCount` – number of `IoPeer` entries currently in the Io read cascade (excludes the local cache slot); reflects reality after dead/orphaned-peer pruning, useful for asserting cascade size after connect/disconnect churn
 - `readableIds` – stable identifiers (`'local'`, a peer's `clientId`, or `'orphan'`) for every entry currently in the Io read cascade, in cascade order
+- `raiseStampEpoch(minEpoch)` – continues the stamps above an epoch this server's node heard as a client; returns the epoch now in use, `undefined` when the server does not stamp (see [Stamps](#stamps-one-order-for-the-fleet-from-no-clock))
 
 ## Example
 
@@ -582,6 +583,12 @@ const server = new Server(route, io, bs, {
   one moves the server above it, so the stamps it gives always order after every
   stamp it has relayed. A `stateFile` that cannot be written fails the
   construction: restarting at an old epoch would hand out duplicate stamps.
+- **Taking office later.** A node that starts its server before it becomes
+  hub would stamp in the epoch it took at start, older than the stamps it
+  heard as a client meanwhile. When it takes office it calls
+  `server.raiseStampEpoch(heard)` with the highest epoch it heard, and the
+  server continues above it. Nothing changes when the server already stamps
+  above that epoch; a server that does not stamp returns `undefined`.
 - **Without `stamp`** the server relays exactly as before. It writes no stamp
   and sends no `:stamp` notice, and it still passes a carried stamp on. An
   EventHub between domains is such a server.

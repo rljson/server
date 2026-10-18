@@ -76,6 +76,28 @@ describe('Server — stamping what it relays', () => {
     expect(bNotices).toEqual([]);
   });
 
+  it('stamps above the epoch its node heard once it takes office', async () => {
+    // Started at boot, in office later: the server is told the highest epoch
+    // its node heard meanwhile, and continues above it.
+    const { server, delivered, send } = await twoClients({ stamp: office });
+    await send({ o: 'a', r: 'ref-1' });
+
+    expect(server.raiseStampEpoch(4)).toBe(5);
+    await send({ o: 'a', r: 'ref-2' });
+
+    expect(delivered.map((p) => p.stamp)).toEqual([
+      { domain: 'office', epoch: 1, hub: 'hub-a', n: 1 },
+      { domain: 'office', epoch: 5, hub: 'hub-a', n: 1 },
+    ]);
+  });
+
+  it('has no epoch to raise when it does not stamp', async () => {
+    const { server, delivered, send } = await twoClients();
+    expect(server.raiseStampEpoch(4)).toBeUndefined();
+    await send({ o: 'a', r: 'ref-1' });
+    expect(delivered[0].stamp).toBeUndefined();
+  });
+
   it('tells the sender its stamp again when a re-announcement is suppressed', async () => {
     const { delivered, notices, send } = await twoClients({ stamp: office });
 

@@ -128,5 +128,36 @@ describe('RefStamper', () => {
       stamper.stampFor('r2', { domain: 'zoo', epoch: 99, hub: 'hub-z', n: 1 });
       expect(stamper.epoch).toBe(5);
     });
+
+    it('continues above an epoch its node heard as a client when it takes office', () => {
+      const file = stateFile();
+      const stamper = new RefStamper({ domain: 'office', hub: 'hub-b', stateFile: file });
+      stamper.stampFor('before');
+
+      expect(stamper.raiseEpoch(6)).toBe(7);
+      expect(stamper.stampFor('after')).toEqual({
+        domain: 'office',
+        epoch: 7,
+        hub: 'hub-b',
+        n: 1,
+      });
+      expect(persisted(file)).toEqual({ epoch: 7 });
+    });
+
+    it('moves above an epoch equal to its own', () => {
+      // Another hub's stamps in that epoch would otherwise order by hub id.
+      const stamper = new RefStamper({ domain: 'office', hub: 'hub-b', minEpoch: 2 });
+      expect(stamper.epoch).toBe(3);
+      expect(stamper.raiseEpoch(3)).toBe(4);
+    });
+
+    it('changes nothing when it already stamps above, or for an epoch that is not an integer', () => {
+      const stamper = new RefStamper({ domain: 'office', hub: 'hub-b', minEpoch: 4 });
+      stamper.stampFor('r1');
+      for (const epoch of [4, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(stamper.raiseEpoch(epoch)).toBe(5);
+      }
+      expect(stamper.stampFor('r2').n).toBe(2);
+    });
   });
 });

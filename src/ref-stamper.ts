@@ -103,12 +103,31 @@ export class RefStamper {
   }
 
   // ...........................................................................
+  // ...........................................................................
+  /**
+   * Continues above an epoch this hub has heard of without relaying it.
+   *
+   * The epoch is taken on construction, and a node can start its server long
+   * before it takes office: it would then stamp in an epoch older than the
+   * stamps it heard as a client meanwhile. Called when it takes office, with
+   * the highest epoch its client heard, this moves it above them. Nothing
+   * changes when it already is, or for an epoch that is not an integer.
+   * @param minEpoch - The highest epoch to continue above
+   * @returns The epoch this hub stamps in now
+   */
+  raiseEpoch(minEpoch: number): number {
+    if (Number.isSafeInteger(minEpoch) && minEpoch >= this._epoch) {
+      this._epoch = minEpoch + 1;
+      this._n = 0;
+      this._persist();
+    }
+    return this._epoch;
+  }
+
+  // ...........................................................................
   private _observe(stamp: RefStamp): void {
     if (stamp.domain !== this._options.domain) return;
-    if (stamp.epoch < this._epoch) return;
-    this._epoch = stamp.epoch + 1;
-    this._n = 0;
-    this._persist();
+    this.raiseEpoch(stamp.epoch);
   }
 
   private _remember(ref: string, stamp: RefStamp): void {

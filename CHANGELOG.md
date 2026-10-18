@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.0.77]
+
+### A hub that takes office later stamps after what the fleet has seen
+
+The epoch is taken when the server is constructed, and a node can start its
+server long before it becomes hub — the One Client starts one on every node
+at boot. Such a node stamped in an epoch older than the stamps it had heard
+as a client, so its new refs could order before the ones the previous hub
+relayed.
+
+- **Added** `server.raiseStampEpoch(minEpoch)`: called when the node takes
+  office, with the highest epoch it heard, the server continues above it and
+  writes the new epoch to `stateFile`. It returns the epoch now in use, or
+  `undefined` on a server that does not stamp, and changes nothing when the
+  server already stamps above `minEpoch`.
+- A carried stamp moves the server by the same rule as before; both now go
+  through one method.
+
 ## [0.0.76]
 
 ### One order for the fleet, from no clock
