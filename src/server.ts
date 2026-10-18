@@ -1228,6 +1228,22 @@ export class Server extends BaseNode {
   }
 
   /**
+   * Continues the stamps above an epoch this server's node heard as a client.
+   *
+   * A server stamps in the epoch it took on construction. A node that starts
+   * its server at boot and takes office later calls this when it does, with
+   * the highest epoch its client heard meanwhile, so the stamps it gives
+   * order after every stamp the fleet has seen. Nothing changes when the
+   * server is already above that epoch.
+   * @param minEpoch - The highest epoch to continue above
+   * @returns The epoch the server stamps in now; `undefined` on a server that
+   *   does not stamp
+   */
+  raiseStampEpoch(minEpoch: number): number | undefined {
+    return this._stamper?.raiseEpoch(minEpoch);
+  }
+
+  /**
    * Returns the latest ref tracked by the server (for bootstrap / diagnostics).
    */
   get latestRef(): string | undefined {
