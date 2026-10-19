@@ -32,3 +32,11 @@ Thumbs.db
 
 # Other
 *.lock  # (Optional: for ignoring package-lock.json or yarn.lock if you don't want to version them)
+
+# gg: the local ticket marker written by `gg one do create ticket`
+ticket.json
+.gg/publish_config.json
+.gg/publish_state.json
+.gg/gg-publish.json
+.gg/pubspec_overrides_backup.yaml
+.gg/pnpm_workspace_backup.yaml
