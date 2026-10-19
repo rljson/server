@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Releases go through gg
+
+**What changed for contributors.** The CI no longer publishes:
+`.github/workflows/publish.yml` is disabled, and a release happens only when
+the owner runs `gg one do publish`, which merges first and uploads only what
+`main` holds (`--merge-only` merges without a release). CLAUDE.md describes
+the whole workflow through gg — `gg one do create ticket`, `gg one do
+commit`, `gg one do push`, `gg one do publish`. The scripts gg replaces —
+`create-branch.js`, `push-branch.js`, `wait-for-pr.js`, `publish-to-npm.js`,
+`add-version-tag.js` — are removed, and CHANGELOG entries go under
+`## [Unreleased]` until gg names the version.
+
+**What was wrong.** The section that collected every release up to 0.0.68
+was still headed `## [Unreleased]`. gg keeps unreleased sections at the top
+and releases them, so the next `gg one do publish` would have shipped those
+old entries as new. It is headed by the releases it describes now.
+
 ## [0.0.77]
 
 ### A hub that takes office later stamps after what the fleet has seen
@@ -182,7 +201,7 @@ Pairs with `@rljson/bs` 0.0.27, where a blob read becomes a series of ranged
 pulls. Each pull passes this gate on its own, so the bound is now chunk-sized
 rather than blob-sized.
 
-## [Unreleased]
+## [0.0.68] and earlier — released before every version had a heading
 
 ### Changed
 
