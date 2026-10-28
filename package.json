@@ -58,7 +58,7 @@
     "@rljson/hash": "0.0.19",
     "@rljson/io": "0.0.85",
     "@rljson/json": "0.0.23",
-    "@rljson/network": "0.0.24",
+    "@rljson/network": "0.0.25",
     "@rljson/rljson": "0.0.86"
   },
   "pnpm": {
@@ -71,7 +71,7 @@
       "@rljson/hash": "0.0.19",
       "@rljson/io": "0.0.85",
       "@rljson/json": "0.0.23",
-      "@rljson/network": "0.0.24",
+      "@rljson/network": "0.0.25",
       "@rljson/rljson": "0.0.86",
       "eslint-plugin-tsdoc>@typescript-eslint/utils": "^8.60.1"
     }

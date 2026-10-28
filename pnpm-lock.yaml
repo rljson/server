@@ -10,7 +10,7 @@ overrides:
   '@rljson/hash': 0.0.19
   '@rljson/io': 0.0.85
   '@rljson/json': 0.0.23
-  '@rljson/network': 0.0.24
+  '@rljson/network': 0.0.25
   '@rljson/rljson': 0.0.86
   eslint-plugin-tsdoc>@typescript-eslint/utils: ^8.60.1
 
@@ -34,8 +34,8 @@ importers:
         specifier: 0.0.23
         version: 0.0.23
       '@rljson/network':
-        specifier: 0.0.24
-        version: 0.0.24
+        specifier: 0.0.25
+        version: 0.0.25
       '@rljson/rljson':
         specifier: 0.0.86
         version: 0.0.86
@@ -473,8 +473,8 @@ packages:
     resolution: {integrity: sha512-ViYo8zx0z/SomjpS2f+xK+tS7HTwZI1HzRarHpXO3spVjpaF+GKCa7HgDXoV/Wc+zsliDzo8wz7S5NFb0yZaow==}
     engines: {node: '>=22.14.0'}
 
-  '@rljson/network@0.0.24':
-    resolution: {integrity: sha512-fNHKwSjCRxrtiFnOApxjx3jE6OBCcNzxc4qAVVRMAe+jja+R7ifh5L+AO8CChmj+LZMbfOtNeTpCegee7tF51A==}
+  '@rljson/network@0.0.25':
+    resolution: {integrity: sha512-Z7f3XbwEtqTbW2At+NrTfUTGGIWTX6bmfWo/snhLH9OeXUa043YZPK9vatfLKdQ4g2QK1XMK6N/dJmd1+Vh7jw==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/rljson@0.0.86':
@@ -2394,7 +2394,7 @@ snapshots:
 
   '@rljson/json@0.0.23': {}
 
-  '@rljson/network@0.0.24': {}
+  '@rljson/network@0.0.25': {}
 
   '@rljson/rljson@0.0.86':
     dependencies:
