@@ -1,6 +1,24 @@
 # Changelog
 
-## [Unreleased]
+## [0.0.78]
+
+### One hub per site, whoever restarts
+
+`@rljson/network` 0.0.25. A node that rejoined a two-node site alone could
+stay a second hub for good, and a hub that restarted alone could leave its
+site with none, because its peers went on electing with the start time of the
+process that was gone. 0.0.25 announces a restarted peer again, probes it where
+it is now, signs its one-shot probes, and adds `probing.listen: false` for
+hosts that keep their own server on the hub port of every node. Nothing in
+this package changes; its suite runs against 0.0.25.
+
+### gg's generated version test runs
+
+`gg one do publish` writes a version file under `src/` together with a
+keep-in-sync test named `*_version.test.ts`. vitest ran only `*.spec.ts`, so
+that test never ran, the version file stayed uncovered, and the coverage gate
+failed the release PR — as it did for `@rljson/network` 0.0.25. The include
+now takes `*.test.ts` too.
 
 ### Releases go through gg
 
