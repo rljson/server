@@ -416,6 +416,7 @@ const client = new Client(socket, io, bs, route, {
   clientIdentity: 'my-client-id',  // Stable client identity (default: auto-generated)
   maxConcurrentServes: 4,          // Hub requests served at once (default: 4)
   backpressure: {},                // Flow control for served reads (default: the hub's)
+  peerReads: { nodeId, connect },  // Read from the senders of refs first (default: off)
 });
 ```
 
@@ -427,6 +428,8 @@ const client = new Client(socket, io, bs, route, {
 | `peerInitTimeoutMs` | 30 000     | Maximum time `init()` waits for Io/Bs peers to initialize. Prevents hanging when the server is unreachable. Set to 0 to disable.    |
 | `syncConfig`        | undefined  | Sync protocol configuration (see below). Passed through to the Connector for enriched payloads.                                     |
 | `clientIdentity`    | undefined  | Stable client identity passed to the Connector. Auto-generated when `syncConfig.includeClientIdentity` is true and this is omitted. |
+| `nodeId`            | undefined  | The node this client belongs to; told to the hub on every connect (`peerReadEvents.hello`). Defaults to `peerReads.nodeId`. |
+| `peerReads`         | off        | Read announced data from the node that sent it before asking the hub — see [Peer reads](#peer-reads). |
 
 ## Sync protocol
 
@@ -626,6 +629,7 @@ The main message transmitted between Connector and Server. Sent on event `${rout
 | `p`     | `InsertHistoryTimeId[]` | ❌        | `causalOrdering`        | Causal predecessor timeIds                           |
 | `cksum` | `string`                | ❌        | —                       | Content checksum for ACK verification                |
 | `stamp` | `RefStamp`              | ❌        | `ServerOptions.stamp`   | Where the first stamping hub placed the ref in its relay order; kept by every later server |
+| `src`   | `string`                | ❌        | the sender's hello      | Node id of the connection the hub received the ref from; set by the hub only — see [Peer reads](#peer-reads) |
 
 **Minimal** (backward-compatible, no SyncConfig):
 
@@ -781,81 +785,234 @@ await server.removeSocket(clientIds[0]);
 
 ## Self-Organizing Node
 
-The `Node` class bridges `@rljson/network` peer discovery with `Server`/`Client` role transitions. Every node runs the same code — on startup it discovers peers, elects a hub, and automatically assumes the correct role.
+`Node` is the whole of an rljson node — the same on every machine, whatever
+its role. It brings together the network (`@rljson/network`: discovery, hub
+election), a hub service for every route, and the routes this node takes part
+in.
+
+```text
+Node
+├── one port, open in every role   probes, hub connections, peer connections
+├── hub service (HubRoutes)        one Server per route, created on demand;
+│                                  takes route clients only while this node is hub
+└── route members                  per route: a client of the elected hub —
+                                   over loopback while this node is hub —
+                                   with local stores it serves to peers
+```
+
+The hub service never moves; only who connects to it does. When the network
+elects another hub, every member stops and starts again on the new hub's
+address. The local stores stay.
 
 ### Quick start
 
 ```ts
-import { Node } from '@rljson/server';
-import { Route } from '@rljson/rljson';
+import { ClientRoute, HubRoutes, Node } from '@rljson/server';
 
 const node = new Node(
   {
-    domain: 'my-app',
+    domain: 'office-sync',
     port: 3000,
-    route: Route.fromFlat('/sharedTree'),
+    // The hub service: routes it starts with, stores and options per route
+    hub: {
+      treeKeys: ['fileTree'],
+      createStores: async (treeKey) => ({ io: myRelayIo(treeKey), bs: myRelayBs(treeKey) }),
+      serverOptions: (treeKey) => ({ syncConfig }),
+    },
+    // The routes this node takes part in
+    members: [
+      new ClientRoute({
+        treeKey: 'fileTree',
+        openStores: async () => ({ io: localIo, bs: localBs }),
+        createAgent: async ({ client, socket, route }) => startMySync(client, socket, route),
+      }),
+    ],
+    peerReads: { timeoutMs: 1000 },   // optional
   },
   {
-    createHubTransport: async (port) => { /* start HTTP+Socket.IO server */ },
-    createClientTransport: async (hubAddress) => { /* connect to hub */ },
+    // The port: one HTTP + Socket.IO server, open in every role
+    createPortTransport: async (port) => myPortTransport(port),
+    // A route client's connection: handshake { treeKeys: [treeKey] }. Only
+    // members that connect through the node need it (ClientRoute); without it
+    // their start is refused.
+    connectHub: (address, { treeKey, signal }) => dial(address, { treeKeys: [treeKey] }, signal),
+    // A peer's connection: handshake { treeKeys: [treeKey], peerRead: true }
+    connectPeer: (address, { treeKey, signal }) => dial(address, { treeKeys: [treeKey], peerRead: true }, signal),
   },
 );
 
+node.on('role-changed', ({ current }) => { /* e.g. raise stamps on becoming hub */ });
+node.on('hub-changed', ({ current }) => { /* members moved to `current` */ });
 await node.start();
-
-// The node auto-discovers peers and assumes a role:
-node.on('ready', ({ role, client, server, socket }) => {
-  console.log(`Role: ${role}`);          // 'hub' or 'client'
-  console.log(`Server: ${server}`);      // Server instance (hub only)
-  console.log(`Client: ${client}`);      // Client instance (client only)
-  console.log(`Socket: ${socket}`);      // Socket to hub (client only)
-});
 ```
 
-### Data preservation across role transitions
+### The port
 
-The `Node` owns a single `IoMem`/`BsMem` pair, created once at `start()` and reused across all role transitions. When a role changes (e.g., hub → client → hub), the underlying storage is re-initialized without losing data — `IoMem.close()` only sets `_isOpen = false`, the data in memory is preserved.
+`createPortTransport(port)` returns a `PortTransport`:
 
-This means:
-- Data written while hub survives a transition to client
-- Data written while client survives a transition to hub
-- A re-elected hub still serves all previously stored blobs and tables
+- `accept(check)` — the node's gate. Refuse a connection whose handshake fails
+  it **before** accepting it (a Socket.IO middleware), so the client gets a
+  connect error and retries. The node accepts peers always and route clients
+  only while it is hub — a client that dials a node that is not hub fails fast
+  instead of syncing with nobody.
+- `onConnection(handler)` — every accepted connection with its handshake
+  `{ treeKeys?, peerRead? }`.
+- `close()`.
 
-### Agent lifecycle
+The port is the target of the network's probes too, so the node switches the
+network's own probe listener off (`probing.listen: false`).
 
-The `createAgent` factory in `NodeDeps` is called on every role transition. The returned `AgentHandle.stop()` is called before the next transition or when the node stops. This is how you wire application-level agents (e.g. `FsAgent`) without creating circular dependencies:
+### Route members
 
-```ts
-const node = new Node(config, {
-  createHubTransport: ...,
-  createClientTransport: ...,
-  createAgent: async ({ role, client, server, socket }) => {
-    // Wire your agent here — called on every role transition
-    const stopSync = await startMySync(role, client, server);
-    return { stop: () => stopSync() };
-  },
-});
-```
+A member is a `RouteMember`: `start(context)`, `stop()`, `servePeer(socket)`,
+`close()`. Two come with the package:
 
-The Node serializes transitions — a new transition waits for the previous one to complete, ensuring agents are always stopped cleanly.
+- **`ClientRoute`** — in this process: a `Client` over local stores opened once,
+  an optional agent on it, and a `PeerReadServer` over the same stores. The
+  client is built without a route — the agent owns the route's connector — and
+  says hello with the node id.
+- **`WorkerRoute`** — in a worker (a child process): `launch(context)` starts
+  it with the hub address, node id and a channel tag; it returns
+  `{ channel, exited, stop() }`. The worker connects to the hub itself and calls
+  `serveWorkerRoute({ channel: process, tag, io, bs })`: peers are served through
+  the channel from the stores the worker owns, and the worker resolves peers
+  through the parent; `stats` counts what it served. A worker that exits on
+  its own is started again after
+  `respawnMs`. Spawn it with `serialization: 'advanced'`, so Buffers cross the
+  channel as such.
 
-Errors in `createAgent` or `agentHandle.stop()` are caught and logged — they never crash the node. Similarly, transport factory failures degrade connectivity but leave the node functional locally.
+### Following the hub
+
+- Members move on every role, hub or topology change, after
+  `reconnectDelayMs` (1500 ms), one move at a time.
+- A member whose start fails is started again after `retryMs` (3000 ms) while
+  the hub stays the same.
+- A drift check (`driftCheckMs`, 30 000 ms) moves members an event left behind.
+- **Alone** (`aloneHubMs`, 12 000 ms): the network elects nobody without
+  peers to probe. A node that knows no peer and no hub for that long acts as
+  its own hub — its members connect over loopback — and yields as soon as a
+  peer appears or the network names a hub. A move that fails at start is
+  tried again after `retryMs`.
+- **Hub self-check** (`hubSelfCheckMs`, 20 000 ms): a hub that no other node
+  reached while other nodes exist steps down — it excludes itself from the
+  election and hands the hub to the longest-running peer the probes reached.
+  Its own members do not count: they connect over loopback.
 
 ### API
 
-| Property / Method     | Description                                           |
-| --------------------- | ----------------------------------------------------- |
-| `node.start()`        | Begin peer discovery and role assignment              |
-| `node.stop()`         | Tear down current role and stop discovery             |
-| `node.role`           | Current role: `'hub'`, `'client'`, or `'unassigned'`  |
-| `node.io`             | IoMulti from active Server or Client                  |
-| `node.bs`             | BsMulti from active Server or Client                  |
-| `node.server`         | Server instance (when hub), else `undefined`          |
-| `node.client`         | Client instance (when client), else `undefined`       |
-| `node.socket`         | Socket to hub (when client), else `undefined`         |
-| `node.topology`       | Current network topology snapshot                     |
-| `node.on(event, cb)`  | Subscribe to `'ready'`, `'role-changed'`, `'stopped'` |
-| `node.off(event, cb)` | Unsubscribe                                           |
+| Property / Method      | Description                                                 |
+| ---------------------- | ----------------------------------------------------------- |
+| `node.start()`         | Identity, hub service, port, network; members follow the hub |
+| `node.stop()`          | Members, port, hub service, network                         |
+| `node.nodeId`          | This node's id (after the first start)                      |
+| `node.role`            | `'hub'`, `'client'` or `'unassigned'`                       |
+| `node.topology`        | The network topology right now                              |
+| `node.hubRoutes`       | The hub service: every route's `Server` (`servers`, `server(treeKey)`) |
+| `node.hubAddress`      | The hub the members connect to (`ip:port`)                  |
+| `node.members`         | The members by tree key                                     |
+| `node.closePort()`     | Drop off the network like a crash: port and hub service close |
+| `node.openPort()`      | Open them again                                             |
+| `node.addMember(m)`    | Take part in a route from now on; starts on the current hub |
+| `node.removeMember(k)` | Leave a route: its member stops and is closed               |
+| `node.networkManager`  | The network manager (manual hub assignment, exclusions)     |
+| `node.on/off(event)`   | `'role-changed'`, `'hub-changed'`, `'ready'` (every member runs on the hub — after a move, or once the last failed start succeeded on its retry), `'stopped'`   |
+
+### HubRoutes
+
+The hub service on its own: one `Server` per route, each with its own stores
+(`createStores(treeKey)`) and options (`serverOptions(treeKey)`). A connection
+names its route (`addSocket(socket, treeKeys)`); a route nobody configured is
+created on its first connection, once, however many connect at the same time.
+A connection that names no route, or several, is a legacy client and joins
+every route that exists (`legacySockets` counts them). `connectedNodes` lists
+the nodes connected to any route, as their clients said hello.
+
+## Peer reads
+
+The hub is the only node that serves data: every client pulls an announced
+ref's data from it, and the hub pulls it from whoever has it. Peer reads take
+that load off the hub. A client reads announced data from the node that **sent**
+the ref first, and asks the hub only for what that node cannot give in time.
+
+It is an optimization, never a duty. The hub stays the safe path: a peer that
+is gone, slow, silent, unknown or without the data costs a read at most
+`timeoutMs`, and the read then goes to the hub exactly as before.
+
+### How it works
+
+```text
+A writes, announces ref ──► hub relays { r, src: 'node-A' } ──► B, C, D
+B reads the ref's rows/blobs:
+  1. local store                          (as before)
+  2. A directly — peer read, one hop      (new; bounded by timeoutMs)
+  3. the hub, with its full cascade       (as before; the safe fallback)
+```
+
+- **The source travels with the ref.** A client with peer reads tells its hub
+  its node id on connect (`peerReadEvents.hello`). The hub names that node as
+  `src` on every ref it relays from the connection, and removes a `src` a
+  sender set itself.
+- **Sources are hints.** A read carries no ref, so a client asks the nodes that
+  recently sent it refs (`maxSourcesPerRead`, newest first, within
+  `sourceTtlMs`). A wrong hint costs a quick "don't have it".
+- **The peers sit inside the hub's slot.** `PeerFirstIo` / `PeerFirstBs` wrap
+  the client's Io/Bs to the hub: peers first, then the hub, whose answer —
+  rows, nothing, or an error — is returned unchanged. To the client's multi
+  it is the same member as before, so a failing peer never turns "not found"
+  into an error.
+- **A peer answers from its local stores only.** `PeerReadServer` serves the
+  node's own Io/Bs — the same `IoServer`/`BsServer` a hub uses — and never
+  forwards a question, so nothing cascades. It is read-only: writes, table
+  changes, deletes and closing are refused. It serves under backpressure and
+  a serving gate (`maxConcurrentServes`, default `SL_CLIENT_MAX_SERVES` or 4).
+- **A failing peer is skipped.** A timeout, a refused or broken connection
+  counts as a failure; the peer is skipped for `downMs`. A connection that
+  ends mid-read ends the read at once. A blob stream that loses its peer
+  finishes from the hub — blobs are content-addressed, so the bytes match.
+
+### With a Node
+
+Give the node bounds (`peerReads`) and a way to dial peers (`connectPeer`).
+Its port already takes peer connections in every role and hands them to the
+member of the route they name. Members get `context.peerReads`; a source
+resolves to an address through `NetworkManager.resolvePeerAddress` — never
+this node, never the hub, which is asked anyway.
+
+```ts
+const node = new Node(
+  { domain, port, hub, members, peerReads: { timeoutMs: 1000 } },
+  { createPortTransport, connectHub, connectPeer },
+);
+```
+
+### With a Client
+
+```ts
+const client = new Client(socket, io, bs, route, {
+  peerReads: {
+    nodeId: 'node-B',                       // sent to the hub
+    connect: async (nodeId, signal) => sock, // a socket to that node, or undefined
+  },
+});
+await client.init();
+client.peerReads?.stats; // { hits, misses, failures }
+```
+
+### Options
+
+| Option              | Default  | Meaning                                                    |
+| ------------------- | -------- | ---------------------------------------------------------- |
+| `timeoutMs`         | 1 000    | Longest a row read or blob lookup waits for the peers       |
+| `blobTimeoutMs`     | 10 000   | Longest one blob chunk (up to 4 MB) may take on a peer      |
+| `connectTimeoutMs`  | 3 000    | Longest opening a peer connection may take                  |
+| `sourceTtlMs`       | 60 000   | How long a node stays a source after its last ref           |
+| `maxSourcesPerRead` | 2        | Sources one read asks at once, newest first                 |
+| `maxConnections`    | 8        | Peer connections kept open; the least recently used goes    |
+| `idleMs`            | 60 000   | A peer connection unused this long is closed                |
+| `downMs`            | 30 000   | A failed peer is skipped this long                          |
+
+The serving side is bounded per member (`ClientRoute`/`WorkerRoute` option
+`serve`: `maxConcurrentServes`, `backpressure`).
 
 ## Architecture Overview
 

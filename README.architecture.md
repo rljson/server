@@ -83,42 +83,55 @@ With a single multiplexed socket (`ioUp === ioDown`) this is transparent. When t
 
 ## Core Components
 
-### 0. Node (Self-Organizing Orchestrator)
+### 0. Node (the whole of a node)
 
-The `Node` class sits above `Server` and `Client`, bridging `@rljson/network` topology events into role transitions. It:
-
-1. **Owns storage**: Creates a single `IoMem`/`BsMem` pair at `start()`, reused across all role transitions. Data survives hub↔client switches because `IoMem.close()` only flips `_isOpen` — the in-memory data is never cleared.
-2. **Reacts to topology**: Subscribes to `NetworkManager`'s `role-changed` event. On `'hub'`, tears down any Client and creates a Server. On `'client'`, tears down any Server and creates a Client.
-3. **Manages transport**: Uses injectable factories (`CreateHubTransport`/`CreateClientTransport`) to create the transport layer, keeping the Node class transport-agnostic.
-4. **Agent lifecycle**: An optional `createAgent` factory in `NodeDeps` is called on every `ready` event. The returned `AgentHandle.stop()` is called before the next role transition. This enables application-level wiring (e.g. FsAgent) without circular dependencies.
-5. **Serialized transitions**: Role transitions are queued — a new `role-changed` event waits for the previous transition to complete before starting. This prevents race conditions between teardown and setup.
-6. **Hub-changed reconnect** (v0.0.14): Subscribes to `NetworkManager`'s `hub-changed` event in addition to `role-changed`. When the hub changes but the node's role stays `client`, the node tears down its connection and reconnects to the new hub. This prevents split-brain scenarios where clients remain attached to a stale hub.
-7. **Clean socket teardown** (v0.0.14): `_tearDownCurrentRole()` explicitly calls `disconnect()` on client sockets before clearing the reference. This prevents orphaned Socket.IO connections from auto-reconnecting to the old hub.
-8. **Error resilience**: Errors in user-provided code (agent factories, transport factories) are caught and logged. The node continues functioning — a failed transport degrades connectivity but doesn't crash, a failed agent leaves the node's core intact.
+`Node` is the same on every machine, whatever its role:
 
 ```text
-┌─────────────────────────────────────────┐
-│ Node                                    │
-│  ┌──────┐ ┌──────┐                      │
-│  │IoMem │ │BsMem │ ← owned by Node      │
-│  └──┬───┘ └──┬───┘                      │
-│     │        │                           │
-│  ┌──▼────────▼───┐  ┌────────────────┐  │
-│  │ Server/Client │──│ HubTransport   │  │
-│  │ (role-based)  │  │ or ClientSocket│  │
-│  └───────┬───────┘  └────────────────┘  │
-│          │                               │
-│  ┌───────▼───────┐                       │
-│  │ AgentHandle   │  ← optional, wired    │
-│  │ (e.g. FsAgent)│    via createAgent    │
-│  └───────────────┘                       │
-│     ▲                                    │
-│     │ role-changed                       │
-│  ┌──┴───────────┐                        │
-│  │NetworkManager│                        │
-│  └──────────────┘                        │
-└─────────────────────────────────────────┘
+┌──────────────────────────── Node ─────────────────────────────┐
+│ NetworkManager   discovery, election, resolvePeerAddress       │
+│                                                                │
+│ port (PortTransport) ── open in every role, probe target       │
+│   ├─ route client  (treeKeys)        → hub service, while hub  │
+│   └─ peer          (treeKeys, peerRead) → member of the route  │
+│                                                                │
+│ hub service (HubRoutes)   one Server per route, on demand      │
+│                                                                │
+│ members (RouteMember)     per route this node takes part in    │
+│   ├─ ClientRoute   in process: Client + agent + PeerReadServer │
+│   └─ WorkerRoute   in a worker: peers served via ChannelSocket │
+└────────────────────────────────────────────────────────────────┘
 ```
+
+1. **The hub service never moves.** Every node runs it on its port from the
+   start; the gate (`PortTransport.accept`) lets route clients in only while
+   the network says this node is hub. A client that dials a node that is not
+   hub gets a connect error and retries, rather than syncing with nobody.
+2. **Members follow the hub.** On a role, hub or topology change — after
+   `reconnectDelayMs`, one move at a time — every member stops and starts on
+   the elected hub's address: `127.0.0.1:<port>` while this node is hub. A
+   member whose start fails is started again after `retryMs`; a drift check
+   (`driftCheckMs`) catches a missed event; a move to a hub that moved on is
+   aborted, members still connecting give up at once.
+3. **The store owner serves.** A peer connection goes to the member of its
+   route, which answers from its own local stores. A `WorkerRoute`'s stores
+   live in the worker, so the parent's `PeerReadServer` reads them over the
+   worker's channel (`ChannelSocket`, `IoPeer`/`BsPeer`) — never through a
+   second opening of the worker's database.
+4. **The hub knows who is connected.** Every client says hello with its node
+   id (`peerReadEvents.hello`; the hub also asks with `who`). The hub names
+   that node as `src` on relayed refs, and its self-check counts only other
+   nodes — its own members connect over loopback.
+5. **Hooks for the app.** `role-changed` (raise stamps on taking office),
+   `hub-changed` (members moved), `ready`, `stopped`; `hubRoutes.server(treeKey)`
+   gives the route's `Server` (its own stores, peer-store attachment) to a
+   bridge.
+
+`ChannelSocket` is an `@rljson/io` `Socket` over a message channel — a child
+process, `process` in the child, a worker port. Events with a callback are
+acknowledged, `Uint8Array`s arrive as Buffers (spawn with
+`serialization: 'advanced'`), a tag keeps several sockets and other traffic
+apart on one channel.
 
 ### 1. Client
 
@@ -245,6 +258,51 @@ Client A writes to table "cars":
 2. IoPeer is read-only, no write to server
 3. Local data now takes precedence
 ```
+
+### 3a. Peer reads (the hub as fallback, not as the only source)
+
+Without peer reads the hub serves every byte: a client pulls an announced
+ref's data from the hub, and the hub pulls it from whoever has it. With peer
+reads a client asks the node that sent the ref first.
+
+```text
+                 ┌──────── hub ────────┐
+   ref ──────────►  relays { r, src }  ├──────────► B
+   (from A)      └─────────▲───────────┘            │
+                           │ 3. fallback: full      │ 2. peer read, one hop,
+                           │    cascade             │    bounded (timeoutMs)
+                           │                        ▼
+                           └──────────────────────  A (PeerReadServer:
+                                                       local stores only)
+```
+
+| Part             | Where      | Role                                                                     |
+| ---------------- | ---------- | ------------------------------------------------------------------------ |
+| hello            | Client→hub | `peerReadEvents.hello` with the node id, on connect and every reconnect  |
+| `src`            | hub        | set on every relayed ref from a known connection; a sender's own is removed |
+| `PeerReads`      | client     | recent sources, a pool of peer connections, bounded reads that never throw |
+| `PeerFirstIo/Bs` | client     | wrap the hub's Io/Bs inside its multi slot: peers first, then the hub     |
+| `PeerReadServer` | every node | serves the local Io/Bs read-only via `IoServer`/`BsServer`, gated          |
+| `Node`           | every node | `servePeer` in every role; resolves a source to an address via network   |
+
+Three rules carry the design:
+
+1. **The peers live inside the hub's slot.** `IoMulti` judges an absence by
+   whether any member failed: a fetch by hash that found nothing while a
+   member threw is reported as an error, not as "not found". A peer member of
+   its own would turn every slow peer into such a failure. Inside the hub's
+   slot a peer can only make a read faster — its failure is invisible, and the
+   hub's answer is returned unchanged.
+2. **A peer answers from its local stores only.** Serving a multi would let a
+   question travel on from peer to peer; serving the local stores makes every
+   request one hop, so nothing cascades and nothing floods.
+3. **Only the hub names the source.** It knows which node a connection belongs
+   to (the hello); a `src` in an incoming payload is overwritten or removed.
+
+Bounds: a read waits at most `timeoutMs` for the peers (blob chunks
+`blobTimeoutMs`); a peer that times out, refuses or breaks off is skipped for
+`downMs`; a connection that ends mid-read ends the read at once; a blob stream
+that loses its peer finishes from the hub at the same offset.
 
 ### 4. BaseNode (shared helper)
 

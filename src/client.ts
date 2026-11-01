@@ -7,7 +7,7 @@
 import { Bs, BsMulti, BsMultiBs, BsPeer, BsPeerBridge } from '@rljson/bs';
 import { Connector, Db } from '@rljson/db';
 import { Io, IoMulti, IoMultiIo, IoPeer, IoPeerBridge } from '@rljson/io';
-import { ClientId, Route, SyncConfig } from '@rljson/rljson';
+import { ClientId, ConnectorPayload, Route, SyncConfig } from '@rljson/rljson';
 
 import {
   BackpressureOptions,
@@ -16,6 +16,9 @@ import {
 } from './backpressure.ts';
 import { BaseNode } from './base-node.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
+import { PeerFirstBs } from './peer-first-bs.ts';
+import { PeerFirstIo } from './peer-first-io.ts';
+import { peerReadEvents, PeerReads, PeerReadsOptions } from './peer-reads.ts';
 import {
   connectorDuplexSocket,
   normalizeSocketBundle,
@@ -83,6 +86,26 @@ export interface ClientOptions {
    * environment if it is a positive number, else 4, the hub's own limit.
    */
   maxConcurrentServes?: number;
+
+  /**
+   * The node this client belongs to. The client tells its hub on connect and
+   * after every reconnect (`peerReadEvents.hello`), so the hub knows which
+   * node a connection is: it names the node as `src` on the refs it relays,
+   * and can tell remote nodes from its own. Defaults to `peerReads.nodeId`.
+   */
+  nodeId?: string;
+
+  /**
+   * Read announced data from the node that sent it before asking the hub.
+   * Off when omitted.
+   *
+   * The client then tells the hub its node id, so the hub names it as `src`
+   * on the refs it relays; it remembers the `src` of the refs it receives;
+   * and its reads through the hub ask those nodes first. Whatever they
+   * cannot answer in time goes to the hub as before. Recording the sources
+   * needs a route.
+   */
+  peerReads?: PeerReadsOptions;
 }
 
 /**
@@ -145,6 +168,15 @@ export class Client extends BaseNode {
    */
   private _serveGate: ServeGate;
 
+  /** Reads from the senders of refs; undefined while peer reads are off. */
+  private _peerReads?: PeerReads;
+
+  /** The route whose relayed refs name the sources of peer reads. */
+  private _peerReadsRoute?: Route;
+
+  /** The node this client belongs to, told to the hub. */
+  private _nodeId?: string;
+
   // Connection state
   private _isConnected: boolean = true;
   private _disconnectCallbacks: Array<(reason: string) => void> = [];
@@ -180,6 +212,14 @@ export class Client extends BaseNode {
     this._serveGate = new ServeGate(
       options?.maxConcurrentServes ?? clientMaxServes(),
     );
+    this._nodeId = options?.nodeId ?? options?.peerReads?.nodeId;
+    if (options?.peerReads) {
+      this._peerReadsRoute = options.peerReads.route;
+      this._peerReads = new PeerReads({
+        logger: this._logger,
+        ...options.peerReads,
+      });
+    }
 
     this._logger.info('Client', 'Constructing client', {
       hasRoute: !!this._route,
@@ -243,6 +283,8 @@ export class Client extends BaseNode {
     }
     this._disconnectCallbacks = [];
     this._reconnectCallbacks = [];
+
+    await this._peerReads?.close();
 
     // Close Io — but only when these stores are ours to close.
     //
@@ -321,6 +363,14 @@ export class Client extends BaseNode {
       ...(this._ioPeer === undefined ? {} : { io: this._ioPeer }),
       ...(this._bsPeer === undefined ? {} : { bs: this._bsPeer }),
     };
+  }
+
+  /**
+   * Reads from the senders of refs — their sources, connections and stats.
+   * Undefined while peer reads are off.
+   */
+  get peerReads(): PeerReads | undefined {
+    return this._peerReads;
   }
 
   /**
@@ -435,10 +485,49 @@ export class Client extends BaseNode {
     };
     sockets.ioDown.on('__health:ping', healthHandler);
 
+    const stopPeerReads = this._registerPeerReadHandlers(sockets);
+
     this._connectionCleanup = () => {
       socket.off('disconnect', disconnectHandler);
       socket.off('connect', reconnectHandler);
       sockets.ioDown.off('__health:ping', healthHandler);
+      stopPeerReads();
+    };
+  }
+
+  /**
+   * Tells the hub this client's node — now and after every reconnect — and,
+   * with peer reads on, records the source of every ref the hub relays.
+   * @param sockets - The connection to the hub.
+   * @returns Removes the handlers again.
+   */
+  private _registerPeerReadHandlers(
+    sockets: SocketNamespaceBundle,
+  ): () => void {
+    const nodeId = this._nodeId;
+    const peerReads = this._peerReads;
+    const event = (this._peerReadsRoute ?? this._route)?.flat;
+
+    const hello = () => {
+      sockets.ioUp.emit(peerReadEvents.hello, { nodeId });
+    };
+    if (nodeId !== undefined) {
+      sockets.ioUp.on('connect', hello);
+      sockets.ioDown.on(peerReadEvents.who, hello);
+      hello();
+    }
+
+    const onRef = (payload: ConnectorPayload) => {
+      const src: unknown = payload.src;
+      if (typeof src === 'string' && src.length > 0) peerReads?.noteSource(src);
+    };
+    const recordSources = peerReads !== undefined && event !== undefined;
+    if (recordSources) sockets.ioDown.on(event, onRef);
+
+    return () => {
+      sockets.ioUp.off('connect', hello);
+      sockets.ioDown.off(peerReadEvents.who, hello);
+      if (recordSources) sockets.ioDown.off(event, onRef);
     };
   }
 
@@ -473,7 +562,9 @@ export class Client extends BaseNode {
       this._ioPeer = ioPeer;
 
       this._ioMultiIos.push({
-        io: ioPeer,
+        // The peers ask inside the hub's slot, never beside it: see
+        // PeerFirstIo.
+        io: this._peerReads ? new PeerFirstIo(ioPeer, this._peerReads) : ioPeer,
         dump: false,
         read: true,
         write: false,
@@ -556,7 +647,7 @@ export class Client extends BaseNode {
       this._bsPeer = bsPeer;
 
       this._bsMultiBss.push({
-        bs: bsPeer,
+        bs: this._peerReads ? new PeerFirstBs(bsPeer, this._peerReads) : bsPeer,
         read: true,
         write: false,
         priority: 2,

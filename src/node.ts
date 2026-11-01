@@ -4,8 +4,7 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import { Bs, BsMem } from '@rljson/bs';
-import { Io, IoMem } from '@rljson/io';
+import { NetworkManager, NodeIdentity } from '@rljson/network';
 import type {
   NetworkConfig,
   NetworkManagerOptions,
@@ -13,980 +12,999 @@ import type {
   NodeRole,
   RoleChangedEvent,
 } from '@rljson/network';
-import { NetworkManager } from '@rljson/network';
 import { Route } from '@rljson/rljson';
 
-import { Client, type ClientOptions } from './client.ts';
-import type { ServerLogger } from './logger.ts';
-import { noopLogger } from './logger.ts';
-import { Server, type ServerOptions } from './server.ts';
-import type { SocketLike } from './socket-bundle.ts';
+import { HubRoutes, HubRoutesOptions } from './hub-routes.ts';
+import { noopLogger, ServerLogger } from './logger.ts';
+import {
+  PeerReadBounds,
+  RouteMember,
+  RouteMemberContext,
+  RoutePeerReads,
+} from './route-member.ts';
+import { normalizeSocketBundle, SocketLike } from './socket-bundle.ts';
 
-// .............................................................................
-
+// #############################################################################
 /**
- * Transport handle returned by {@link CreateHubTransport}.
- *
- * Abstracts the "server side" of the transport layer so the Node class
- * can accept incoming connections without knowing whether Socket.IO,
- * WebSocket, or mock sockets are being used.
+ * What a connection to a node's port says about itself in its handshake.
  */
-export interface HubTransport {
-  /** Register a callback for incoming client connections. */
-  onConnection: (callback: (socket: SocketLike) => void) => void;
-  /** Shut down the transport (close HTTP server, etc.). */
-  close: () => Promise<void>;
+export interface PortHandshake {
+  /** The routes it names: one for a route client or a peer. */
+  treeKeys?: string[];
+
+  /** Whether it is a peer, reading this node's local stores. */
+  peerRead?: boolean;
 }
 
+// #############################################################################
 /**
- * Factory that creates a hub-side transport (e.g. HTTP + Socket.IO server).
- * Called when this node becomes the hub.
+ * A node's port: one server, open in every role, for hub connections and
+ * peer connections — and the target of the network's probes.
  */
-export type CreateHubTransport = (port: number) => Promise<HubTransport>;
+export interface PortTransport {
+  /**
+   * Sets the check every connection must pass before it is accepted. A
+   * refused connection gets a connect error, so its client retries.
+   * @param check - True to accept.
+   */
+  accept(check: (handshake: PortHandshake) => boolean): void;
 
+  /**
+   * Sets the handler of every accepted connection.
+   * @param handler - Gets the connection and its handshake.
+   */
+  onConnection(
+    handler: (socket: SocketLike, handshake: PortHandshake) => void,
+  ): void;
+
+  /** Closes the port and every connection on it. */
+  close(): Promise<void>;
+}
+
+// #############################################################################
 /**
- * Factory that creates a client-side socket to connect to the hub.
- * Called when this node becomes a client.
- * @param hubAddress - The hub's address in `"ip:port"` format.
- * @param signal - Optional {@link AbortSignal}. When aborted, the factory
- *   should disconnect any in-progress socket and reject with an error.
- *   Implementations that ignore the signal still work — the Node will
- *   simply wait for the promise to settle before proceeding.
+ * Opens a node's port.
+ * @param port - The port.
  */
-export type CreateClientTransport = (
-  hubAddress: string,
-  signal?: AbortSignal,
+export type CreatePortTransport = (port: number) => Promise<PortTransport>;
+
+// #############################################################################
+/**
+ * Opens a connection to another node's port for one route.
+ * @param address - `ip:port`.
+ * @param options - The route's tree key, and a signal that aborts when the
+ *   connection is no longer wanted.
+ */
+export type ConnectRoute = (
+  address: string,
+  options: { treeKey: string; signal: AbortSignal },
 ) => Promise<SocketLike>;
 
+// #############################################################################
 /**
- * Injectable dependencies for the Node class.
+ * What a {@link Node} needs from its app: the transport.
  */
 export interface NodeDeps {
-  /** Factory to create hub-side transport. */
-  createHubTransport: CreateHubTransport;
-  /** Factory to create client-side socket to hub. */
-  createClientTransport: CreateClientTransport;
-  /** Options passed to NetworkManager (e.g. mock probe function). */
-  networkManagerOptions?: NetworkManagerOptions;
+  /** Opens this node's port. */
+  createPortTransport: CreatePortTransport;
+
   /**
-   * Optional factory for application-level agents (e.g. FsAgent).
-   * Called on every `ready` event. The returned handle's `stop()`
-   * is called before the next role transition or on `node.stop()`.
+   * Opens a route client's connection to the hub. The handshake names the
+   * route: `{ treeKeys: [treeKey] }`. Only members that connect through the
+   * node need it — a `ClientRoute` does; a member that dials its hub on its
+   * own does not. Without it, a member asking for one is refused.
    */
-  createAgent?: CreateAgent;
+  connectHub?: ConnectRoute;
+
+  /**
+   * Opens a connection to a peer for peer reads. The handshake names the
+   * route and says it is a peer: `{ treeKeys: [treeKey], peerRead: true }`.
+   * Without it, this node serves peers but reads only from its hub.
+   */
+  connectPeer?: ConnectRoute;
+
+  /** Options of the network manager (probes, discovery layers). */
+  networkManagerOptions?: NetworkManagerOptions;
 }
 
+// #############################################################################
 /**
- * Configuration for a self-organizing Node.
+ * Configuration of a {@link Node}.
  */
 export interface NodeConfig {
-  /** Network domain for peer discovery. */
+  /** Network domain: which nodes find each other. */
   domain: string;
-  /** Port for this node's hub server / probing. */
+
+  /** This node's port, in every role. */
   port: number;
-  /** Data route for Server/Client sync. */
-  route: Route;
-  /** Full network configuration (broadcast, cloud, static, probing). */
-  network?: Partial<NetworkConfig>;
-  /** Options forwarded to the Server constructor. */
-  serverOptions?: ServerOptions;
-  /** Options forwarded to the Client constructor. */
-  clientOptions?: ClientOptions;
-  /** Logger shared across Node, Server, and Client. */
-  logger?: ServerLogger;
-  /** Directory for persistent node identity. */
-  identityDir?: string;
+
   /**
-   * Hub self-check timeout in milliseconds.
-   *
-   * After becoming hub, wait this long for at least one client to connect.
-   * If no clients connect and known peers exist in the network, the hub
-   * steps down and assigns another peer as hub.
-   *
-   * This prevents "phantom hubs" — nodes that win election and bind the
-   * port but cannot accept inbound connections (e.g. due to firewall,
-   * network profile, or NIC misconfiguration).
-   *
-   * Set to `0` to disable the self-check.
-   * Defaults to 20000 (20 seconds).
+   * Network configuration. The probe listener stays off: the port is this
+   * node's own server in every role, and it answers the probes.
+   */
+  network?: Partial<NetworkConfig>;
+
+  /** Where the node id is kept. */
+  identityDir?: string;
+
+  /** Logger of the node, its hub and its members. */
+  logger?: ServerLogger;
+
+  /**
+   * The hub service every node runs: the routes it starts with, their
+   * stores, their server options. It takes route clients only while this node
+   * is hub.
+   */
+  hub: Omit<HubRoutesOptions, 'logger'>;
+
+  /** The routes this node takes part in, one member each. */
+  members?: RouteMember[];
+
+  /**
+   * Peer reads: members read announced data from the node that sent it
+   * before asking the hub. Off when omitted, or without `connectPeer`.
+   */
+  peerReads?: PeerReadBounds;
+
+  /**
+   * After becoming hub, how long to wait for another node to connect before
+   * stepping down when other nodes exist. Default 20 000 ms; 0 is off.
    */
   hubSelfCheckMs?: number;
-}
 
-// .............................................................................
-
-/**
- * Context passed to the `ready` event and to {@link CreateAgent}.
- */
-export interface ReadyContext {
-  /** The node's current role. */
-  role: NodeRole;
-  /** The Client instance (defined when role is `'client'`). */
-  client?: Client;
-  /** The Server instance (defined when role is `'hub'`). */
-  server?: Server;
-  /** The socket used to connect to the hub (defined when role is `'client'`). */
-  socket?: SocketLike;
-}
-
-/**
- * Handle returned by {@link CreateAgent}.
- * Node calls `stop()` before every role transition and on `node.stop()`.
- */
-export interface AgentHandle {
   /**
-   * Optional flush hook called before `stop()` during role transitions.
-   * Implementations should capture the current filesystem/application
-   * state so that `_lastKnownRef` can be seeded into the next role.
-   * @returns The latest ref that represents the flushed state, or
-   *          undefined if nothing was flushed.
+   * How often to check that the members talk to the elected hub, in case an
+   * event was missed. Default 30 000 ms; 0 is off.
    */
-  flush?: () => Promise<string | undefined>;
-  stop: () => Promise<void> | void;
+  driftCheckMs?: number;
+
+  /** How long topology changes settle before members move. Default 1500 ms. */
+  reconnectDelayMs?: number;
+
+  /** Wait before starting a member again whose start failed. Default 3000 ms. */
+  retryMs?: number;
+
+  /**
+   * How long a node that knows no peer and has no hub waits before it acts
+   * as its own hub. The network elects nobody without peers to probe, so a
+   * machine on its own would otherwise never sync with itself. It yields as
+   * soon as a peer appears or the network names a hub. Default 12 000 ms;
+   * 0 is off.
+   */
+  aloneHubMs?: number;
 }
 
-/**
- * Factory called after each role transition to wire application-level agents
- * (e.g. FsAgent). Return an {@link AgentHandle} whose `stop()` will be called
- * before the next role transition or when the node stops.
- */
-export type CreateAgent = (context: ReadyContext) => Promise<AgentHandle>;
+// #############################################################################
+/** The hub the members moved to. */
+export interface NodeHubChangedEvent {
+  /** The hub before, as `ip:port`. */
+  previous?: string;
 
-/** Events emitted by Node. */
+  /** The hub now, as `ip:port`. */
+  current: string;
+}
+
+// #############################################################################
+/** Events of a {@link Node}. */
 export interface NodeEvents {
-  /** Emitted when the node has assumed its role and is ready. */
-  ready: (context: ReadyContext) => void;
-  /** Emitted when the node's role changes. */
+  /** The node's role changed — the moment to raise a hub's stamps. */
   'role-changed': (event: RoleChangedEvent) => void;
-  /** Emitted when the node is stopped. */
+
+  /** The members are moving to another hub. */
+  'hub-changed': (event: NodeHubChangedEvent) => void;
+
+  /** Every member started on the current hub. */
+  ready: () => void;
+
+  /** The node stopped. */
   stopped: () => void;
 }
 
-/** Valid event names for Node. */
+/** Names of the events of a {@link Node}. */
 export type NodeEventName = keyof NodeEvents;
 
 type NodeListener = NodeEvents[NodeEventName];
 
-// .............................................................................
-
+// #############################################################################
 /**
- * Self-organizing node that automatically transitions between
- * hub (Server) and client (Client) roles based on network topology.
+ * A node of an rljson network: the same on every machine, whatever its role.
+ *
+ * - **One port, always open.** It takes hub connections while this node is
+ *   hub, peer connections in every role, and answers the network's probes.
+ * - **A hub service** for every route: one server per route, created on
+ *   demand ({@link HubRoutes}). It never moves; only who connects to it does.
+ * - **Route members**: per route this node takes part in, a client of the
+ *   elected hub — over loopback while this node is hub — with local stores it
+ *   serves to peers. When the hub moves, the members move with it.
+ *
+ * The network manager elects the hub. The node follows: on every role, hub or
+ * topology change, after a short settling time, and on a periodic drift
+ * check in case an event was missed.
  */
 export class Node {
-  private _networkManager: NetworkManager;
-  private _server?: Server;
-  private _client?: Client;
-  private _hubTransport?: HubTransport;
-  private _clientSocket?: SocketLike;
-  private _agentHandle?: AgentHandle;
-  private _ioMem?: IoMem;
-  private _bsMem?: BsMem;
-  private _role: NodeRole = 'unassigned';
-  private _running = false;
-  private _transportReady = false;
-  private _transitioning?: Promise<void>;
-  private _transitionGen = 0;
-  private _sleepTimer?: ReturnType<typeof setTimeout>;
-  private _sleepResolve?: () => void;
-  private _connectAbort?: AbortController;
-  private _lastKnownRef?: string;
-  private _currentHubAddress?: string;
-  private _hubSelfCheckTimer?: ReturnType<typeof setTimeout>;
-  private _listeners = new Map<string, Set<NodeListener>>();
   private readonly _logger: ServerLogger;
+  private readonly _networkManager: NetworkManager;
+  private readonly _members = new Map<string, RouteMember>();
+  private _hub?: HubRoutes;
+  private _transport?: PortTransport;
+  private _nodeId?: string;
+  private _running = false;
+  private _hubAddress?: string;
+  /** The hub the members are being moved to, while a move runs. */
+  private _movingTo?: string;
+  private _reconciling: Promise<void> = Promise.resolve();
+  private _reconcileTimer?: ReturnType<typeof setTimeout>;
+  private _driftTimer?: ReturnType<typeof setInterval>;
+  private _selfCheckTimer?: ReturnType<typeof setTimeout>;
+  private _aloneTimer?: ReturnType<typeof setTimeout>;
+  /** Since when this node knows no peer and no hub; undefined otherwise. */
+  private _aloneSince?: number;
+  /** Whether it has been alone for `aloneHubMs` and acts as its own hub. */
+  private _actingAlone = false;
+  private readonly _retryTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  /** Members whose start on the current hub failed so far. */
+  private readonly _failing = new Set<string>();
+  private readonly _listeners = new Map<string, Set<NodeListener>>();
 
+  // ...........................................................................
+  /**
+   * Creates a node. Nothing runs before {@link start}.
+   * @param _config - Domain, port, hub, members, peer reads.
+   * @param _deps - The transport.
+   */
   constructor(
     private readonly _config: NodeConfig,
     private readonly _deps: NodeDeps,
   ) {
     this._logger = _config.logger ?? noopLogger;
-
+    for (const member of _config.members ?? []) {
+      if (this._members.has(member.treeKey)) {
+        throw new Error(`Two members for route ${member.treeKey}`);
+      }
+      this._members.set(member.treeKey, member);
+    }
+    const network = _config.network ?? {};
     const networkConfig: NetworkConfig = {
+      // Anything else the app puts there travels on to the network manager.
+      ...network,
       domain: _config.domain,
       port: _config.port,
       identityDir: _config.identityDir,
-      broadcast: _config.network?.broadcast ?? {
-        enabled: true,
-        port: 41234,
-      },
-      cloud: _config.network?.cloud ?? { enabled: false, endpoint: '' },
-      static: _config.network?.static ?? {},
-      probing: _config.network?.probing ?? { enabled: true },
+      broadcast: network.broadcast ?? { enabled: true, port: 41234 },
+      cloud: network.cloud ?? { enabled: false, endpoint: '' },
+      static: network.static ?? {},
+      probing: { enabled: true, ...network.probing, listen: false },
     };
-
     this._networkManager = new NetworkManager(
       networkConfig,
       _deps.networkManagerOptions,
     );
   }
 
-  // .........................................................................
+  // ...........................................................................
   // Lifecycle
-  // .........................................................................
+  // ...........................................................................
 
   /**
-   * Start the node. Begins network discovery and role assignment.
+   * Starts the node: identity, hub service, port, network — then the members
+   * follow the elected hub.
    */
   async start(): Promise<void> {
     if (this._running) return;
 
-    this._ioMem = new IoMem();
-    await this._ioMem.init();
-    await this._ioMem.isReady();
+    const identity = await NodeIdentity.create({
+      domain: this._config.domain,
+      port: this._config.port,
+      identityDir: this._config.identityDir,
+    });
+    this._nodeId = identity.nodeId;
 
-    this._bsMem = new BsMem();
+    await this._openPort();
 
     this._running = true;
+    this._aloneSince = undefined;
+    this._actingAlone = false;
     this._networkManager.on('role-changed', this._onRoleChanged);
-    this._networkManager.on('hub-changed', this._onHubChanged);
-
+    this._networkManager.on('hub-changed', this._onTopologyEvent);
+    this._networkManager.on('topology-changed', this._onTopologyEvent);
     await this._networkManager.start();
+
+    const driftCheckMs = this._config.driftCheckMs ?? 30_000;
+    if (driftCheckMs > 0) {
+      this._driftTimer = setInterval(() => {
+        if (this._targetHubAddress() !== this._hubAddress) {
+          this._logger.warn('Node', 'Members drifted from the hub', {
+            connectedTo: this._hubAddress,
+            elected: this._targetHubAddress(),
+          });
+          void this._queueReconcile();
+        }
+      }, driftCheckMs);
+      this._driftTimer.unref?.();
+    }
+
+    // A hub already known now is followed before start() returns. A move
+    // that fails is logged and tried again after `retryMs`; it does not fail
+    // the start.
+    await this._queueReconcile().catch(() =>
+      this._scheduleReconcile(this._config.retryMs ?? 3000),
+    );
+    this._trackAlone();
   }
 
+  // ...........................................................................
   /**
-   * Stop the node. Tears down Server/Client and network discovery.
+   * Stops the node: members, port, hub service, network.
    */
   async stop(): Promise<void> {
     if (!this._running) return;
-
     this._running = false;
-    this._transportReady = false;
-    this._clearHubSelfCheck();
-    this._cancelRetry();
+    clearTimeout(this._reconcileTimer);
+    clearInterval(this._driftTimer);
+    clearTimeout(this._aloneTimer);
+    this._clearSelfCheck();
+    this._clearRetries();
     this._networkManager.off('role-changed', this._onRoleChanged);
-    this._networkManager.off('hub-changed', this._onHubChanged);
+    this._networkManager.off('hub-changed', this._onTopologyEvent);
+    this._networkManager.off('topology-changed', this._onTopologyEvent);
+    await this._reconciling;
 
-    // Wait for any in-flight role transition to finish
-    if (this._transitioning) {
-      await this._transitioning;
-      this._transitioning = undefined;
+    for (const member of this._members.values()) {
+      try {
+        await member.close();
+      } catch (error) {
+        this._logger.error('Node', 'Member close failed', error, {
+          treeKey: member.treeKey,
+        });
+      }
     }
-
-    await this._tearDownCurrentRole();
+    await this._closePort();
     await this._networkManager.stop();
-
-    this._role = 'unassigned';
+    this._hubAddress = undefined;
     this._emit('stopped');
   }
 
-  // .........................................................................
+  // ...........................................................................
   // State
-  // .........................................................................
+  // ...........................................................................
 
-  /** This node's current role. */
-  get role(): NodeRole {
-    return this._role;
+  /** This node's id; undefined before the first start. */
+  get nodeId(): string | undefined {
+    return this._nodeId;
   }
 
-  /** Current network topology snapshot. */
+  /**
+   * This node's role: as the network decided it — or `'hub'` while it acts
+   * as its own hub, alone (see {@link NodeConfig.aloneHubMs}).
+   */
+  get role(): NodeRole {
+    const topology = this._networkManager.getTopology();
+    return this._isAloneHub(topology) ? 'hub' : topology.myRole;
+  }
+
+  /** The network topology right now. */
   get topology(): NetworkTopology {
     return this._networkManager.getTopology();
   }
 
-  /** The Io instance (from Server or Client), or undefined if unassigned. */
-  get io(): Io | undefined {
-    return this._server?.io ?? this._client?.io;
-  }
-
-  /** The Bs instance (from Server or Client), or undefined if unassigned. */
-  get bs(): Bs | undefined {
-    return this._server?.bs ?? this._client?.bs;
-  }
-
-  /** The Server instance when this node is the hub, or undefined. */
-  get server(): Server | undefined {
-    return this._server;
-  }
-
-  /** The Client instance when this node is a client, or undefined. */
-  get client(): Client | undefined {
-    return this._client;
-  }
-
-  /** The socket used to connect to the hub (defined when role is `'client'`). */
-  get socket(): SocketLike | undefined {
-    return this._clientSocket;
-  }
-
-  /** Whether the node is currently running. */
-  get isRunning(): boolean {
-    return this._running;
-  }
-
-  /**
-   * Whether the node's transport and agent are fully ready.
-   * `false` during role transitions and before the first transition completes.
-   * `true` only after `_becomeHub()` or `_becomeClient()` has finished,
-   * including the `createAgent` callback (if provided).
-   */
-  get isTransportReady(): boolean {
-    return this._transportReady;
-  }
-
-  /** The underlying NetworkManager. */
+  /** The network manager. */
   get networkManager(): NetworkManager {
     return this._networkManager;
   }
 
   /**
-   * Restart the agent without tearing down the transport or network layer.
-   *
-   * 1. Flushes the current agent (captures last-moment state).
-   * 2. Stops the agent (watcher, sync listeners).
-   * 3. Rebuilds a {@link ReadyContext} from the **existing** transport.
-   * 4. Calls {@link CreateAgent} again with the same role and transport.
-   *
-   * Use this to simulate a fresh-client bootstrap on a running node — but pass
-   * the clearing in as `whileStopped` rather than doing it first.
-   *
-   * Clearing the folder while the agent still runs does not simulate a fresh
-   * client at all: the agent's watcher sees the deletions, its in-memory head
-   * ref is untouched, and it correctly broadcasts "everything here is gone"
-   * before this method is ever called. Peers then apply that deletion, which is
-   * right and is not what the caller wanted. Measured on a four-node lab, where
-   * it made a bootstrap test fail five times out of five while every node
-   * behaved correctly.
-   *
-   * `whileStopped` runs after the agent has stopped and before its replacement
-   * starts, so the wipe happens with nothing watching. The replacement then
-   * starts against a genuinely empty folder, which IS a fresh client.
-   * @param whileStopped - Runs with no agent attached. Its failure aborts the
-   *   restart rather than leaving a node with no agent: the old one is already
-   *   gone, so the caller must know the node needs attention.
+   * The hub service: every route's server. Undefined before the first start;
+   * while the port is closed, a torn-down one without servers.
    */
-  async restartAgent(
-    whileStopped?: () => void | Promise<void>,
-  ): Promise<void> {
-    if (!this._running) {
-      throw new Error('Cannot restart agent: node is not running');
-    }
-    if (this._role === 'unassigned') {
-      throw new Error('Cannot restart agent: no role assigned');
-    }
-
-    this._transportReady = false;
-
-    // 1. Flush pending changes before stopping.
-    let flushedRef: string | undefined;
-    if (this._agentHandle?.flush) {
-      try {
-        flushedRef = await this._agentHandle.flush();
-      } catch (err) {
-        this._logger.error('Node', `Agent flush failed during restart: ${err}`);
-      }
-    }
-
-    // 2. Stop agent (watcher, sync listeners, dispose).
-    await this._stopAgent();
-
-    // Preserve the latest ref so createAgent can seed it.
-    const ref =
-      flushedRef ??
-      this._server?.latestRef ??
-      this._client?.connector?.lastSentRef;
-    if (ref) {
-      this._lastKnownRef = ref;
-    }
-
-    // Whatever the caller needs done with no agent watching — clearing the
-    // synced folder, forgetting persisted state — happens here.
-    if (whileStopped) {
-      await whileStopped();
-    }
-
-    // 3. Rebuild ReadyContext from existing transport.
-    const ctx: ReadyContext = {
-      role: this._role,
-      client: this._client,
-      server: this._server,
-      socket: this._clientSocket,
-    };
-
-    // 4. Re-create the agent.
-    await this._startAgent(ctx);
-    this._transportReady = true;
+  get hubRoutes(): HubRoutes | undefined {
+    return this._hub;
   }
 
-  // .........................................................................
-  // Events
-  // .........................................................................
+  /** The hub the members connect to, as `ip:port`. */
+  get hubAddress(): string | undefined {
+    return this._hubAddress;
+  }
+
+  /** The members, by tree key. */
+  get members(): ReadonlyMap<string, RouteMember> {
+    return this._members;
+  }
+
+  /** Whether the node runs. */
+  get isRunning(): boolean {
+    return this._running;
+  }
+
+  // ...........................................................................
+  // Port
+  // ...........................................................................
+
+  /** Whether the port and the hub service are open. */
+  get isPortOpen(): boolean {
+    return this._transport !== undefined;
+  }
 
   /**
-   * Subscribe to node events.
-   * @param event - Event name
-   * @param cb - Callback
+   * Takes the node off the network the way a crash looks from outside: its
+   * port and its hub service close, so no probe, route client or peer
+   * reaches it. Its members stay and follow whichever hub the network elects
+   * next. For tests of a hub that went down.
    */
-  on<E extends NodeEventName>(event: E, cb: NodeEvents[E]): void {
+  async closePort(): Promise<void> {
+    if (!this._running) return;
+    await this._closePort();
+  }
+
+  /** Opens the port and the hub service again after {@link closePort}. */
+  async openPort(): Promise<void> {
+    if (!this._running || this._transport) return;
+    await this._openPort();
+  }
+
+  // ...........................................................................
+  // Members
+  // ...........................................................................
+
+  /**
+   * Adds a route this node takes part in from now on. While the node runs and
+   * knows its hub, the member starts on it right away.
+   * @param member - The member.
+   */
+  async addMember(member: RouteMember): Promise<void> {
+    if (this._members.has(member.treeKey)) {
+      throw new Error(`Two members for route ${member.treeKey}`);
+    }
+    this._members.set(member.treeKey, member);
+    await this._serializeMove(async () => {
+      const hubAddress = this._hubAddress;
+      if (this._running && hubAddress !== undefined) {
+        await this._startMember(member, hubAddress);
+        this._followIfMoved(hubAddress);
+      }
+    });
+  }
+
+  /**
+   * Leaves a route: its member stops and is closed.
+   * @param treeKey - The route's tree key.
+   * @returns Whether the node had a member for it.
+   */
+  async removeMember(treeKey: string): Promise<boolean> {
+    const member = this._members.get(treeKey);
+    if (!member) return false;
+    this._members.delete(treeKey);
+    this._failing.delete(treeKey);
+    clearTimeout(this._retryTimers.get(treeKey));
+    this._retryTimers.delete(treeKey);
+    await this._serializeMove(async () => {
+      try {
+        await member.close();
+      } catch (error) {
+        this._logger.error('Node', 'Member close failed', error, { treeKey });
+      }
+    });
+    return true;
+  }
+
+  // ...........................................................................
+  // Events
+  // ...........................................................................
+
+  /**
+   * Subscribes to an event.
+   * @param event - The event.
+   * @param listener - The listener.
+   */
+  on<E extends NodeEventName>(event: E, listener: NodeEvents[E]): void {
     let set = this._listeners.get(event);
     if (!set) {
       set = new Set();
       this._listeners.set(event, set);
     }
-    set.add(cb as NodeListener);
+    set.add(listener as NodeListener);
   }
 
   /**
-   * Unsubscribe from node events.
-   * @param event - Event name
-   * @param cb - Callback
+   * Unsubscribes from an event.
+   * @param event - The event.
+   * @param listener - The listener.
    */
-  off<E extends NodeEventName>(event: E, cb: NodeEvents[E]): void {
-    const set = this._listeners.get(event);
-    if (!set) return;
-    set.delete(cb as NodeListener);
+  off<E extends NodeEventName>(event: E, listener: NodeEvents[E]): void {
+    this._listeners.get(event)?.delete(listener as NodeListener);
   }
 
-  // .........................................................................
-  // Role transitions
-  // .........................................................................
+  // ######################
+  // Private
+  // ######################
 
   /**
-   * Handle hub-changed while role stays 'client'.
-   * When NetworkManager emits hub-changed but NOT role-changed (because
-   * old role === new role === 'client'), the Node must tear down the old
-   * client connection and reconnect to the new hub.
+   * Opens the hub service and the port; a port that cannot open closes the
+   * hub service again.
    */
-  private _onHubChanged = (): void => {
-    if (!this._running || this._role !== 'client') return;
-
-    // Only act if the NetworkManager still considers us a client.
-    // If a role-changed is also coming, _onRoleChanged will handle it.
-    const topology = this._networkManager.getTopology();
-    /* v8 ignore if -- @preserve */
-    if (topology.myRole !== 'client') return;
-
-    this._logger.info('Node', 'Hub changed while client — reconnecting');
-    // Cancel any in-flight retry sleep so the old transition finishes fast.
-    this._cancelRetry();
-    /* v8 ignore next -- @preserve */
-    const prev = this._transitioning ?? Promise.resolve();
-    // .catch() prevents a rejected previous transition from blocking all
-    // future transitions. Without this, a single failure (e.g. socket
-    // timeout, Client.init() error) permanently freezes the chain.
-    /* v8 ignore next -- @preserve */
-    this._transitioning = prev
-      .catch(() => {})
-      .then(async () => {
-        if (!this._running || this._role !== 'client') return;
-
-        // Skip if a preceding transition (e.g. reconciliation in
-        // _performTransition) already reconnected us to the correct hub.
-        // Without this guard, an override cycle (hub-changed fires before
-        // role-changed is processed) can queue a stale teardown that
-        // destroys a working client connection.
-        const currentTopology = this._networkManager.getTopology();
-        if (
-          this._currentHubAddress &&
-          this._currentHubAddress === currentTopology.hubAddress
-        ) {
-          this._logger.info(
-            'Node',
-            'Hub-changed: already connected to correct hub — skipping reconnect',
-          );
-          return;
-        }
-
-        this._transportReady = false;
-        await this._tearDownCurrentRole();
-        await this._becomeClient();
-      });
-  };
-
-  private _onRoleChanged = (event: RoleChangedEvent): void => {
-    // Unreachable: stop() removes this listener synchronously before
-    // any further events can fire from NetworkManager.
-    /* v8 ignore if -- @preserve */
-    if (!this._running) return;
-
-    const { current } = event;
-
-    // During rapid role changes, NM may emit a role that matches the
-    // Node's current _role (e.g. client→hub→client fires 'client' while
-    // _role is still 'client' because the hub transition is queued).
-    if (current === this._role) return;
-
-    // Cancel any in-flight retry sleep so the old transition finishes fast.
-    this._cancelRetry();
-
-    // Serialize transitions — wait for any in-flight transition to finish
-    // before starting the next one.
-    const prev = this._transitioning ?? Promise.resolve();
-    // .catch() prevents a rejected previous transition from blocking all
-    // future transitions. Without this, a single failure (e.g. socket
-    // timeout, Client.init() error) permanently freezes the chain.
-    /* v8 ignore next -- @preserve */
-    this._transitioning = prev
-      .catch(() => {})
-      .then(() => this._performTransition(event));
-  };
-
-  private async _performTransition(event: RoleChangedEvent): Promise<void> {
-    if (!this._running) return;
-
-    const { current } = event;
-
-    // A queued transition becomes stale when an earlier transition in the
-    // queue already established this role (e.g. two hub transitions
-    // queued during rapid flapping — the second is a no-op).
-    if (current === this._role) return;
-
-    this._transportReady = false;
-
-    this._logger.info('Node', `Role changing: ${this._role} → ${current}`);
-
-    // Tear down current role
-    await this._tearDownCurrentRole();
-
-    this._role = current;
-    this._emit('role-changed', event);
-
-    // Set up new role
-    switch (current) {
-      case 'hub':
-        await this._becomeHub();
-        break;
-      case 'client':
-        await this._becomeClient();
-        break;
-      /* v8 ignore next -- @preserve */
-      default:
-        break;
-    }
-
-    // The async teardown+setup above may have taken long enough for the
-    // NetworkManager to change its mind (e.g. a probe cycle fired during
-    // _becomeClient). If our new role no longer matches the network's
-    // role, self-correct immediately. The staleness guard at the top of
-    // this method prevents infinite recursion.
-    /* v8 ignore if -- @preserve */
-    if (!this._running) return;
-    const networkRole = this._networkManager.getTopology().myRole;
-    if (networkRole !== this._role && networkRole !== 'unassigned') {
-      this._logger.info(
-        'Node',
-        `Reconciling stale role: node=${this._role} → network=${networkRole}`,
-      );
-      await this._performTransition({
-        previous: this._role,
-        current: networkRole,
-      });
-    }
-  }
-
-  private async _becomeHub(): Promise<void> {
-    // Re-init IoMem after previous teardown closed it.
-    // Data is preserved — IoMem.close() only sets _isOpen = false.
-    await this._ioMem!.init();
-    await this._ioMem!.isReady();
-
-    this._server = new Server(this._config.route, this._ioMem!, this._bsMem!, {
-      ...this._config.serverOptions,
-      logger: this._logger,
-    });
-    await this._server.init();
-
-    // Seed the server with the ref from a previous role so that
-    // connecting clients receive a bootstrap immediately.
-    if (this._lastKnownRef) {
-      this._server.seedLatestRef(this._lastKnownRef);
-    }
-
-    // Start transport to accept incoming connections
+  private async _openPort(): Promise<void> {
+    const hub = new HubRoutes({ ...this._config.hub, logger: this._logger });
+    await hub.init();
+    let transport: PortTransport;
     try {
-      this._hubTransport = await this._deps.createHubTransport(
-        this._config.port,
-      );
-      this._hubTransport.onConnection(async (socket: SocketLike) => {
-        if (!this._server) return;
-        await this._server.addSocket(socket);
-      });
-      this._logger.info('Node', 'Now hub — accepting connections');
-      this._startHubSelfCheck();
-    } catch (err) {
-      this._logger.error(
-        'Node',
-        `Hub transport failed (no incoming connections): ${err}`,
-      );
+      transport = await this._deps.createPortTransport(this._config.port);
+    } catch (error) {
+      await hub.tearDown();
+      throw error;
     }
-    const ctx: ReadyContext = { role: 'hub', server: this._server };
-    this._emit('ready', ctx);
-    await this._startAgent(ctx);
-    // Only mark ready when transport actually succeeded — a degraded hub
-    // (createHubTransport threw) works locally but can't accept connections.
-    this._transportReady = !!this._hubTransport;
-  }
-
-  private async _becomeClient(): Promise<void> {
-    const maxBackoff = 16_000;
-    const gen = this._transitionGen;
-    let connectedHubAddress: string | undefined;
-
-    for (let attempt = 0; ; attempt++) {
-      if (
-        !this._running ||
-        this._role !== 'client' ||
-        gen !== this._transitionGen
-      )
-        return;
-
-      const topology = this._networkManager.getTopology();
-      const hubAddress = topology.hubAddress;
-
-      /* v8 ignore next -- @preserve */
-      this._logger.info(
-        'Node',
-        `_becomeClient attempt ${attempt}: ` +
-          `hubAddress=${hubAddress ?? 'null'}, ` +
-          `hubNodeId=${topology.hubNodeId?.slice(0, 8) ?? 'null'}`,
-      );
-
-      if (!hubAddress) {
-        const delay = Math.min(1000 * 2 ** attempt, maxBackoff);
-        this._logger.warn(
-          'Node',
-          `No hub address in topology — retrying in ${delay}ms`,
-        );
-        await this._sleep(delay);
-        continue;
-      }
-
-      try {
-        this._connectAbort = new AbortController();
-        this._clientSocket = await this._deps.createClientTransport(
-          hubAddress,
-          this._connectAbort.signal,
-        );
-        this._connectAbort = undefined;
-      } catch (err) {
-        this._connectAbort = undefined;
-        // If gen changed while we were connecting, exit immediately.
-        // The new transition will handle reconnection.
-        if (gen !== this._transitionGen) return;
-        const delay = Math.min(1000 * 2 ** attempt, maxBackoff);
-        this._logger.warn(
-          'Node',
-          `Client transport to ${hubAddress} failed: ${err} — ` +
-            `retrying in ${delay}ms`,
-        );
-        await this._sleep(delay);
-        continue;
-      }
-
-      // Success — record the address we actually connected to and
-      // set up the rest of the client stack.
-      connectedHubAddress = hubAddress;
-      break;
-    }
-
-    // Abort if state changed during retries
-    /* v8 ignore if -- @preserve */
-    if (
-      !this._running ||
-      this._role !== 'client' ||
-      gen !== this._transitionGen ||
-      !this._clientSocket
-    ) {
-      return;
-    }
-
-    // Re-init IoMem after previous teardown closed it.
-    // Data is preserved — IoMem.close() only sets _isOpen = false.
-    await this._ioMem!.init();
-    await this._ioMem!.isReady();
-
-    this._client = new Client(
-      this._clientSocket,
-      this._ioMem!,
-      this._bsMem!,
-      this._config.route,
-      {
-        ...this._config.clientOptions,
-        logger: this._logger,
-      },
-    );
-    await this._client.init();
-
-    // If we have a ref from a previous role, re-send it through the
-    // new Connector so the hub (and other clients) receive the data.
-    if (this._lastKnownRef && this._client.connector) {
-      this._client.connector.send(this._lastKnownRef);
-    }
-
-    this._logger.info(
-      'Node',
-      `Now client — connected to hub ${connectedHubAddress}`,
-    );
-
-    // Set _currentHubAddress BEFORE starting the agent so that any
-    // hub-changed event firing during the (potentially long) createAgent
-    // callback sees the correct address and skips a stale reconnect.
-    // CRITICAL: use the address we ACTUALLY connected to, not the live
-    // topology. The topology may have changed during Client.init() —
-    // using the live value would make the stale-skip guard in
-    // _onHubChanged believe we're already connected to the new hub
-    // when the socket is still pointing at the old one.
-    this._currentHubAddress = connectedHubAddress;
-
-    const ctx: ReadyContext = {
-      role: 'client',
-      client: this._client,
-      socket: this._clientSocket,
-    };
-    this._emit('ready', ctx);
-    await this._startAgent(ctx);
-    this._transportReady = true;
-  }
-
-  // .........................................................................
-  // Internal
-  // .........................................................................
-
-  private async _tearDownCurrentRole(): Promise<void> {
-    this._clearHubSelfCheck();
-    this._currentHubAddress = undefined;
-
-    // Flush pending changes before stopping the agent.
-    // This captures last-moment writes that the file watcher hasn't
-    // detected yet (e.g. a file written milliseconds before a hub change).
-    // The returned ref represents the latest on-disk state and takes
-    // priority over Server.latestRef / Connector.lastSentRef.
-    let flushedRef: string | undefined;
-    if (this._agentHandle?.flush) {
-      try {
-        flushedRef = await this._agentHandle.flush();
-      } catch (err) {
-        this._logger.error('Node', `Agent flush failed: ${err}`);
-      }
-    }
-
-    await this._stopAgent();
-
-    // Preserve the latest ref so it can be seeded into the next role.
-    // Flushed ref takes priority (most up-to-date disk state).
-    // Server.latestRef tracks what was broadcast; Connector.lastSentRef
-    // tracks what this node pushed to the hub.
-    const ref =
-      flushedRef ??
-      this._server?.latestRef ??
-      this._client?.connector?.lastSentRef;
-    /* v8 ignore else -- @preserve */
-    if (ref) {
-      this._lastKnownRef = ref;
-    }
-
-    if (this._server) {
-      await this._server.tearDown();
-      this._server = undefined;
-    }
-
-    if (this._hubTransport) {
-      await this._hubTransport.close();
-      this._hubTransport = undefined;
-    }
-
-    if (this._client) {
-      await this._client.tearDown();
-      this._client = undefined;
-    }
-
-    // Disconnect the client socket to prevent orphaned reconnection loops.
-    // SocketLike may be a plain Socket (has disconnect()) or a
-    // SocketNamespaceBundle (plain object). Guard accordingly.
-    if (this._clientSocket && 'disconnect' in this._clientSocket) {
-      (this._clientSocket as { disconnect: () => void }).disconnect();
-    }
-    this._clientSocket = undefined;
-  }
-
-  private async _startAgent(ctx: ReadyContext): Promise<void> {
-    if (this._deps.createAgent) {
-      try {
-        this._agentHandle = await this._deps.createAgent(ctx);
-      } catch (err) {
-        this._logger.error('Node', `createAgent failed: ${err}`);
-      }
-    }
-  }
-
-  private async _stopAgent(): Promise<void> {
-    if (this._agentHandle) {
-      const handle = this._agentHandle;
-      this._agentHandle = undefined;
-      try {
-        await handle.stop();
-      } catch (err) {
-        this._logger.error('Node', `Agent stop failed: ${err}`);
-      }
-    }
-  }
-
-  private _emit(event: string, ...args: unknown[]): void {
-    const set = this._listeners.get(event);
-    if (!set) return;
-    for (const cb of set) {
-      (cb as (...a: unknown[]) => void)(...args);
-    }
-  }
-
-  private _sleep(ms: number): Promise<void> {
-    return new Promise<void>((resolve) => {
-      this._sleepResolve = resolve;
-      this._sleepTimer = setTimeout(() => {
-        this._sleepTimer = undefined;
-        this._sleepResolve = undefined;
-        resolve();
-      }, ms);
+    this._hub = hub;
+    this._transport = transport;
+    transport.accept((handshake) => this._accepts(handshake));
+    transport.onConnection((socket, handshake) => {
+      void this._onConnection(socket, handshake);
     });
   }
 
-  private _cancelRetry(): void {
-    this._transitionGen++;
-    if (this._sleepTimer !== undefined) {
-      clearTimeout(this._sleepTimer);
-      this._sleepTimer = undefined;
-    }
-    if (this._sleepResolve) {
-      this._sleepResolve();
-      this._sleepResolve = undefined;
-    }
-    if (this._connectAbort) {
-      this._connectAbort.abort();
-      this._connectAbort = undefined;
-    }
+  // ...........................................................................
+  /** Closes the port and the hub service, if open. */
+  private async _closePort(): Promise<void> {
+    const transport = this._transport;
+    if (!transport) return;
+    this._transport = undefined;
+    await transport.close();
+    await (this._hub as HubRoutes).tearDown();
   }
 
-  // .........................................................................
-  // Hub self-check
-  // .........................................................................
-
+  // ...........................................................................
   /**
-   * Start the hub self-check timer.
-   *
-   * After {@link NodeConfig.hubSelfCheckMs} (default 20s), checks whether
-   * the hub has accepted any client connections. If not — and known peers
-   * exist — this node is likely unreachable (e.g. firewall blocking inbound
-   * TCP). The hub steps down by assigning the earliest-started reachable
-   * peer as the new hub.
+   * Whether the port accepts a connection: peers always, route clients only
+   * while this node is hub.
+   * @param handshake - What the connection says about itself.
+   * @returns True to accept.
    */
-  private _startHubSelfCheck(): void {
-    const ms = this._config.hubSelfCheckMs ?? 20_000;
-    if (ms <= 0) return; // Disabled
-
-    this._hubSelfCheckTimer = setTimeout(() => {
-      this._hubSelfCheckTimer = undefined;
-      this._runHubSelfCheck();
-    }, ms);
-    // Allow the process to exit even if the timer is pending
-    this._hubSelfCheckTimer.unref?.();
+  private _accepts(handshake: PortHandshake): boolean {
+    return handshake.peerRead === true || this.role === 'hub';
   }
 
+  // ...........................................................................
   /**
-   * Clear (cancel) any pending hub self-check timer.
+   * Hands an accepted connection to a member — a peer — or to the hub.
+   * @param socket - The connection.
+   * @param handshake - What it says about itself.
    */
-  private _clearHubSelfCheck(): void {
-    if (this._hubSelfCheckTimer !== undefined) {
-      clearTimeout(this._hubSelfCheckTimer);
-      this._hubSelfCheckTimer = undefined;
-    }
-  }
-
-  /**
-   * Run the hub self-check. Called once after the timeout expires.
-   *
-   * If this node is still hub, has a Server with zero connected clients,
-   * and there are known peers in the network — step down.
-   */
-  private _runHubSelfCheck(): void {
-    /* v8 ignore if -- @preserve */
-    if (!this._running || this._role !== 'hub' || !this._server) return;
-
-    // Count only real remote clients. A hub registers its own loopback via
-    // addBroadcastSocket under a 'broadcast_' clientId so it can multicast to
-    // itself; that must NOT count as a connected client. Using clients.size
-    // here would make a hub always see >=1 "client" (its loopback) and so
-    // never step down — defeating the whole self-check (the stale/crashed hub
-    // stays hub forever → split brain). Real clients use a 'client_' prefix.
-    const clientCount = [...this._server.clients.keys()].filter((id) =>
-      id.startsWith('client_'),
-    ).length;
-    if (clientCount > 0) {
-      this._logger.info(
-        'Node',
-        `Hub self-check passed: ${clientCount} client(s) connected`,
-      );
-      // Re-arm: a hub must keep monitoring. Its server can lose every client
-      // later (process/transport crash, network partition). Without a repeat
-      // check the node would stay 'hub' with a dead server forever while a
-      // peer elects itself — a split brain in which the stale ex-hub never
-      // demotes to client and so never catches up on new revisions.
-      this._startHubSelfCheck();
-      return;
-    }
-
-    // Check if there are known peers (excluding self)
-    const topology = this._networkManager.getTopology();
-    const peerCount = Object.keys(topology.nodes).length - 1; // -1 for self
-    if (peerCount <= 0) {
-      this._logger.info(
-        'Node',
-        'Hub self-check: no peers in network, staying hub',
-      );
-      // Re-arm: peers may appear (or our server may fail) before the next tick.
-      this._startHubSelfCheck();
-      return;
-    }
-
-    // Zero clients connected but peers exist — this hub is unreachable.
-    // Find the best alternative: earliest-started peer that has been
-    // reachable (i.e. its port was open when probed).
-    this._logger.warn(
-      'Node',
-      `Hub self-check FAILED: 0 clients after timeout, ` +
-        `${peerCount} peer(s) known — stepping down`,
-    );
-
-    // Exclude self from election for 3× the self-check interval.
-    // This prevents the step-down → re-elect → step-down loop when
-    // this node always wins election (earliest startedAt) but cannot
-    // accept inbound connections.
-    // hubSelfCheckMs is always positive here (guard in _startHubSelfCheck)
-    /* v8 ignore next -- @preserve */
-    const cooldownMs = (this._config.hubSelfCheckMs ?? 20_000) * 3;
-    const selfId = this._networkManager.getIdentity().nodeId;
-    this._networkManager.excludeFromElection(selfId, cooldownMs);
-    const probes = this._networkManager.getProbeScheduler().getProbes();
-    const reachablePeerIds = new Set(
-      probes.filter((p) => p.reachable).map((p) => p.toNodeId),
-    );
-
-    // Sort peers by startedAt (earliest first) among reachable peers
-    const candidates = Object.values(topology.nodes)
-      .filter((n) => n.nodeId !== selfId && reachablePeerIds.has(n.nodeId))
-      .sort((a, b) => a.startedAt - b.startedAt);
-
-    if (candidates.length > 0) {
-      const newHub = candidates[0];
-      this._logger.info(
-        'Node',
-        `Assigning hub to ${newHub.hostname} (${newHub.nodeId.slice(0, 8)}...)`,
-      );
-      this._networkManager.assignHub(newHub.nodeId);
-    } else {
-      // No reachable peers — try any peer (they may become reachable)
-      const anyPeers = Object.values(topology.nodes)
-        .filter((n) => n.nodeId !== selfId)
-        .sort((a, b) => a.startedAt - b.startedAt);
-      /* v8 ignore if -- @preserve */
-      if (anyPeers.length > 0) {
-        const newHub = anyPeers[0];
-        this._logger.info(
-          'Node',
-          `Assigning hub to ${newHub.hostname} ` +
-            `(${newHub.nodeId.slice(0, 8)}..., not yet probed)`,
-        );
-        this._networkManager.assignHub(newHub.nodeId);
+  private async _onConnection(
+    socket: SocketLike,
+    handshake: PortHandshake,
+  ): Promise<void> {
+    if (handshake.peerRead) {
+      const member = this._members.get(handshake.treeKeys?.[0] ?? '');
+      if (!member) {
+        Node._disconnect(socket);
+        return;
       }
+      try {
+        await member.servePeer(socket);
+      } catch (error) {
+        this._logger.error('Node', 'Serving a peer failed', error, {
+          treeKey: member.treeKey,
+        });
+        Node._disconnect(socket);
+      }
+      return;
+    }
+
+    // A transport that cannot refuse in its handshake still has this.
+    if (!this._accepts(handshake)) {
+      Node._disconnect(socket);
+      return;
+    }
+    try {
+      await (this._hub as HubRoutes).addSocket(socket, handshake.treeKeys);
+    } catch (error) {
+      this._logger.error('Node', 'Adding a route client failed', error, {
+        treeKeys: handshake.treeKeys,
+      });
+      Node._disconnect(socket);
+    }
+  }
+
+  // ...........................................................................
+  /**
+   * The role changed: tell the app, check the new hub, move the members.
+   * @param event - The change.
+   */
+  private readonly _onRoleChanged = (event: RoleChangedEvent): void => {
+    this._logger.info('Node', `Role ${event.previous} → ${event.current}`);
+    this._emit('role-changed', event);
+    this._clearSelfCheck();
+    if (event.current === 'hub') this._startSelfCheck();
+    this._scheduleReconcile();
+  };
+
+  // ...........................................................................
+  /** The hub or the topology changed: move the members once it settled. */
+  private readonly _onTopologyEvent = (): void => {
+    this._trackAlone();
+    this._scheduleReconcile();
+  };
+
+  // ...........................................................................
+  /**
+   * Notes when this node starts being alone — no peer, no hub — and moves
+   * the members once it has been alone for `aloneHubMs`.
+   */
+  private _trackAlone(): void {
+    const aloneHubMs = this._config.aloneHubMs ?? 12_000;
+    const topology = this._networkManager.getTopology();
+    if (aloneHubMs <= 0 || !this._isAlone(topology)) {
+      this._aloneSince = undefined;
+      this._actingAlone = false;
+      clearTimeout(this._aloneTimer);
+      return;
+    }
+    if (this._aloneSince !== undefined) return;
+    this._aloneSince = Date.now();
+    clearTimeout(this._aloneTimer);
+    // The timer decides, not a clock comparison: a timer may fire a
+    // millisecond before the measured time has passed.
+    this._aloneTimer = setTimeout(() => {
+      this._actingAlone = true;
+      this._logger.info('Node', 'No peer and no hub: acting as its own hub', {
+        aloneMs: aloneHubMs,
+      });
+      void this._queueReconcile();
+    }, aloneHubMs);
+    this._aloneTimer.unref?.();
+  }
+
+  // ...........................................................................
+  /**
+   * Whether this node knows no peer and the network names no hub.
+   * @param topology - The topology.
+   * @returns True while alone.
+   */
+  private _isAlone(topology: NetworkTopology): boolean {
+    if (topology.myRole === 'hub' || topology.myRole === 'client') return false;
+    return Object.keys(topology.nodes).every((id) => id === this._nodeId);
+  }
+
+  // ...........................................................................
+  /**
+   * Whether this node acts as its own hub: alone for `aloneHubMs` at least.
+   * @param topology - The topology.
+   * @returns True while it does.
+   */
+  private _isAloneHub(topology: NetworkTopology): boolean {
+    return this._actingAlone && this._isAlone(topology);
+  }
+
+  // ...........................................................................
+  /**
+   * Moves the members after a settling time; a new call restarts the wait.
+   * @param delayMs - The settling time.
+   */
+  private _scheduleReconcile(
+    delayMs = this._config.reconnectDelayMs ?? 1500,
+  ): void {
+    clearTimeout(this._reconcileTimer);
+    this._reconcileTimer = setTimeout(() => {
+      this._reconcileTimer = undefined;
+      this._abortStaleMove();
+      void this._queueReconcile();
+    }, delayMs);
+  }
+
+  // ...........................................................................
+  /**
+   * The hub moved again while members are still being moved to the last
+   * one: stop them now — a member still connecting gives up at once — rather
+   * than wait for each connect to fail on its own.
+   */
+  private _abortStaleMove(): void {
+    const target = this._targetHubAddress();
+    const movingTo = this._movingTo;
+    if (movingTo === undefined || target === undefined || target === movingTo) {
+      return;
+    }
+    this._logger.info('Node', 'The hub moved again during a move', {
+      movingTo,
+      elected: target,
+    });
+    for (const member of this._members.values()) {
+      void this._stopMember(member);
+    }
+  }
+
+  // ...........................................................................
+  /**
+   * Moves the members, after any move still running.
+   * @returns Settles when this move is done.
+   */
+  private _queueReconcile(): Promise<void> {
+    return this._serializeMove(() => this._reconcile());
+  }
+
+  // ...........................................................................
+  /**
+   * Runs a change of the members after every move and change before it.
+   * @param change - The change.
+   * @returns Settles when the change is done.
+   */
+  private _serializeMove(change: () => Promise<void>): Promise<void> {
+    const next = this._reconciling.then(change);
+    this._reconciling = next.catch((error) => {
+      this._logger.error('Node', 'Changing the members failed', error);
+    });
+    return next;
+  }
+
+  // ...........................................................................
+  /** Moves every member to the elected hub, if it moved. */
+  private async _reconcile(): Promise<void> {
+    if (!this._running) return;
+    const target = this._targetHubAddress();
+    if (target === undefined || target === this._hubAddress) return;
+
+    const previous = this._hubAddress;
+    this._hubAddress = target;
+    this._clearRetries();
+    this._logger.info('Node', 'Members move to the hub', {
+      previous,
+      current: target,
+    });
+    this._emit('hub-changed', { previous, current: target });
+
+    this._movingTo = target;
+    for (const member of this._members.values()) {
+      await this._stopMember(member);
+    }
+    this._failing.clear();
+    for (const member of this._members.values()) {
+      await this._startMember(member, target);
+    }
+    this._movingTo = undefined;
+    if (this._failing.size === 0) this._emit('ready');
+
+    this._followIfMoved(target);
+  }
+
+  // ...........................................................................
+  /**
+   * The network may have moved on while members were starting, without a
+   * word — an event that landed before anybody listened: move again.
+   * @param hubAddress - The hub the members were started on.
+   */
+  private _followIfMoved(hubAddress: string): void {
+    if (this._targetHubAddress() !== hubAddress) this._scheduleReconcile();
+  }
+
+  // ...........................................................................
+  /**
+   * The hub the members should connect to: this node over loopback while it
+   * is hub, else the elected hub's address.
+   * @returns `ip:port`, or undefined while no hub is known.
+   */
+  private _targetHubAddress(): string | undefined {
+    const topology = this._networkManager.getTopology();
+    if (topology.myRole === 'hub' || this._isAloneHub(topology)) {
+      return `127.0.0.1:${this._config.port}`;
+    }
+    if (topology.myRole === 'client') return topology.hubAddress ?? undefined;
+    return undefined;
+  }
+
+  // ...........................................................................
+  /**
+   * Starts a member on a hub; on failure, tries again after `retryMs` while
+   * the hub stays the same.
+   * @param member - The member.
+   * @param hubAddress - The hub.
+   * @returns Whether it started.
+   */
+  private async _startMember(
+    member: RouteMember,
+    hubAddress: string,
+  ): Promise<boolean> {
+    try {
+      await member.start(this._memberContext(member.treeKey, hubAddress));
+      this._failing.delete(member.treeKey);
+      return true;
+    } catch (error) {
+      this._failing.add(member.treeKey);
+      this._logger.error('Node', 'Member start failed', error, {
+        treeKey: member.treeKey,
+        hubAddress,
+      });
+      const timer = setTimeout(() => {
+        this._retryTimers.delete(member.treeKey);
+        if (!this._running || this._hubAddress !== hubAddress) return;
+        void this._serializeMove(async () => {
+          if (!this._running || this._hubAddress !== hubAddress) return;
+          if (await this._startMember(member, hubAddress)) {
+            this._logger.info('Node', 'Member started on retry', {
+              treeKey: member.treeKey,
+            });
+            // The last one that was missing: every member runs now.
+            if (this._failing.size === 0) this._emit('ready');
+          }
+        });
+      }, this._config.retryMs ?? 3000);
+      this._retryTimers.set(member.treeKey, timer);
+      return false;
+    }
+  }
+
+  // ...........................................................................
+  /**
+   * Stops a member; a failure is logged, never thrown.
+   * @param member - The member.
+   */
+  private async _stopMember(member: RouteMember): Promise<void> {
+    try {
+      await member.stop();
+    } catch (error) {
+      this._logger.error('Node', 'Member stop failed', error, {
+        treeKey: member.treeKey,
+      });
+    }
+  }
+
+  // ...........................................................................
+  /**
+   * What a member gets to start with.
+   * @param treeKey - The member's route.
+   * @param hubAddress - The hub.
+   * @returns The context.
+   */
+  private _memberContext(
+    treeKey: string,
+    hubAddress: string,
+  ): RouteMemberContext {
+    return {
+      treeKey,
+      route: Route.fromFlat(`/${treeKey}`),
+      nodeId: this._nodeId as string,
+      hubAddress,
+      connectHub: (signal) =>
+        this._deps.connectHub
+          ? this._deps.connectHub(hubAddress, { treeKey, signal })
+          : Promise.reject(
+              new Error('This node opens no hub connections (connectHub)'),
+            ),
+      ...this._peerReads(treeKey),
+      logger: this._logger,
+    };
+  }
+
+  // ...........................................................................
+  /**
+   * Peer reads of a member's route, while they are on.
+   * @param treeKey - The route.
+   * @returns The member's peer reads, or nothing.
+   */
+  private _peerReads(treeKey: string): { peerReads?: RoutePeerReads } {
+    const bounds = this._config.peerReads;
+    const connectPeer = this._deps.connectPeer;
+    if (!bounds || !connectPeer) return {};
+    const resolve = (nodeId: string): string | undefined => {
+      if (nodeId === this._nodeId) return undefined;
+      // The hub is asked anyway: a second connection to it gains nothing.
+      if (nodeId === this._networkManager.getTopology().hubNodeId) {
+        return undefined;
+      }
+      return this._networkManager.resolvePeerAddress(nodeId) ?? undefined;
+    };
+    return {
+      peerReads: {
+        bounds,
+        resolve,
+        connect: async (nodeId, signal) => {
+          const address = resolve(nodeId);
+          if (address === undefined) return undefined;
+          return connectPeer(address, { treeKey, signal });
+        },
+      },
+    };
+  }
+
+  // ...........................................................................
+  /** Arms the hub self-check. */
+  private _startSelfCheck(): void {
+    const ms = this._config.hubSelfCheckMs ?? 20_000;
+    if (ms <= 0) return;
+    this._selfCheckTimer = setTimeout(() => {
+      this._selfCheckTimer = undefined;
+      this._runSelfCheck(ms);
+    }, ms);
+    this._selfCheckTimer.unref?.();
+  }
+
+  // ...........................................................................
+  /** Disarms the hub self-check. */
+  private _clearSelfCheck(): void {
+    clearTimeout(this._selfCheckTimer);
+    this._selfCheckTimer = undefined;
+  }
+
+  // ...........................................................................
+  /**
+   * A hub no other node reached while other nodes exist cannot take
+   * connections — a firewall, a wrong network profile. It steps down: it
+   * excludes itself from the election for a while and hands the hub to the
+   * longest-running peer the probes reached.
+   *
+   * Only other nodes count. This node's own members connect over loopback,
+   * so they would make every hub look reachable.
+   * @param ms - The self-check interval.
+   */
+  private _runSelfCheck(ms: number): void {
+    // The timer is cleared on every role change and on stop.
+    /* v8 ignore if -- @preserve */
+    if (!this._running || this.role !== 'hub') return;
+    const others = (this._hub as HubRoutes).connectedNodes.filter(
+      (nodeId) => nodeId !== this._nodeId,
+    );
+    const topology = this._networkManager.getTopology();
+    const peers = Object.keys(topology.nodes).filter(
+      (nodeId) => nodeId !== this._nodeId,
+    );
+    if (others.length > 0 || peers.length === 0) {
+      this._startSelfCheck();
+      return;
+    }
+
+    this._logger.warn('Node', 'Hub self-check failed: no node reached us', {
+      peers: peers.length,
+    });
+    this._networkManager.excludeFromElection(this._nodeId as string, ms * 3);
+    const reachable = new Set(
+      this._networkManager
+        .getProbeScheduler()
+        .getProbes()
+        .filter((probe) => probe.reachable)
+        .map((probe) => probe.toNodeId),
+    );
+    const candidate = Object.values(topology.nodes)
+      .filter((node) => reachable.has(node.nodeId))
+      .sort((a, b) => a.startedAt - b.startedAt)[0];
+    if (candidate) {
+      this._logger.info('Node', 'Handing the hub on', {
+        nodeId: candidate.nodeId,
+      });
+      this._networkManager.assignHub(candidate.nodeId);
+    } else {
+      this._logger.warn('Node', 'No reachable peer to hand the hub to');
+    }
+  }
+
+  // ...........................................................................
+  /** Cancels every pending member retry. */
+  private _clearRetries(): void {
+    for (const timer of this._retryTimers.values()) clearTimeout(timer);
+    this._retryTimers.clear();
+  }
+
+  // ...........................................................................
+  /**
+   * Calls the listeners of an event.
+   * @param event - The event.
+   * @param args - Its arguments.
+   */
+  private _emit(event: NodeEventName, ...args: unknown[]): void {
+    for (const listener of [...(this._listeners.get(event) ?? [])]) {
+      try {
+        (listener as (...a: unknown[]) => void)(...args);
+      } catch (error) {
+        this._logger.error('Node', `Listener of ${event} failed`, error);
+      }
+    }
+  }
+
+  // ...........................................................................
+  /**
+   * Disconnects every socket of a connection.
+   * @param socket - The connection.
+   */
+  private static _disconnect(socket: SocketLike): void {
+    for (const s of new Set(Object.values(normalizeSocketBundle(socket)))) {
+      s.disconnect();
     }
   }
 }

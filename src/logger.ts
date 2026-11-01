@@ -276,3 +276,16 @@ export class FilteredLogger implements ServerLogger {
 
 /** Shared no-op instance to avoid repeated allocations. */
 export const noopLogger: ServerLogger = new NoopLogger();
+
+/**
+ * A logger that asks for its target on every call — for something built
+ * before the logger it should use is known.
+ * @param get - Returns the logger to write to right now.
+ * @returns The logger.
+ */
+export const lateLogger = (get: () => ServerLogger): ServerLogger => ({
+  info: (...args) => get().info(...args),
+  warn: (...args) => get().warn(...args),
+  error: (...args) => get().error(...args),
+  traffic: (...args) => get().traffic(...args),
+});

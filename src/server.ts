@@ -38,6 +38,7 @@ import {
 import { BaseNode } from './base-node.ts';
 import { RefStamper, StampOptions } from './ref-stamper.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
+import { peerReadEvents } from './peer-reads.ts';
 import { liveView } from './live-view.ts';
 import {
   normalizeSocketBundle,
@@ -314,6 +315,17 @@ export class Server extends BaseNode {
    */
   private _lastSeqByOrigin: Map<string, number> = new Map();
   private readonly _maxOriginSeqs = 10_000;
+  /**
+   * The node behind each connection, as its client said in its hello
+   * (`peerReadEvents.hello`). Named as `src` on every ref relayed from that
+   * connection, so a receiver can read the data from that node directly.
+   */
+  private readonly _sourceNodes = new Map<string, string>();
+  /** The hello listener of each connection, to unregister it on removal. */
+  private readonly _helloListeners = new Map<
+    string,
+    { socket: Socket; listener: (payload: unknown) => void }
+  >();
   private _refEvictionTimer?: ReturnType<typeof setInterval>;
 
   private _refreshPromise?: Promise<void>;
@@ -593,6 +605,17 @@ export class Server extends BaseNode {
     (ioDown as any).__clientId = clientId;
     (bsUp as any).__clientId = clientId;
     (bsDown as any).__clientId = clientId;
+
+    // Before any await: a client says hello as soon as it is connected, and
+    // a hello that arrives before the listener is lost. Asking for it covers
+    // the hello a client sent before this server existed.
+    this._listenForHello(clientId, ioUp);
+    try {
+      ioDown.emit(peerReadEvents.who);
+    } catch {
+      // A socket that cannot carry the question — an in-process mock that
+      // answers Io calls only — just stays without a node.
+    }
 
     // F1: Register a disconnect watcher on ioUp BEFORE any of the awaits
     // below (peer creation, _queueRefresh). Socket.io — and every Socket
@@ -880,6 +903,57 @@ export class Server extends BaseNode {
 
   // ...........................................................................
   /**
+   * Records the node a connection belongs to when its client says hello.
+   * @param clientId - The connection.
+   * @param ioUp - Its upstream socket, where the hello arrives.
+   */
+  private _listenForHello(clientId: string, ioUp: Socket) {
+    const listener = (payload: unknown) => {
+      const nodeId = (payload as { nodeId?: unknown } | undefined)?.nodeId;
+      if (typeof nodeId !== 'string' || nodeId.length === 0) return;
+      this._sourceNodes.set(clientId, nodeId);
+      this._logger.info('Server', 'Client named its node', { clientId, nodeId });
+    };
+    ioUp.on(peerReadEvents.hello, listener);
+    this._helloListeners.set(clientId, { socket: ioUp, listener });
+  }
+
+  // ...........................................................................
+  /**
+   * Forgets the node of a connection and stops listening for its hello.
+   * @param clientId - The connection.
+   */
+  private _forgetHello(clientId: string) {
+    const hello = this._helloListeners.get(clientId);
+    if (hello) {
+      hello.socket.off(peerReadEvents.hello, hello.listener);
+      this._helloListeners.delete(clientId);
+    }
+    this._sourceNodes.delete(clientId);
+  }
+
+  // ...........................................................................
+  /**
+   * Names the node a ref came from as `src`, or removes a `src` the sender
+   * put there: only this hub knows which node a connection belongs to.
+   * @param payload - The payload as received.
+   * @param clientId - The connection it came from.
+   * @returns The payload to relay.
+   */
+  private _withSource(
+    payload: ConnectorPayload,
+    clientId: string,
+  ): ConnectorPayload {
+    const nodeId = this._sourceNodes.get(clientId);
+    if (nodeId !== undefined) return { ...payload, src: nodeId };
+    if (payload.src === undefined) return payload;
+    const withoutSource = { ...payload };
+    delete withoutSource.src;
+    return withoutSource;
+  }
+
+  // ...........................................................................
+  /**
    * Broadcasts incoming payloads from any client to all other connected clients.
    * Enriched with ref log, ACK aggregation, and gap-fill support when
    * syncConfig is provided.
@@ -1002,9 +1076,10 @@ export class Server extends BaseNode {
           : isRefStamp(payload.stamp)
             ? payload.stamp
             : undefined;
+        const sourced = this._withSource(payload, clientIdA);
         const relayed: ConnectorPayload = stamp
-          ? { ...payload, stamp }
-          : payload;
+          ? { ...sourced, stamp }
+          : sourced;
         if (stamp) this._latestRefStamp = { ref, stamp };
         if (this._stamper && stamp) {
           // Fan-out skips the sender, so it is told its stamp here.
@@ -1093,6 +1168,15 @@ export class Server extends BaseNode {
 
   get route() {
     return this._route;
+  }
+
+  /**
+   * The nodes connected to this server, as their clients named them in their
+   * hello (`peerReadEvents.hello`), without duplicates. A connection that said
+   * no hello is not counted.
+   */
+  get connectedNodes(): string[] {
+    return [...new Set(this._sourceNodes.values())];
   }
 
   /**
@@ -2037,6 +2121,7 @@ export class Server extends BaseNode {
    */
   async removeSocket(clientId: string): Promise<void> {
     this._healthStrikes.delete(clientId);
+    this._forgetHello(clientId);
     const client = this._clients.get(clientId);
     if (!client) return;
 
