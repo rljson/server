@@ -13,6 +13,10 @@ const mark = '__rljsonSocket';
 
 process.on('message', (message) => {
   if (message?.[mark] !== 'echo') return;
+  // Exits without telling the parent, as a crashing worker does.
+  if (message.kind === 'event' && message.event === 'die') {
+    process.exit(1);
+  }
   if (message.kind === 'event' && message.event === 'quit') {
     process.send({ [mark]: 'echo', kind: 'close' });
     process.exit(0);

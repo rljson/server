@@ -283,5 +283,95 @@ describe('ChannelSocket', () => {
       await disconnected;
       expect(socket.connected).toBe(false);
     });
+
+    it('lets go of a child that died without a word, without raising on its closed channel', async () => {
+      // The parent of a worker that exited calls disconnect(). Sending the
+      // close into the dead channel raised an 'error' event nobody handled,
+      // and that took the whole node down.
+      child = fork(join(__dirname, 'helpers', 'channel-echo-child.mjs'), {
+        serialization: 'advanced',
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      });
+      const exited = new Promise<void>((resolve) =>
+        child!.once('exit', () => resolve()),
+      );
+      const socket = new ChannelSocket(child as MessageChannelLike, 'echo');
+      socket.connect();
+      const disconnects = vi.fn();
+      socket.on('disconnect', disconnects);
+
+      socket.emit('die');
+      await exited;
+      socket.disconnect();
+      // Whatever the channel does with a send it can no longer make, it does
+      // on a later tick.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(socket.connected).toBe(false);
+      expect(disconnects).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('a channel that closes', () => {
+    /**
+     * A channel end whose send can be scripted.
+     * @param channel - What it does.
+     * @returns The channel.
+     */
+    const channelOf = (
+      channel: Partial<MessageChannelLike> & { connected?: boolean },
+    ): MessageChannelLike => ({
+      send: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+      ...channel,
+    });
+
+    it('sends nothing into a channel that is closed, and ends this end', () => {
+      const channel = channelOf({ connected: false });
+      const socket = new ChannelSocket(channel, 't');
+      socket.connect();
+      const disconnects = vi.fn();
+      socket.on('disconnect', disconnects);
+
+      socket.emit('anything', 1);
+      socket.disconnect();
+
+      expect(channel.send).not.toHaveBeenCalled();
+      expect(socket.connected).toBe(false);
+      expect(disconnects).toHaveBeenCalledTimes(1);
+    });
+
+    it('ends this end when a send fails on its way', () => {
+      const channel = channelOf({
+        send: vi.fn((_message: unknown, callback?: (e: Error | null) => void) =>
+          callback?.(new Error('channel closed')),
+        ),
+      });
+      const socket = new ChannelSocket(channel, 't');
+      socket.connect();
+      const disconnects = vi.fn();
+      socket.on('disconnect', disconnects);
+
+      socket.emit('anything', 1);
+
+      expect(socket.connected).toBe(false);
+      expect(disconnects).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays up after a send that went through', () => {
+      const channel = channelOf({
+        connected: true,
+        send: vi.fn((_message: unknown, callback?: (e: Error | null) => void) =>
+          callback?.(null),
+        ),
+      });
+      const socket = new ChannelSocket(channel, 't');
+      socket.connect();
+
+      socket.emit('anything', 1);
+
+      expect(socket.connected).toBe(true);
+    });
   });
 });

@@ -22,6 +22,12 @@ their own node beside it. `Node` now covers that:
   failed member start, a drift check, aborting a move to a hub that moved on.
   `ready` comes once every member runs — after the move, or after the retry
   that started the last one missing.
+- **A worker that exits no longer takes its node down.** Its `ChannelSocket`
+  sent a close into the closed channel, which a process channel raises as an
+  unhandled `'error'` event. It sends nothing into a closed channel now, and a
+  send that fails on its way ends the socket instead.
+- **A member added during a move starts once.** The move starts it with the
+  others; `addMember` no longer starts it a second time on the same hub.
 - **A worker reports what it served:** `serveWorkerRoute(…).stats`
   (`rowReads`, `blobReads`), for a worker that reports its own state.
 - **`connectHub` is optional:** only members that connect through the node

@@ -19,8 +19,16 @@ export interface MessageChannelLike {
   /**
    * Sends a message to the other side.
    * @param message - The message.
+   * @param callback - Called with the error of a send that failed. A process
+   * channel calls it rather than raising the error as an `'error'` event.
    */
-  send(message: unknown): unknown;
+  send(message: unknown, callback?: (error: Error | null) => void): unknown;
+
+  /**
+   * False once the channel is closed — a process channel when the other
+   * process has exited. Absent on a channel that never closes.
+   */
+  readonly connected?: boolean;
 
   /**
    * Listens for messages from the other side.
@@ -218,12 +226,23 @@ export class ChannelSocket implements Socket {
    */
   private _send(envelope: Omit<Envelope, typeof mark>): void {
     if (!this.connected) return;
-    this._channel.send({ [mark]: this._tag, ...envelope });
+    // The other end is gone — a worker that exited. A process channel raises
+    // a send into it as an 'error' event, which nobody handles: it took a
+    // whole node down. This end is over too.
+    if (this._channel.connected === false) {
+      this._close();
+      return;
+    }
+    // A channel that closes while the message is on its way calls back.
+    this._channel.send({ [mark]: this._tag, ...envelope }, (error) => {
+      if (error) this._close();
+    });
   }
 
   // ...........................................................................
-  /** Ends this end: no more messages, `disconnect` reported. */
+  /** Ends this end: no more messages, `disconnect` reported — once. */
   private _close(): void {
+    if (!this.connected) return;
     this._channel.off('message', this._receive);
     this.connected = false;
     this.disconnected = true;

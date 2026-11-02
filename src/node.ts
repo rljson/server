@@ -247,6 +247,8 @@ export class Node {
   >();
   /** Members whose start on the current hub failed so far. */
   private readonly _failing = new Set<string>();
+  /** The hub each member was last started on, until it is stopped. */
+  private readonly _startedOn = new Map<string, string>();
   private readonly _listeners = new Map<string, Set<NodeListener>>();
 
   // ...........................................................................
@@ -460,10 +462,13 @@ export class Node {
     this._members.set(member.treeKey, member);
     await this._serializeMove(async () => {
       const hubAddress = this._hubAddress;
-      if (this._running && hubAddress !== undefined) {
+      if (!this._running || hubAddress === undefined) return;
+      // A move queued before this one has started it already: a second start
+      // would only stop it and start it again.
+      if (this._startedOn.get(member.treeKey) !== hubAddress) {
         await this._startMember(member, hubAddress);
-        this._followIfMoved(hubAddress);
       }
+      this._followIfMoved(hubAddress);
     });
   }
 
@@ -477,6 +482,7 @@ export class Node {
     if (!member) return false;
     this._members.delete(treeKey);
     this._failing.delete(treeKey);
+    this._startedOn.delete(treeKey);
     clearTimeout(this._retryTimers.get(treeKey));
     this._retryTimers.delete(treeKey);
     await this._serializeMove(async () => {
@@ -802,6 +808,7 @@ export class Node {
     member: RouteMember,
     hubAddress: string,
   ): Promise<boolean> {
+    this._startedOn.set(member.treeKey, hubAddress);
     try {
       await member.start(this._memberContext(member.treeKey, hubAddress));
       this._failing.delete(member.treeKey);
@@ -837,6 +844,7 @@ export class Node {
    * @param member - The member.
    */
   private async _stopMember(member: RouteMember): Promise<void> {
+    this._startedOn.delete(member.treeKey);
     try {
       await member.stop();
     } catch (error) {

@@ -46,12 +46,15 @@ class ScriptedMember implements RouteMember {
   failServe = false;
   starts = 0;
   stops = 0;
+  /** While set, a start waits for it. */
+  hold?: Promise<void>;
 
   constructor(readonly treeKey = 'aTree') {}
 
   async start(context: RouteMemberContext) {
     this.starts++;
     this.contexts.push(context);
+    await this.hold;
     if (this.failStarts > 0) {
       this.failStarts--;
       throw new Error('start failed');
@@ -820,6 +823,34 @@ describe('Node', () => {
       await electHub(node, [node]);
 
       await vi.waitFor(() => expect(added.starts).toBe(1));
+    });
+
+    it('starts a member added during a move once — the move starts it', async () => {
+      // sl-auto adds its routes one after the other; a move that runs in
+      // between starts the new one, and a second start only stopped it and
+      // spawned it again.
+      const primary = new ScriptedMember('primary');
+      const node = createNode({ members: [primary] });
+      await node.start();
+      await electHub(node, [node]);
+      await vi.waitFor(() => expect(primary.starts).toBe(1));
+
+      // The next move is held in the primary's start ...
+      let release!: () => void;
+      primary.hold = new Promise<void>((resolve) => (release = resolve));
+      const other = createNode({ members: [] });
+      await other.start();
+      await electHub(other, [other, node]);
+      await vi.waitFor(() => expect(primary.starts).toBe(2));
+
+      // ... when the next route is added.
+      const added = new ScriptedMember('addedTree');
+      const adding = node.addMember(added);
+      release();
+      await adding;
+
+      expect(added.starts).toBe(1);
+      expect(added.contexts[0].hubAddress).toBe(addressOf(other));
     });
 
     it('refuses a second member for a route', async () => {
