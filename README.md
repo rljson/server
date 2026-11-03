@@ -17,6 +17,8 @@ Local-first, pull-by-reference server layer for Rljson. Clients keep writes loca
 - Configurable production defaults: ref eviction interval, peer init timeout (server and client)
 - Structured logging via injectable `ServerLogger` (NoopLogger default, ConsoleLogger, BufferedLogger, FilteredLogger included)
 - **Sync protocol**: Optional ACK aggregation, causal ordering with gap-fill, enriched payload forwarding via `SyncConfig`
+- **`Node`**: the whole of a node — one port in every role, a hub service for every route (`HubRoutes`), route members that follow the elected hub, in this process (`ClientRoute`) or in a worker (`WorkerRoute`)
+- **Peer reads** (optional): a client reads announced data from the node it came from first, bounded and read-only; the hub stays the fallback for every read
 
 ## Quick start
 

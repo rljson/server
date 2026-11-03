@@ -12,27 +12,74 @@ export {
   BufferedLogger,
   ConsoleLogger,
   FilteredLogger,
+  lateLogger,
   NoopLogger,
   noopLogger,
 } from './logger.ts';
 export type { LogEntry, ServerLogger } from './logger.ts';
+export {
+  ChannelSocket,
+  createChannelPair,
+} from './channel-socket.ts';
+export type { MessageChannelLike } from './channel-socket.ts';
+export { HubRoutes } from './hub-routes.ts';
+export type { HubRouteStores, HubRoutesOptions } from './hub-routes.ts';
 export { Node } from './node.ts';
 export type {
-  AgentHandle,
-  CreateAgent,
-  CreateClientTransport,
-  CreateHubTransport,
-  HubTransport,
+  ConnectRoute,
+  CreatePortTransport,
   NodeConfig,
   NodeDeps,
   NodeEventName,
   NodeEvents,
-  ReadyContext,
+  NodeHubChangedEvent,
+  PortHandshake,
+  PortTransport,
 } from './node.ts';
+export { PeerFirstBs } from './peer-first-bs.ts';
+export { PeerFirstIo } from './peer-first-io.ts';
+export { PeerReadServer } from './peer-read-server.ts';
+export type {
+  PeerReadServerOptions,
+  PeerReadServerStats,
+} from './peer-read-server.ts';
+export { peerReadEvents, PeerReads } from './peer-reads.ts';
+export type {
+  ConnectPeer,
+  PeerBlobSource,
+  PeerReadsOptions,
+  PeerReadStats,
+  ReadByHashesRequest,
+  ReadRowsRequest,
+} from './peer-reads.ts';
+export { ClientRoute } from './route-member.ts';
+export type {
+  AgentHandle,
+  ClientRouteAgentContext,
+  ClientRouteOptions,
+  LocalStores,
+  PeerReadBounds,
+  RouteMember,
+  RouteMemberContext,
+  RoutePeerReads,
+} from './route-member.ts';
 export type { StampOptions } from './ref-stamper.ts';
 export { Server } from './server.ts';
 export type { ServerOptions } from './server.ts';
+export type { SocketLike, SocketNamespaceBundle } from './socket-bundle.ts';
 export { SocketIoBridge } from './socket-io-bridge.ts';
+export {
+  serveWorkerRoute,
+  WorkerRoute,
+  workerRouteEvents,
+} from './worker-route.ts';
+export type {
+  ServeWorkerRouteOptions,
+  WorkerHandle,
+  WorkerLaunchContext,
+  WorkerRouteOptions,
+  WorkerRouteServing,
+} from './worker-route.ts';
 
 // Re-export sync protocol types from @rljson/rljson for convenience
 export { syncEvents } from '@rljson/rljson';

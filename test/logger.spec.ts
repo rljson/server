@@ -15,6 +15,7 @@ import {
   BufferedLogger,
   ConsoleLogger,
   FilteredLogger,
+  lateLogger,
   NoopLogger,
   noopLogger,
 } from '../src/logger';
@@ -199,6 +200,30 @@ describe('Logger implementations', () => {
   });
 
   // .........................................................................
+  describe('lateLogger', () => {
+    it('writes every level to the logger it is given at the moment of the call', () => {
+      const first = new BufferedLogger();
+      const second = new BufferedLogger();
+      let current = first;
+      const logger = lateLogger(() => current);
+
+      logger.info('s', 'one');
+      current = second;
+      logger.info('s', 'two', { n: 2 });
+      logger.warn('s', 'three');
+      logger.error('s', 'four', new Error('e'), { n: 4 });
+      logger.traffic('in', 's', 'event', { n: 5 });
+
+      expect(first.entries.map((e) => e.message)).toEqual(['one']);
+      expect(second.entries.map((e) => [e.level, e.message])).toEqual([
+        ['info', 'two'],
+        ['warn', 'three'],
+        ['error', 'four'],
+        ['traffic', 'event'],
+      ]);
+    });
+  });
+
   describe('FilteredLogger', () => {
     it('should filter by levels', () => {
       const inner = new BufferedLogger();

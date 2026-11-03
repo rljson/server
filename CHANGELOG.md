@@ -2,6 +2,80 @@
 
 ## [Unreleased]
 
+### `Node` is the whole of a node — breaking
+
+`Node` handled one route, kept its data in memory, ran a `Server` only while
+hub and handed a hub's agent the `Server` itself. Products with several routes,
+disk stores and agents in their own processes could not use it, and built
+their own node beside it. `Node` now covers that:
+
+- **One port in every role** (`createPortTransport`): probe target, route
+  clients while hub (refused with a connect error otherwise), peers always.
+- **A hub service for every route** (`HubRoutes`): one `Server` per route with
+  its own stores and options, created on demand, legacy connections in every
+  route.
+- **Route members** (`RouteMember`) follow the elected hub — over loopback
+  while this node is hub: `ClientRoute` in process, `WorkerRoute` in a worker
+  whose stores are served to peers over its channel (`ChannelSocket`,
+  `serveWorkerRoute`).
+- **Following the hub:** settling time, one move at a time, retries of a
+  failed member start, a drift check, aborting a move to a hub that moved on.
+  `ready` comes once every member runs — after the move, or after the retry
+  that started the last one missing.
+- **A worker that exits no longer takes its node down.** Its `ChannelSocket`
+  sent a close into the closed channel, which a process channel raises as an
+  unhandled `'error'` event. It sends nothing into a closed channel now, and a
+  send that fails on its way ends the socket instead.
+- **A member added during a move starts once.** The move starts it with the
+  others; `addMember` no longer starts it a second time on the same hub.
+- **A worker reports what it served:** `serveWorkerRoute(…).stats`
+  (`rowReads`, `blobReads`), for a worker that reports its own state.
+- **`connectHub` is optional:** only members that connect through the node
+  (`ClientRoute`) need it; a node whose members dial their hub themselves
+  leaves it out.
+- **Routes come and go at runtime:** `addMember`, `removeMember`.
+- **A node alone** — no peer, no hub — acts as its own hub after `aloneHubMs`
+  (12 s) and yields to the first peer or elected hub; the network elects
+  nobody without peers to probe.
+- **`closePort()` / `openPort()`** take a node off the network the way a crash
+  looks from outside, for tests of a hub that went down.
+- **Hub self-check** counts other nodes only — every client now says hello
+  with its node id (`ClientOptions.nodeId`; the hub also asks, `who`).
+- **Removed:** the single-route API — `route`, `serverOptions`,
+  `clientOptions`, `createHubTransport`, `createClientTransport`,
+  `createAgent`, `ReadyContext`, `restartAgent`, `node.server`,
+  `node.client`, `node.io`, `node.bs`, `node.socket`, `servePeer`.
+- `lateLogger(get)` writes to whichever logger `get` returns at each call.
+- A node without a blob store answers peers' blob reads "not here" instead of
+  leaving them unanswered.
+
+### Peer reads: read announced data from its sender before the hub
+
+The hub was the only node that served data. A client can now read an announced
+ref's data from the node that sent it, and asks the hub only for what that node
+cannot give within a bound. An optimization: off by default, and the hub stays
+the safe path.
+
+- **`ClientOptions.peerReads`** (`nodeId`, `connect`, bounds): the client tells
+  its hub its node (`peerReadEvents.hello`), records the `src` of every relayed
+  ref, and reads through `PeerFirstIo` / `PeerFirstBs` — peers first, then the
+  hub, whose answer is returned unchanged. `client.peerReads.stats` counts hits,
+  misses and failures.
+- **The hub names the source.** `Server` sets `src` on every ref it relays from
+  a connection whose client said hello, and removes a `src` a sender set.
+- **`PeerReadServer`** answers peers from a node's local stores, read-only,
+  under backpressure and a serving gate. A peer never forwards a question.
+- **`Node`**: `config.peerReads` and `deps.connectPeer` turn it on;
+  `node.servePeer(socket)` serves a peer in every role; sources resolve to
+  addresses through `NetworkManager.resolvePeerAddress`, never to the hub.
+- **Bounded failure.** A peer that times out, refuses or breaks off is skipped
+  for `downMs`; a connection that ends mid-read ends the read at once; a blob
+  stream that loses its peer finishes from the hub.
+- **Tested over real Socket.IO**: a hub and up to six clients with their own
+  ports (`test/peer-reads-mesh.spec.ts`) — sender reachable, refusing, silent,
+  unknown or without the data; read-only serving; large blobs; a sender leaving
+  mid-stream; every node writing in turn and all at once; a reconnect.
+
 ### CLAUDE.md keeps this repo's own rules
 
 - The rules every rljson repo shares (coverage, pinning, docs, releases,
