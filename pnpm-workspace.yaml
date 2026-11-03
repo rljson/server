@@ -3,11 +3,4 @@
 # this workspace without touching their published constraints.
 # change-refs-to-pub-dev removes the section again.
 overrides:
-  "@rljson\/rljson": link:./.gg/ts_links/@rljson/rljson
-  "@rljson\/bs": link:./.gg/ts_links/@rljson/bs
-  "@rljson\/network": link:./.gg/ts_links/@rljson/network
   "eslint-plugin-tsdoc>@typescript-eslint/utils": "^8.60.1"
-  "@rljson\/db": link:./.gg/ts_links/@rljson/db
-  "@rljson\/io": link:./.gg/ts_links/@rljson/io
-  "@rljson\/validate": link:./.gg/ts_links/@rljson/validate
-  "@rljson\/converter": link:./.gg/ts_links/@rljson/converter
