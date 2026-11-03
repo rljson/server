@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
+  '@rljson/network': link:./.gg/ts_links/@rljson/network
   '@rljson/bs': link:./.gg/ts_links/@rljson/bs
   eslint-plugin-tsdoc>@typescript-eslint/utils: ^8.60.1
 
@@ -28,8 +29,8 @@ importers:
         specifier: 0.0.23
         version: 0.0.23
       '@rljson/network':
-        specifier: 0.0.28
-        version: 0.0.28
+        specifier: link:.gg/ts_links/@rljson/network
+        version: link:.gg/ts_links/@rljson/network
       '@rljson/rljson':
         specifier: 0.0.89
         version: 0.0.89
@@ -473,10 +474,6 @@ packages:
 
   '@rljson/json@0.0.23':
     resolution: {integrity: sha512-ViYo8zx0z/SomjpS2f+xK+tS7HTwZI1HzRarHpXO3spVjpaF+GKCa7HgDXoV/Wc+zsliDzo8wz7S5NFb0yZaow==}
-    engines: {node: '>=22.14.0'}
-
-  '@rljson/network@0.0.28':
-    resolution: {integrity: sha512-RR3GtBYbKbpTpVwGTmjuEtKYZlljNYztbNCP3NsIKnLmwLGpHcA5YBU1V0KYLrhtFVwsvx895vQNRKOMlqlNXg==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/rljson@0.0.89':
@@ -2366,8 +2363,6 @@ snapshots:
   '@rljson/is-ready@0.0.21': {}
 
   '@rljson/json@0.0.23': {}
-
-  '@rljson/network@0.0.28': {}
 
   '@rljson/rljson@0.0.89':
     dependencies:
