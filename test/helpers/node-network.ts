@@ -160,7 +160,7 @@ export class InProcessPorts {
 
 // .............................................................................
 /**
- * Ports over real Socket.IO, shaped like the One Client: one HTTP + Socket.IO
+ * Ports over real Socket.IO, shaped like an application's: one HTTP + Socket.IO
  * server per node, a middleware that refuses what the node does not accept,
  * and client sockets that name their route in the handshake.
  */

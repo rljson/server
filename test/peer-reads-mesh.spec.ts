@@ -23,9 +23,9 @@ import {
 
 // .............................................................................
 // Peer reads, end to end, over real Socket.IO connections between emulated
-// nodes: one hub and several clients, each with its own port, shaped like the
-// One Client. The hub counts what each client asked it to read — the load peer
-// reads are meant to take off it.
+// nodes: one hub and several clients, each with its own port, shaped like an
+// application's nodes. The hub counts what each client asked it to read —
+// the load peer reads are meant to take off it.
 // .............................................................................
 
 const carCake = Route.fromFlat('carCake');

@@ -25,7 +25,7 @@ import { serveWorkerRoute, WorkerRoute } from '../src/worker-route.ts';
 import { FakeCloud, freePort, SocketIoPorts } from './helpers/node-network.ts';
 
 // .............................................................................
-// Nodes as the One Client runs them: real Socket.IO between real Nodes, each
+// Nodes as an application runs them: real Socket.IO between real Nodes, each
 // on its own port, the network manager electing the hub through a cloud that
 // the test controls. Every node takes part in one route; its member writes
 // rows and blobs into local stores and announces them through a connector.

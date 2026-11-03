@@ -826,7 +826,7 @@ describe('Node', () => {
     });
 
     it('starts a member added during a move once — the move starts it', async () => {
-      // sl-auto adds its routes one after the other; a move that runs in
+      // An application adds its routes one after the other; a move that runs in
       // between starts the new one, and a second start only stopped it and
       // spawned it again.
       const primary = new ScriptedMember('primary');

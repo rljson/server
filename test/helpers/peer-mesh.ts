@@ -126,15 +126,15 @@ const connected = (
   });
 
 /**
- * A mesh of emulated nodes over real Socket.IO, shaped like the One Client.
+ * A mesh of emulated nodes over real Socket.IO, shaped like an application's.
  *
  * Every node has local in-memory stores, a {@link PeerReadServer} over them
  * and its own HTTP + Socket.IO server on its own port — the node's port.
  * Node 0 is the hub: a {@link Server} over its local stores, taking hub
  * connections on its port. Every other node is a {@link Client} with one
  * real Socket.IO connection to the hub. A peer connection carries
- * `auth: { peerRead: true }` and goes to the target's PeerReadServer, as the
- * One Client routes it.
+ * `auth: { peerRead: true }` and goes to the target's PeerReadServer, as a
+ * node's port routes it.
  *
  * The hub counts, on its own side of each connection, what that client asked
  * it to read: the load peer reads are meant to take off it.
