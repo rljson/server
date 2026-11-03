@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
+  '@rljson/bs': link:./.gg/ts_links/@rljson/bs
   eslint-plugin-tsdoc>@typescript-eslint/utils: ^8.60.1
 
 importers:
@@ -12,8 +13,8 @@ importers:
   .:
     dependencies:
       '@rljson/bs':
-        specifier: 0.0.32
-        version: 0.0.32
+        specifier: link:.gg/ts_links/@rljson/bs
+        version: link:.gg/ts_links/@rljson/bs
       '@rljson/db':
         specifier: 0.1.4
         version: 0.1.4
@@ -449,10 +450,6 @@ packages:
 
   '@oxc-project/types@0.156.0':
     resolution: {integrity: sha512-1Duyg48TdJNdyhEB8Xn1L36bT9Pv6GUtlKjHxOys8xkaF/rQq3XJE+bAurSK/AgIz5mGFsb77cn9Pb20+WCScw==}
-
-  '@rljson/bs@0.0.32':
-    resolution: {integrity: sha512-EdvgaYLIVfVyY8KDdecBEe5bBnsJU+o1d1ArncEgsi9gFjfl53wl4UOeszeLyoG4wL2gu+w3QhWXrn3d9EwDEQ==}
-    engines: {node: '>=22.14.0'}
 
   '@rljson/db@0.1.4':
     resolution: {integrity: sha512-X7e1+dkmriI5hTqBXasI7pdKUvyYK2g93oyyWcZVpF3oRuuMUP/4rPS7vSCiyYEVIMU/JFXY57X3+dERXdrspg==}
@@ -2332,12 +2329,6 @@ snapshots:
   '@microsoft/tsdoc@0.17.1': {}
 
   '@oxc-project/types@0.156.0': {}
-
-  '@rljson/bs@0.0.32':
-    dependencies:
-      '@rljson/hash': 0.0.21
-      '@rljson/json': 0.0.23
-      '@rljson/rljson': 0.0.89
 
   '@rljson/db@0.1.4':
     dependencies:
