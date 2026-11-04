@@ -15,7 +15,7 @@
   "domain": [
     "star sync: refs flow through the hub, data is pulled on demand",
     "a node's whole lifecycle: election, hub service, route members, workers",
-    "hub load: peer reads from the sending node, bounded, read-only, one hop",
+    "hub load: peer reads from the sending node, bounded, read-only, one hop; blobs as blocks",
     "sync protocol on the hub: ACK, gap-fill, stamps, bootstrap, state beacon, backpressure"
   ],
 
@@ -26,7 +26,7 @@
     "uses": {
       "rljson": "ConnectorPayload (src), syncEvents, RefStamp, Route",
       "io": "Io, IoMulti, IoPeer, IoPeerBridge, IoServer, IoMem",
-      "bs": "Bs, BsMulti, BsPeer, BsPeerBridge, BsServer, BsMem",
+      "bs": "Bs, BsMulti, BsPeer, BsPeerBridge, BsServer, BsMem; readBlocks, streamBlocks for block-by-block peer reads",
       "db": "Db, Connector, stateBeaconEvent",
       "network": "NetworkManager: roles, topology, resolvePeerAddress"
     },

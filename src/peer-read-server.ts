@@ -5,11 +5,9 @@
 // found in the LICENSE file in the root of this package.
 
 import {
-  BlobProperties,
   Bs,
   BsMem,
   BsServer,
-  DownloadBlobOptions,
   ListBlobsOptions,
   ListBlobsResult,
 } from '@rljson/bs';
@@ -53,7 +51,10 @@ export interface PeerReadServerStats {
   /** Row reads served: `readRows` and `readRowsByHashes`. */
   rowReads: number;
 
-  /** Blob reads served: `getBlob`, `getBlobProperties`, `blobExists`. */
+  /**
+   * Blob reads served: `getBlobBlocks`, `getBlock`, `blockExists`,
+   * `getBlobProperties`, `blobExists`.
+   */
   blobReads: number;
 }
 
@@ -69,14 +70,23 @@ interface ServedPeer {
 /** The reads of a blob store a peer can send. */
 type BlobReads = Pick<
   Bs,
-  'getBlob' | 'blobExists' | 'getBlobProperties' | 'listBlobs'
+  | 'getBlobBlocks'
+  | 'getBlock'
+  | 'blockExists'
+  | 'blobExists'
+  | 'getBlobProperties'
+  | 'listBlobs'
 >;
 
 /**
  * The blob store of a node that holds no blobs: every read says "not here".
  */
 const noBlobs: BlobReads = {
-  getBlob: (blobId) => Promise.reject(new Error(`Blob not found: ${blobId}`)),
+  getBlobBlocks: (blobId) =>
+    Promise.reject(new Error(`Blob not found: ${blobId}`)),
+  getBlock: (blockId) =>
+    Promise.reject(new Error(`Block not found: ${blockId}`)),
+  blockExists: async () => false,
   blobExists: async () => false,
   getBlobProperties: (blobId) =>
     Promise.reject(new Error(`Blob not found: ${blobId}`)),
@@ -272,7 +282,10 @@ export class PeerReadServer {
     };
     const batch = io.readRowsByHashes?.bind(io);
     if (batch) {
-      view.readRowsByHashes = (request: { table: string; hashes: string[] }) => {
+      view.readRowsByHashes = (request: {
+        table: string;
+        hashes: string[];
+      }) => {
         stats.rowReads++;
         return batch(request);
       };
@@ -289,18 +302,28 @@ export class PeerReadServer {
   private _readOnlyBs(bs: BlobReads): Bs {
     const stats = this._stats;
     return {
+      // BsServer has no handler for whole blobs or streams — BsPeer sends
+      // and builds both from blocks — so no peer reaches these; the Bs type
+      // requires them.
+      /* v8 ignore start -- @preserve */
       setBlob: () => readOnly('setBlob'),
-      getBlob: (
-        blobId: string,
-        options?: DownloadBlobOptions,
-      ): Promise<{ content: Buffer; properties: BlobProperties }> => {
-        stats.blobReads++;
-        return bs.getBlob(blobId, options);
-      },
-      // BsServer has no handler for streams — BsPeer builds them from ranged
-      // getBlob calls — so no peer reaches this; the Bs type requires it.
-      /* v8 ignore next -- @preserve */
+      getBlob: () => readOnly('getBlob'),
       getBlobStream: () => readOnly('getBlobStream'),
+      /* v8 ignore stop */
+      getBlobBlocks: (blobId: string) => {
+        stats.blobReads++;
+        return bs.getBlobBlocks(blobId);
+      },
+      getBlock: (blockId: string) => {
+        stats.blobReads++;
+        return bs.getBlock(blockId);
+      },
+      blockExists: (blockId: string) => {
+        stats.blobReads++;
+        return bs.blockExists(blockId);
+      },
+      setBlock: () => readOnly('setBlock'),
+      setBlobBlocks: () => readOnly('setBlobBlocks'),
       deleteBlob: () => readOnly('deleteBlob'),
       blobExists: (blobId: string) => {
         stats.blobReads++;
