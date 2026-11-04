@@ -16,6 +16,12 @@
   refuses `setBlock` and `setBlobBlocks`.
 - **The hub relays blocks** through `@rljson/bs`: no message carries more than
   one block of a blob, and the hub keeps the blocks it relays.
+- **A peer read no longer holds what it read until the link closes.** Each
+  read raced the link's `ended` promise, which outlives it, and every race
+  stayed registered on it with its answer — a block of up to 4 MB. A machine
+  receiving a 400 MB file held 447 MB of ArrayBuffers until the idle link
+  closed a minute later; a 4 GB file would have held 4 GB. A read now listens
+  for the end of the link only while it is open (`PeerLink.onEnd`).
 
 ### `Node` is the whole of a node — breaking
 

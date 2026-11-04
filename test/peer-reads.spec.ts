@@ -14,6 +14,9 @@ import {
 } from '@rljson/io';
 import { exampleTableCfg } from '@rljson/rljson';
 
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -43,6 +46,12 @@ const readEvents = [
   'getBlobProperties',
   'blobExists',
 ];
+
+/** Runs a full garbage collection. */
+const collectGarbage: () => void = (() => {
+  setFlagsFromString('--expose-gc');
+  return runInNewContext('gc') as () => void;
+})();
 
 /** Lets every pending promise chain run to its end. */
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -872,6 +881,46 @@ describe('PeerReads', () => {
         r.noteSource('b');
         expect(await r.getBlock(blockId)).toBeUndefined();
         expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      });
+
+      it('holds no block it read once the read is answered, while the link stays open', async () => {
+        // A block is up to 4 MB, and a large file is hundreds of them. Held
+        // until the link closes, a file of 4 GB would cost 4 GB on the
+        // receiving node — measured on the lab as 447 MB of ArrayBuffers for a
+        // 400 MB file, released all at once when the idle link closed.
+        const bytes = Buffer.from('hello world');
+        const peer = scriptedPeer((serverSide) => {
+          // A fresh copy per answer, as over a real socket.
+          serverSide.on('getBlock', (_blockId, ack) =>
+            ack(null, Buffer.from(bytes)),
+          );
+        });
+        network.peers.set('b', peer);
+        const r = createReads();
+        r.noteSource('b');
+
+        // Read in a function of its own, so nothing here keeps the answer.
+        const readOnce = async (): Promise<[boolean, WeakRef<Buffer>]> => {
+          const block = (await r.getBlock(blockId))!;
+          return [block.equals(bytes), new WeakRef(block)];
+        };
+        const refs: WeakRef<Buffer>[] = [];
+        for (let i = 0; i < 3; i++) {
+          const [right, ref] = await readOnce();
+          expect(right).toBe(true);
+          refs.push(ref);
+        }
+        await flush();
+        collectGarbage();
+        await flush();
+        collectGarbage();
+
+        expect(r.connectedPeers).toEqual(['b']);
+        expect(refs.map((ref) => ref.deref())).toEqual([
+          undefined,
+          undefined,
+          undefined,
+        ]);
       });
 
       it('answers undefined after close', async () => {

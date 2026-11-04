@@ -143,11 +143,18 @@ interface PeerLink {
   readonly disconnect: () => void;
   readonly isConnected: () => boolean;
   /**
-   * Rejects the moment the connection ends, so a read in flight ends with it
-   * instead of waiting out its timeout: with {@link PeerLost} when the peer
-   * went away, with {@link PeerRetired} when this side closed the link.
+   * Calls `listener` the moment the connection ends, so a read in flight ends
+   * with it instead of waiting out its timeout: with {@link PeerLost} when
+   * the peer went away, with {@link PeerRetired} when this side closed the
+   * link. At once when it has ended already.
+   *
+   * A listener, removed again, rather than a promise every read races: a
+   * race against a promise that outlives it stays registered on it, and
+   * holds the read's answer — a block of up to 4 MB — for as long as the
+   * link lives.
+   * @returns Removes the listener.
    */
-  readonly ended: Promise<never>;
+  readonly onEnd: (listener: (error: Error) => void) => () => void;
   /** Whether this side closed the link (idle, pool full, close). */
   retired: boolean;
   idleTimer?: ReturnType<typeof setTimeout>;
@@ -452,10 +459,10 @@ export class PeerReads {
     this._touch(link);
 
     try {
-      const value = await Promise.race([
+      const value = await PeerReads._untilEnded(
+        link,
         PeerReads._bounded(read(link), timeoutMs),
-        link.ended,
-      ]);
+      );
       return isHit(value) ? { kind: 'hit', nodeId, value } : { kind: 'miss' };
     } catch (error) {
       // "Not here" travels as an error too — a missing table, a missing blob.
@@ -576,16 +583,19 @@ export class PeerReads {
       // Every socket of the connection: with split namespaces, the blob
       // channel can drop on its own.
       const watched = [...new Set([peer.sockets.ioDown, peer.sockets.bsDown])];
-      const ended = new Promise<never>((_, reject) => {
-        const onDisconnect = () => {
-          reject(link.retired ? new PeerRetired() : new PeerLost());
-          if (this._links.get(nodeId) === link) this._drop(link);
-        };
-        for (const watchedSocket of watched) {
-          watchedSocket.on('disconnect', onDisconnect);
+      const endListeners = new Set<(error: Error) => void>();
+      let endedWith: Error | undefined;
+      const onDisconnect = () => {
+        if (endedWith === undefined) {
+          endedWith = link.retired ? new PeerRetired() : new PeerLost();
+          for (const listener of [...endListeners]) listener(endedWith);
+          endListeners.clear();
         }
-      });
-      ended.catch(() => undefined);
+        if (this._links.get(nodeId) === link) this._drop(link);
+      };
+      for (const watchedSocket of watched) {
+        watchedSocket.on('disconnect', onDisconnect);
+      }
       const link: PeerLink = {
         nodeId,
         io: peer.io,
@@ -593,7 +603,14 @@ export class PeerReads {
         lastUsed: Date.now(),
         disconnect: () => PeerReads._disconnect(peer.sockets),
         isConnected: () => watched.every((w) => w.connected),
-        ended,
+        onEnd: (listener) => {
+          if (endedWith !== undefined) {
+            listener(endedWith);
+            return () => undefined;
+          }
+          endListeners.add(listener);
+          return () => endListeners.delete(listener);
+        },
         retired: false,
       };
       this._links.set(nodeId, link);
@@ -698,6 +715,21 @@ export class PeerReads {
   private static _rowCount(result: Rljson, table: string): number {
     const data = (result?.[table] as { _data?: unknown[] } | undefined)?._data;
     return Array.isArray(data) ? data.length : 0;
+  }
+
+  // ...........................................................................
+  /**
+   * A read on a link, rejected the moment the link ends. Listens for the end
+   * only while the read is open.
+   * @param link - The link.
+   * @param work - The read.
+   * @returns The read's value.
+   */
+  private static _untilEnded<T>(link: PeerLink, work: Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const stop = link.onEnd(reject);
+      work.then(resolve, reject).finally(stop);
+    });
   }
 
   // ...........................................................................
