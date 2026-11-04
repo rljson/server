@@ -4,7 +4,7 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import { BlobProperties, BsPeer, DownloadBlobOptions } from '@rljson/bs';
+import { BlobBlock, BlobProperties, BsPeer } from '@rljson/bs';
 import { Io, IoPeer } from '@rljson/io';
 import { Rljson, Route } from '@rljson/rljson';
 
@@ -76,8 +76,8 @@ export interface PeerReadsOptions {
   timeoutMs?: number;
 
   /**
-   * Longest one blob chunk may take on a peer. A blob is read in chunks of up
-   * to 4 MB, which takes longer than a row. Default 10 000 ms.
+   * Longest one block may take on a peer. A block is up to 4 MB, which takes
+   * longer than a row. Default 10 000 ms.
    */
   blobTimeoutMs?: number;
 
@@ -134,26 +134,6 @@ export interface PeerReadStats {
   failures: number;
 }
 
-// #############################################################################
-/**
- * A blob found on a peer, to be read from it in ranges.
- */
-export interface PeerBlobSource {
-  /** The peer holding the blob. */
-  nodeId: string;
-
-  /** The blob's properties, as the peer reported them. */
-  properties: BlobProperties;
-
-  /**
-   * Reads one range of the blob from the peer.
-   * @param start - First byte.
-   * @param end - Byte after the last one.
-   * @returns The bytes, or undefined when the peer failed.
-   */
-  readRange(start: number, end: number): Promise<Buffer | undefined>;
-}
-
 // .............................................................................
 /** An open connection to one peer. */
 interface PeerLink {
@@ -163,11 +143,18 @@ interface PeerLink {
   readonly disconnect: () => void;
   readonly isConnected: () => boolean;
   /**
-   * Rejects the moment the connection ends, so a read in flight ends with it
-   * instead of waiting out its timeout: with {@link PeerLost} when the peer
-   * went away, with {@link PeerRetired} when this side closed the link.
+   * Calls `listener` the moment the connection ends, so a read in flight ends
+   * with it instead of waiting out its timeout: with {@link PeerLost} when
+   * the peer went away, with {@link PeerRetired} when this side closed the
+   * link. At once when it has ended already.
+   *
+   * A listener, removed again, rather than a promise every read races: a
+   * race against a promise that outlives it stays registered on it, and
+   * holds the read's answer — a block of up to 4 MB — for as long as the
+   * link lives.
+   * @returns Removes the listener.
    */
-  readonly ended: Promise<never>;
+  readonly onEnd: (listener: (error: Error) => void) => () => void;
   /** Whether this side closed the link (idle, pool full, close). */
   retired: boolean;
   idleTimer?: ReturnType<typeof setTimeout>;
@@ -308,7 +295,9 @@ export class PeerReads {
    * @returns The first answer with rows — possibly not all of them — or
    *   undefined.
    */
-  async readRowsByHashes(request: ReadByHashesRequest): Promise<Rljson | undefined> {
+  async readRowsByHashes(
+    request: ReadByHashesRequest,
+  ): Promise<Rljson | undefined> {
     const hit = await this._first(
       (link) => link.io.readRowsByHashes(request),
       (result) => PeerReads._rowCount(result, request.table) > 0,
@@ -319,21 +308,48 @@ export class PeerReads {
 
   // ...........................................................................
   /**
-   * Reads a blob, or a range of it, from the sources.
+   * Reads the blocks of a blob from the sources.
    * @param blobId - The blob.
-   * @param options - Download options, as for `Bs.getBlob`.
-   * @returns Content and properties, or undefined.
+   * @returns The blocks, in order, or undefined.
    */
-  async getBlob(
-    blobId: string,
-    options?: DownloadBlobOptions,
-  ): Promise<{ content: Buffer; properties: BlobProperties } | undefined> {
+  async getBlobBlocks(blobId: string): Promise<BlobBlock[] | undefined> {
     const hit = await this._first(
-      (link) => link.bs.getBlob(blobId, options),
+      (link) => link.bs.getBlobBlocks(blobId),
+      () => true,
+      this._options.timeoutMs,
+    );
+    return hit?.value;
+  }
+
+  // ...........................................................................
+  /**
+   * Reads one block from the sources. Any source holding it serves it,
+   * whichever blob it was sent with: blocks are content-addressed.
+   * @param blockId - The block.
+   * @returns Its bytes, checked against its id, or undefined.
+   */
+  async getBlock(blockId: string): Promise<Buffer | undefined> {
+    const hit = await this._first(
+      (link) => link.bs.getBlock(blockId),
       () => true,
       this._options.blobTimeoutMs,
     );
     return hit?.value;
+  }
+
+  // ...........................................................................
+  /**
+   * Asks the sources whether they hold a block.
+   * @param blockId - The block.
+   * @returns True when a source holds it, false when none could say so.
+   */
+  async blockExists(blockId: string): Promise<boolean> {
+    const hit = await this._first(
+      (link) => link.bs.blockExists(blockId),
+      (exists) => exists,
+      this._options.timeoutMs,
+    );
+    return hit !== undefined;
   }
 
   // ...........................................................................
@@ -364,27 +380,6 @@ export class PeerReads {
       this._options.timeoutMs,
     );
     return hit !== undefined;
-  }
-
-  // ...........................................................................
-  /**
-   * Finds a source holding a blob, to read it from there in ranges.
-   * @param blobId - The blob.
-   * @returns The source, or undefined.
-   */
-  async blobSource(blobId: string): Promise<PeerBlobSource | undefined> {
-    const hit = await this._first(
-      (link) => link.bs.getBlobProperties(blobId),
-      () => true,
-      this._options.timeoutMs,
-    );
-    if (!hit) return undefined;
-    const { nodeId, value: properties } = hit;
-    return {
-      nodeId,
-      properties,
-      readRange: (start, end) => this._readRange(nodeId, blobId, start, end),
-    };
   }
 
   // ...........................................................................
@@ -464,10 +459,10 @@ export class PeerReads {
     this._touch(link);
 
     try {
-      const value = await Promise.race([
+      const value = await PeerReads._untilEnded(
+        link,
         PeerReads._bounded(read(link), timeoutMs),
-        link.ended,
-      ]);
+      );
       return isHit(value) ? { kind: 'hit', nodeId, value } : { kind: 'miss' };
     } catch (error) {
       // "Not here" travels as an error too — a missing table, a missing blob.
@@ -484,30 +479,6 @@ export class PeerReads {
       }
       return { kind: 'miss' };
     }
-  }
-
-  // ...........................................................................
-  /**
-   * Reads one range of a blob from one peer.
-   * @param nodeId - The peer.
-   * @param blobId - The blob.
-   * @param start - First byte.
-   * @param end - Byte after the last one.
-   * @returns The bytes, or undefined when the peer failed.
-   */
-  private async _readRange(
-    nodeId: string,
-    blobId: string,
-    start: number,
-    end: number,
-  ): Promise<Buffer | undefined> {
-    const outcome = await this._attempt(
-      nodeId,
-      (link) => link.bs.getBlob(blobId, { range: { start, end } }),
-      ({ content }) => content.length > 0,
-      this._options.blobTimeoutMs,
-    );
-    return outcome.kind === 'hit' ? outcome.value.content : undefined;
   }
 
   // ...........................................................................
@@ -612,16 +583,19 @@ export class PeerReads {
       // Every socket of the connection: with split namespaces, the blob
       // channel can drop on its own.
       const watched = [...new Set([peer.sockets.ioDown, peer.sockets.bsDown])];
-      const ended = new Promise<never>((_, reject) => {
-        const onDisconnect = () => {
-          reject(link.retired ? new PeerRetired() : new PeerLost());
-          if (this._links.get(nodeId) === link) this._drop(link);
-        };
-        for (const watchedSocket of watched) {
-          watchedSocket.on('disconnect', onDisconnect);
+      const endListeners = new Set<(error: Error) => void>();
+      let endedWith: Error | undefined;
+      const onDisconnect = () => {
+        if (endedWith === undefined) {
+          endedWith = link.retired ? new PeerRetired() : new PeerLost();
+          for (const listener of [...endListeners]) listener(endedWith);
+          endListeners.clear();
         }
-      });
-      ended.catch(() => undefined);
+        if (this._links.get(nodeId) === link) this._drop(link);
+      };
+      for (const watchedSocket of watched) {
+        watchedSocket.on('disconnect', onDisconnect);
+      }
       const link: PeerLink = {
         nodeId,
         io: peer.io,
@@ -629,7 +603,14 @@ export class PeerReads {
         lastUsed: Date.now(),
         disconnect: () => PeerReads._disconnect(peer.sockets),
         isConnected: () => watched.every((w) => w.connected),
-        ended,
+        onEnd: (listener) => {
+          if (endedWith !== undefined) {
+            listener(endedWith);
+            return () => undefined;
+          }
+          endListeners.add(listener);
+          return () => endListeners.delete(listener);
+        },
         retired: false,
       };
       this._links.set(nodeId, link);
@@ -738,18 +719,33 @@ export class PeerReads {
 
   // ...........................................................................
   /**
+   * A read on a link, rejected the moment the link ends. Listens for the end
+   * only while the read is open.
+   * @param link - The link.
+   * @param work - The read.
+   * @returns The read's value.
+   */
+  private static _untilEnded<T>(link: PeerLink, work: Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const stop = link.onEnd(reject);
+      work.then(resolve, reject).finally(stop);
+    });
+  }
+
+  // ...........................................................................
+  /**
    * Rejects with {@link PeerTimeout} when a promise takes too long.
    * @param promise - The promise.
    * @param timeoutMs - The bound.
    * @returns The promise's value.
    */
-  private static _bounded<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  private static _bounded<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+  ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new PeerTimeout(timeoutMs)),
-        timeoutMs,
-      );
+      timer = setTimeout(() => reject(new PeerTimeout(timeoutMs)), timeoutMs);
     });
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }

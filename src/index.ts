@@ -17,10 +17,7 @@ export {
   noopLogger,
 } from './logger.ts';
 export type { LogEntry, ServerLogger } from './logger.ts';
-export {
-  ChannelSocket,
-  createChannelPair,
-} from './channel-socket.ts';
+export { ChannelSocket, createChannelPair } from './channel-socket.ts';
 export type { MessageChannelLike } from './channel-socket.ts';
 export { HubRoutes } from './hub-routes.ts';
 export type { HubRouteStores, HubRoutesOptions } from './hub-routes.ts';
@@ -46,7 +43,6 @@ export type {
 export { peerReadEvents, PeerReads } from './peer-reads.ts';
 export type {
   ConnectPeer,
-  PeerBlobSource,
   PeerReadsOptions,
   PeerReadStats,
   ReadByHashesRequest,

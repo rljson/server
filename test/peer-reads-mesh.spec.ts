@@ -30,6 +30,17 @@ import {
 
 const carCake = Route.fromFlat('carCake');
 
+/** Bytes that do not repeat, the same for the same seed. */
+const noise = (size: number, seed: number): Buffer => {
+  const bytes = Buffer.alloc(size);
+  let x = seed;
+  for (let i = 0; i < size; i++) {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+    bytes[i] = x >>> 24;
+  }
+  return bytes;
+};
+
 /** The peer bound the mesh uses (`timeoutMs`). */
 const peerBoundMs = 300;
 
@@ -173,11 +184,13 @@ describe('Peer reads over real Socket.IO', () => {
       expect(mesh.hubServedTotal().rows).toBe(0);
     });
 
-    it('streams a large blob from its sender in chunks, without the hub', async () => {
-      mesh = await createPeerMesh({ clients: 2, peerReads: { blobTimeoutMs: 5000 } });
+    it('streams a large blob from its sender in blocks, without the hub', async () => {
+      mesh = await createPeerMesh({
+        clients: 2,
+        peerReads: { blobTimeoutMs: 5000 },
+      });
       const [a, b] = mesh.clients;
-      const big = Buffer.alloc(9 * 1024 * 1024);
-      for (let i = 0; i < big.length; i++) big[i] = i % 251;
+      const big = noise(9 * 1024 * 1024, 1);
       const blob = await a.client!.bs!.setBlob(big);
       await mesh.announce(a, 'ref-big');
 
@@ -191,10 +204,14 @@ describe('Peer reads over real Socket.IO', () => {
     });
 
     it('finishes a stream from the hub when the sender breaks off mid-blob', async () => {
-      mesh = await createPeerMesh({ clients: 2, peerReads: { blobTimeoutMs: 5000 } });
+      mesh = await createPeerMesh({
+        clients: 2,
+        peerReads: { blobTimeoutMs: 5000 },
+      });
       const [a, b] = mesh.clients;
-      const big = Buffer.alloc(9 * 1024 * 1024);
-      for (let i = 0; i < big.length; i++) big[i] = (i * 7) % 253;
+      // Bytes that do not repeat: a repeating pattern is one block many
+      // times over, which the receiver fetches once and then holds.
+      const big = noise(9 * 1024 * 1024, 2);
       const blob = await a.client!.bs!.setBlob(big);
       await mesh.announce(a, 'ref-big');
 

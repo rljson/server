@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Peer reads move blocks — breaking
+
+- **`PeerFirstBs` reads block by block:** each block from a peer that holds
+  it, otherwise from the hub, so a read goes on from the hub where a peer
+  broke off, and a peer serves any block it holds, whichever blob it came
+  with. It writes blocks and blob lists to the hub (`setBlock`,
+  `setBlobBlocks`).
+- **`PeerReads` asks peers for block lists and blocks** (`getBlobBlocks`,
+  `getBlock`, `blockExists`). `getBlob`, `blobSource` and `PeerBlobSource` are
+  gone; `blobTimeoutMs` bounds one block.
+- **`PeerReadServer` serves the block reads,** counts them in `blobReads` and
+  refuses `setBlock` and `setBlobBlocks`.
+- **The hub relays blocks** through `@rljson/bs`: no message carries more than
+  one block of a blob, and the hub keeps the blocks it relays.
+- **A peer read no longer holds what it read until the link closes.** Each
+  read raced the link's `ended` promise, which outlives it, and every race
+  stayed registered on it with its answer — a block of up to 4 MB. A machine
+  receiving a 400 MB file held 447 MB of ArrayBuffers until the idle link
+  closed a minute later; a 4 GB file would have held 4 GB. A read now listens
+  for the end of the link only while it is open (`PeerLink.onEnd`).
+
 ### `Node` is the whole of a node — breaking
 
 `Node` handled one route, kept its data in memory, ran a `Server` only while

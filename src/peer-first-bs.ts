@@ -5,12 +5,14 @@
 // found in the LICENSE file in the root of this package.
 
 import {
-  BLOB_CHUNK_BYTES,
+  BlobBlock,
   BlobProperties,
   Bs,
   DownloadBlobOptions,
   ListBlobsOptions,
   ListBlobsResult,
+  readBlocks,
+  streamBlocks,
 } from '@rljson/bs';
 
 import { PeerReads } from './peer-reads.ts';
@@ -23,9 +25,10 @@ import { PeerReads } from './peer-reads.ts';
  * first, and whatever the peers cannot answer goes to the hub unchanged.
  * Writes, deletes, listings and signed URLs go to the hub directly.
  *
- * A stream switches sources mid-blob: blobs are content-addressed, so the
- * bytes after a peer broke off are the same on the hub, and the stream goes
- * on from there.
+ * A blob is read block by block, and every block is asked for on its own:
+ * from a peer when one holds it, otherwise from the hub. Blocks are
+ * content-addressed, so a read goes on from the hub where a peer broke off,
+ * and a peer serves any block it holds, whichever blob it came with.
  */
 export class PeerFirstBs implements Bs {
   // ...........................................................................
@@ -33,12 +36,10 @@ export class PeerFirstBs implements Bs {
    * Creates the wrapper.
    * @param _hub - The client's Bs to the hub.
    * @param _peers - The peer reads of this client.
-   * @param _chunkBytes - Size of one range read of a stream.
    */
   constructor(
     private readonly _hub: Bs,
     private readonly _peers: PeerReads,
-    private readonly _chunkBytes: number = BLOB_CHUNK_BYTES,
   ) {}
 
   // ...........................................................................
@@ -55,15 +56,14 @@ export class PeerFirstBs implements Bs {
    * Stores a blob on the hub.
    * @param content - The content.
    */
-  setBlob(
-    content: Buffer | string | ReadableStream,
-  ): Promise<BlobProperties> {
+  setBlob(content: Buffer | string | ReadableStream): Promise<BlobProperties> {
     return this._hub.setBlob(content);
   }
 
   // ...........................................................................
   /**
-   * Reads a blob: from a peer when one has it, otherwise from the hub.
+   * Reads a blob, or a range of it, block by block: each block from a peer
+   * when one has it, otherwise from the hub.
    * @param blobId - The blob.
    * @param options - Download options.
    */
@@ -71,53 +71,77 @@ export class PeerFirstBs implements Bs {
     blobId: string,
     options?: DownloadBlobOptions,
   ): Promise<{ content: Buffer; properties: BlobProperties }> {
+    const properties = await this.getBlobProperties(blobId);
+    const blocks = await this.getBlobBlocks(blobId);
+    const content = await readBlocks(
+      blocks,
+      (blockId) => this.getBlock(blockId),
+      options?.range,
+    );
+    return { content, properties };
+  }
+
+  // ...........................................................................
+  /**
+   * Streams a blob block by block: each block from a peer when one has it,
+   * otherwise from the hub.
+   * @param blobId - The blob.
+   */
+  async getBlobStream(blobId: string): Promise<ReadableStream> {
+    const blocks = await this.getBlobBlocks(blobId);
+    return streamBlocks(blobId, blocks, (blockId) => this.getBlock(blockId));
+  }
+
+  // ...........................................................................
+  /**
+   * A blob's blocks: from a peer when one has them, otherwise from the hub.
+   * @param blobId - The blob.
+   */
+  async getBlobBlocks(blobId: string): Promise<BlobBlock[]> {
     return (
-      (await this._peers.getBlob(blobId, options)) ??
-      this._hub.getBlob(blobId, options)
+      (await this._peers.getBlobBlocks(blobId)) ??
+      this._hub.getBlobBlocks(blobId)
     );
   }
 
   // ...........................................................................
   /**
-   * Streams a blob: from a peer when one has it, finishing from the hub when
-   * that peer breaks off.
-   * @param blobId - The blob.
+   * One block: from a peer when one has it, otherwise from the hub.
+   * @param blockId - The block.
    */
-  async getBlobStream(blobId: string): Promise<ReadableStream> {
-    const source = await this._peers.blobSource(blobId);
-    if (!source) return this._hub.getBlobStream(blobId);
+  async getBlock(blockId: string): Promise<Buffer> {
+    return (await this._peers.getBlock(blockId)) ?? this._hub.getBlock(blockId);
+  }
 
-    const { size } = source.properties;
-    const hub = this._hub;
-    const chunkBytes = this._chunkBytes;
-    let offset = 0;
-    let fromPeer = true;
+  // ...........................................................................
+  /**
+   * Whether a block exists: true as soon as a peer holds it, otherwise the
+   * hub's answer.
+   * @param blockId - The block.
+   */
+  async blockExists(blockId: string): Promise<boolean> {
+    return (
+      (await this._peers.blockExists(blockId)) || this._hub.blockExists(blockId)
+    );
+  }
 
-    return new ReadableStream<Uint8Array>({
-      pull: async (controller) => {
-        if (offset >= size) {
-          controller.close();
-          return;
-        }
-        const end = Math.min(offset + chunkBytes, size);
-        let content = fromPeer
-          ? await source.readRange(offset, end)
-          : undefined;
-        if (content === undefined) {
-          fromPeer = false;
-          content = (await hub.getBlob(blobId, { range: { start: offset, end } }))
-            .content;
-        }
-        if (content.length === 0) {
-          throw new Error(
-            `Blob '${blobId}' returned no bytes for range ` +
-              `${String(offset)}-${String(end)} of ${String(size)}`,
-          );
-        }
-        offset += content.length;
-        controller.enqueue(new Uint8Array(content));
-      },
-    });
+  // ...........................................................................
+  /**
+   * Stores one block on the hub.
+   * @param content - The block's bytes.
+   */
+  setBlock(content: Buffer): Promise<BlobBlock> {
+    return this._hub.setBlock(content);
+  }
+
+  // ...........................................................................
+  /**
+   * Stores a blob made of blocks the hub holds.
+   * @param blobId - The blob.
+   * @param blocks - Its blocks, in order.
+   */
+  setBlobBlocks(blobId: string, blocks: BlobBlock[]): Promise<BlobProperties> {
+    return this._hub.setBlobBlocks(blobId, blocks);
   }
 
   // ...........................................................................
@@ -136,7 +160,9 @@ export class PeerFirstBs implements Bs {
    * @param blobId - The blob.
    */
   async blobExists(blobId: string): Promise<boolean> {
-    return (await this._peers.blobExists(blobId)) || this._hub.blobExists(blobId);
+    return (
+      (await this._peers.blobExists(blobId)) || this._hub.blobExists(blobId)
+    );
   }
 
   // ...........................................................................

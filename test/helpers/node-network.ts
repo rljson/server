@@ -108,8 +108,7 @@ export class InProcessPorts {
   >();
 
   /** Connections attempted, by kind and outcome. */
-  readonly log: { port: number; handshake: PortHandshake; ok: boolean }[] =
-    [];
+  readonly log: { port: number; handshake: PortHandshake; ok: boolean }[] = [];
 
   /** Opens a port. */
   readonly createPortTransport: CreatePortTransport = async (port) => {
@@ -180,8 +179,8 @@ export class SocketIoPorts {
       maxHttpBufferSize: 64 * 1024 * 1024,
     });
     let check: (handshake: PortHandshake) => boolean = () => true;
-    let handler: (socket: SocketLike, handshake: PortHandshake) => void =
-      () => undefined;
+    let handler: (socket: SocketLike, handshake: PortHandshake) => void = () =>
+      undefined;
     const handshakeOf = (auth: Record<string, unknown>): PortHandshake => ({
       treeKeys: Array.isArray(auth.treeKeys)
         ? (auth.treeKeys as string[])
@@ -200,7 +199,13 @@ export class SocketIoPorts {
         for (const event of ['readRows', 'readRowsByHashes']) {
           socket.on(event, () => served.rows++);
         }
-        for (const event of ['getBlob', 'getBlobProperties', 'blobExists']) {
+        for (const event of [
+          'getBlobBlocks',
+          'getBlock',
+          'blockExists',
+          'getBlobProperties',
+          'blobExists',
+        ]) {
           socket.on(event, () => served.blobs++);
         }
       }

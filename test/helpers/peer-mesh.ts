@@ -98,7 +98,9 @@ export interface PeerMesh {
 const readEvents: Record<string, keyof HubServed> = {
   readRows: 'rows',
   readRowsByHashes: 'rows',
-  getBlob: 'blobs',
+  getBlobBlocks: 'blobs',
+  getBlock: 'blobs',
+  blockExists: 'blobs',
   getBlobProperties: 'blobs',
   blobExists: 'blobs',
 };
@@ -249,19 +251,25 @@ export const createPeerMesh = async (
     clientSockets.push(socket);
     await connected(socket);
     node.hubSocket = socket;
-    node.client = new Client(new SocketIoBridge(socket), node.io, node.bs, route, {
-      ...(options.peerReads === false
-        ? {}
-        : {
-            peerReads: {
-              timeoutMs: 300,
-              connectTimeoutMs: 300,
-              ...options.peerReads,
-              nodeId: node.nodeId,
-              connect,
-            },
-          }),
-    });
+    node.client = new Client(
+      new SocketIoBridge(socket),
+      node.io,
+      node.bs,
+      route,
+      {
+        ...(options.peerReads === false
+          ? {}
+          : {
+              peerReads: {
+                timeoutMs: 300,
+                connectTimeoutMs: 300,
+                ...options.peerReads,
+                nodeId: node.nodeId,
+                connect,
+              },
+            }),
+      },
+    );
     await node.client.init();
     await node.client.createTables({ withInsertHistory: tableCfgs });
     await node.io.createOrExtendTable({

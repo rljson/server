@@ -264,7 +264,14 @@ describe('PeerReadServer', () => {
       expect(await bs.listBlobs()).toEqual(
         expect.objectContaining({ blobs: [] }),
       );
+      expect(await bs.blockExists('anything')).toBe(false);
       await expect(bs.getBlob('anything')).rejects.toBeDefined();
+      await expect(bs.getBlock('anything')).rejects.toThrow(
+        'Block not found: anything',
+      );
+      await expect(bs.getBlobBlocks('anything')).rejects.toThrow(
+        'Blob not found: anything',
+      );
       await expect(bs.getBlobProperties('anything')).rejects.toBeDefined();
       await expect(bs.setBlob('x')).rejects.toBeDefined();
       await expect(bs.deleteBlob('anything')).rejects.toBeDefined();
@@ -321,10 +328,12 @@ describe('PeerReadServer', () => {
 
       await io.readRows({ table: TABLE, where: { a: 'first' } });
       await io.readRowsByHashes({ table: TABLE, hashes: local.hashes });
+      // One blob read is three requests: properties, block list, one block.
       await bs.getBlob(local.blobId);
       await bs.getBlobProperties(local.blobId);
       await bs.blobExists(local.blobId);
-      expect(server.stats).toEqual({ rowReads: 2, blobReads: 3 });
+      await bs.blockExists('a-block');
+      expect(server.stats).toEqual({ rowReads: 2, blobReads: 6 });
     });
 
     it('report stats as a copy', async () => {
@@ -396,8 +405,12 @@ describe('PeerReadServer', () => {
       server = await serve();
       const { bs } = await connect(server);
 
+      // A peer's setBlob sends blocks first: refused at the first one.
       await expect(bs.setBlob(Buffer.from('new'))).rejects.toThrow(
-        'Peer reads are read-only: setBlob refused',
+        'Peer reads are read-only: setBlock refused',
+      );
+      await expect(bs.setBlobBlocks(local.blobId, [])).rejects.toThrow(
+        'Peer reads are read-only: setBlobBlocks refused',
       );
       await expect(bs.deleteBlob(local.blobId)).rejects.toThrow(
         'Peer reads are read-only: deleteBlob refused',
@@ -524,8 +537,9 @@ describe('PeerReadServer', () => {
       const logger = new BufferedLogger();
       server = await serve({ ...options, logger });
       const peer = await connect(server);
-      (peer.serverSide as DirectionalSocketMock & { bufferedAmount: number })
-        .bufferedAmount = 1;
+      (
+        peer.serverSide as DirectionalSocketMock & { bufferedAmount: number }
+      ).bufferedAmount = 1;
       return { logger, ...peer };
     };
 

@@ -967,8 +967,10 @@ B reads the ref's rows/blobs:
   a serving gate (`maxConcurrentServes`, default `SL_CLIENT_MAX_SERVES` or 4).
 - **A failing peer is skipped.** A timeout, a refused or broken connection
   counts as a failure; the peer is skipped for `downMs`. A connection that
-  ends mid-read ends the read at once. A blob stream that loses its peer
-  finishes from the hub — blobs are content-addressed, so the bytes match.
+  ends mid-read ends the read at once. A blob is read block by block, each
+  block from a peer that holds it, otherwise from the hub — blocks are
+  content-addressed, so a stream that loses its peer goes on from the hub
+  with the same bytes. A read holds nothing once it is answered.
 
 ### With a Node
 
@@ -1003,7 +1005,7 @@ client.peerReads?.stats; // { hits, misses, failures }
 | Option              | Default  | Meaning                                                    |
 | ------------------- | -------- | ---------------------------------------------------------- |
 | `timeoutMs`         | 1 000    | Longest a row read or blob lookup waits for the peers       |
-| `blobTimeoutMs`     | 10 000   | Longest one blob chunk (up to 4 MB) may take on a peer      |
+| `blobTimeoutMs`     | 10 000   | Longest one block (up to 4 MB) may take on a peer           |
 | `connectTimeoutMs`  | 3 000    | Longest opening a peer connection may take                  |
 | `sourceTtlMs`       | 60 000   | How long a node stays a source after its last ref           |
 | `maxSourcesPerRead` | 2        | Sources one read asks at once, newest first                 |

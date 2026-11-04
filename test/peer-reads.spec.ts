@@ -14,6 +14,9 @@ import {
 } from '@rljson/io';
 import { exampleTableCfg } from '@rljson/rljson';
 
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -37,10 +40,18 @@ const allRows = { table: TABLE, where: {} };
 const readEvents = [
   'readRows',
   'readRowsByHashes',
-  'getBlob',
+  'getBlobBlocks',
+  'getBlock',
+  'blockExists',
   'getBlobProperties',
   'blobExists',
 ];
+
+/** Runs a full garbage collection. */
+const collectGarbage: () => void = (() => {
+  setFlagsFromString('--expose-gc');
+  return runInNewContext('gc') as () => void;
+})();
 
 /** Lets every pending promise chain run to its end. */
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -753,49 +764,64 @@ describe('PeerReads', () => {
     });
 
     // .........................................................................
-    describe('getBlob(blobId, options)', () => {
-      it('answers the content and properties from a source', async () => {
+    describe('getBlobBlocks(blobId)', () => {
+      it('answers the blocks from a source', async () => {
         const r = createReads();
 
         r.noteSource('a');
-        expect(await r.getBlob(properties.blobId)).toEqual({
-          content: Buffer.from('hello world'),
-          properties,
-        });
+        expect(await r.getBlobBlocks(properties.blobId)).toEqual(
+          await a.bs.getBlobBlocks(properties.blobId),
+        );
         expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
-      });
-
-      it('answers a range of the blob', async () => {
-        const r = createReads();
-
-        r.noteSource('a');
-        const blob = await r.getBlob(properties.blobId, {
-          range: { start: 6, end: 11 },
-        });
-        expect(blob).toEqual({ content: Buffer.from('world'), properties });
       });
 
       it('counts a miss when no source holds the blob', async () => {
         const r = createReads();
 
         r.noteSource('a');
-        expect(await r.getBlob('unknownBlob')).toBeUndefined();
+        expect(await r.getBlobBlocks('unknownBlob')).toBeUndefined();
+        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      });
+    });
+
+    // .........................................................................
+    describe('getBlock(blockId)', () => {
+      let blockId: string;
+
+      beforeEach(async () => {
+        [{ blockId }] = await a.bs.getBlobBlocks(properties.blobId);
+      });
+
+      it('answers the bytes from a source', async () => {
+        const r = createReads();
+
+        r.noteSource('a');
+        expect(await r.getBlock(blockId)).toEqual(Buffer.from('hello world'));
+        expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
+        expect(a.asked).toEqual(['getBlock']);
+      });
+
+      it('counts a miss when no source holds the block', async () => {
+        const r = createReads();
+
+        r.noteSource('a');
+        expect(await r.getBlock('unknownBlock')).toBeUndefined();
         expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
       });
 
-      it('answers undefined when the blob does not arrive within blobTimeoutMs', async () => {
+      it('answers undefined when the block does not arrive within blobTimeoutMs', async () => {
         a.silent = true;
         const r = createReads({ blobTimeoutMs: 200 });
 
         r.noteSource('a');
         await flush();
-        let blob: unknown = 'pending';
-        void r.getBlob(properties.blobId).then((b) => (blob = b));
+        let block: unknown = 'pending';
+        void r.getBlock(blockId).then((b) => (block = b));
 
         await vi.advanceTimersByTimeAsync(199);
-        expect(blob).toBe('pending');
+        expect(block).toBe('pending');
         await vi.advanceTimersByTimeAsync(1);
-        expect(blob).toBeUndefined();
+        expect(block).toBeUndefined();
       });
 
       it('counts a silent peer as failed and sets it aside', async () => {
@@ -804,12 +830,97 @@ describe('PeerReads', () => {
 
         r.noteSource('a');
         await flush();
-        const read = r.getBlob(properties.blobId);
+        const read = r.getBlock(blockId);
         await vi.advanceTimersByTimeAsync(200);
 
         expect(await read).toBeUndefined();
         expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 1 });
         expect(r.connectedPeers).toEqual([]);
+      });
+
+      it('answers undefined at once, and counts a failure, when the source breaks off mid-read', async () => {
+        const peer = scriptedPeer((serverSide) => {
+          serverSide.on('getBlock', () => serverSide.disconnect());
+        });
+        network.peers.set('b', peer);
+        const r = createReads();
+
+        r.noteSource('b');
+        expect(await r.getBlock(blockId)).toBeUndefined();
+        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 1 });
+        expect(r.connectedPeers).toEqual([]);
+        expect(peer.clientSides[0].connected).toBe(false);
+      });
+
+      it('counts a failure when the source answers with an error after its connection closed', async () => {
+        const peer = scriptedPeer((serverSide, clientSide) => {
+          serverSide.on('getBlock', (_blockId, ack) => {
+            // The transport is gone; its disconnect event is not out yet.
+            clientSide.connected = false;
+            ack(new Error('transport closed'));
+          });
+        });
+        network.peers.set('b', peer);
+        const r = createReads();
+
+        r.noteSource('b');
+        expect(await r.getBlock(blockId)).toBeUndefined();
+        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 1 });
+        expect(r.connectedPeers).toEqual([]);
+      });
+
+      it('answers undefined when the source sends other bytes than the block', async () => {
+        const peer = scriptedPeer((serverSide) => {
+          serverSide.on('getBlock', (_blockId, ack) =>
+            ack(null, Buffer.from('other bytes')),
+          );
+        });
+        network.peers.set('b', peer);
+        const r = createReads();
+
+        r.noteSource('b');
+        expect(await r.getBlock(blockId)).toBeUndefined();
+        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      });
+
+      it('holds no block it read once the read is answered, while the link stays open', async () => {
+        // A block is up to 4 MB, and a large file is hundreds of them. Held
+        // until the link closes, a file of 4 GB would cost 4 GB on the
+        // receiving node — measured on the lab as 447 MB of ArrayBuffers for a
+        // 400 MB file, released all at once when the idle link closed.
+        const bytes = Buffer.from('hello world');
+        const peer = scriptedPeer((serverSide) => {
+          // A fresh copy per answer, as over a real socket.
+          serverSide.on('getBlock', (_blockId, ack) =>
+            ack(null, Buffer.from(bytes)),
+          );
+        });
+        network.peers.set('b', peer);
+        const r = createReads();
+        r.noteSource('b');
+
+        // Read in a function of its own, so nothing here keeps the answer.
+        const readOnce = async (): Promise<[boolean, WeakRef<Buffer>]> => {
+          const block = (await r.getBlock(blockId))!;
+          return [block.equals(bytes), new WeakRef(block)];
+        };
+        const refs: WeakRef<Buffer>[] = [];
+        for (let i = 0; i < 3; i++) {
+          const [right, ref] = await readOnce();
+          expect(right).toBe(true);
+          refs.push(ref);
+        }
+        await flush();
+        collectGarbage();
+        await flush();
+        collectGarbage();
+
+        expect(r.connectedPeers).toEqual(['b']);
+        expect(refs.map((ref) => ref.deref())).toEqual([
+          undefined,
+          undefined,
+          undefined,
+        ]);
       });
 
       it('answers undefined after close', async () => {
@@ -819,8 +930,26 @@ describe('PeerReads', () => {
         await flush();
         await r.close();
 
-        expect(await r.getBlob(properties.blobId)).toBeUndefined();
+        expect(await r.getBlock(blockId)).toBeUndefined();
         expect(r.stats).toEqual(noStats);
+      });
+    });
+
+    // .........................................................................
+    describe('blockExists(blockId)', () => {
+      it('is true when a source holds the block', async () => {
+        const [{ blockId }] = await a.bs.getBlobBlocks(properties.blobId);
+        const r = createReads();
+
+        r.noteSource('a');
+        expect(await r.blockExists(blockId)).toBe(true);
+      });
+
+      it('is false when no source holds the block', async () => {
+        const r = createReads();
+
+        r.noteSource('a');
+        expect(await r.blockExists('unknownBlock')).toBe(false);
       });
     });
 
@@ -871,118 +1000,6 @@ describe('PeerReads', () => {
         await r.close();
 
         expect(await r.blobExists(properties.blobId)).toBe(false);
-      });
-    });
-
-    // .........................................................................
-    describe('blobSource(blobId)', () => {
-      it('finds the source holding the blob', async () => {
-        const r = createReads();
-
-        r.noteSource('a');
-        expect(await r.blobSource(properties.blobId)).toEqual({
-          nodeId: 'a',
-          properties,
-          readRange: expect.any(Function),
-        });
-        expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
-      });
-
-      it('answers undefined when no source holds the blob', async () => {
-        const r = createReads();
-
-        r.noteSource('a');
-        expect(await r.blobSource('unknownBlob')).toBeUndefined();
-        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
-      });
-
-      // .......................................................................
-      describe('readRange(start, end)', () => {
-        it('reads the bytes from start to end from the source', async () => {
-          const r = createReads();
-
-          r.noteSource('a');
-          const source = await r.blobSource(properties.blobId);
-
-          expect(await source!.readRange(0, 5)).toEqual(Buffer.from('hello'));
-          expect(await source!.readRange(6, 11)).toEqual(Buffer.from('world'));
-          expect(a.asked).toEqual(['getBlobProperties', 'getBlob', 'getBlob']);
-        });
-
-        it('answers undefined when the source sends no bytes', async () => {
-          const r = createReads();
-
-          r.noteSource('a');
-          const source = await r.blobSource(properties.blobId);
-
-          expect(await source!.readRange(3, 3)).toBeUndefined();
-          expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
-        });
-
-        it('answers undefined at once, and counts a failure, when the source breaks off mid-read', async () => {
-          const peer = scriptedPeer((serverSide) => {
-            serverSide.on('getBlobProperties', (_blobId, ack) =>
-              ack(null, properties),
-            );
-            serverSide.on('getBlob', () => serverSide.disconnect());
-          });
-          network.peers.set('b', peer);
-          const r = createReads();
-
-          r.noteSource('b');
-          const source = await r.blobSource(properties.blobId);
-          expect(source?.nodeId).toBe('b');
-
-          expect(await source!.readRange(0, 5)).toBeUndefined();
-          expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 1 });
-          expect(r.connectedPeers).toEqual([]);
-          expect(peer.clientSides[0].connected).toBe(false);
-        });
-
-        it('counts a failure when the source answers with an error after its connection closed', async () => {
-          const peer = scriptedPeer((serverSide, clientSide) => {
-            serverSide.on('getBlobProperties', (_blobId, ack) =>
-              ack(null, properties),
-            );
-            serverSide.on('getBlob', (_blobId, _options, ack) => {
-              // The transport is gone; its disconnect event is not out yet.
-              clientSide.connected = false;
-              ack(new Error('transport closed'));
-            });
-          });
-          network.peers.set('b', peer);
-          const r = createReads();
-
-          r.noteSource('b');
-          const source = await r.blobSource(properties.blobId);
-
-          expect(await source!.readRange(0, 5)).toBeUndefined();
-          expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 1 });
-          expect(r.connectedPeers).toEqual([]);
-        });
-
-        it('answers undefined when the source cannot be reached any more', async () => {
-          const r = createReads();
-
-          r.noteSource('a');
-          const source = await r.blobSource(properties.blobId);
-          network.peers.delete('a');
-          a.serverSides[0].disconnect();
-
-          expect(await source!.readRange(0, 5)).toBeUndefined();
-          expect(network.connects).toEqual(['a', 'a']);
-        });
-
-        it('answers undefined after close', async () => {
-          const r = createReads();
-
-          r.noteSource('a');
-          const source = await r.blobSource(properties.blobId);
-          await r.close();
-
-          expect(await source!.readRange(0, 5)).toBeUndefined();
-          expect(network.connects).toEqual(['a']);
-        });
       });
     });
   });
@@ -1141,7 +1158,9 @@ describe('PeerReads', () => {
 
       r.noteSource('a');
       expect(await r.readRows(allRows)).toEqual(await a.io.readRows(allRows));
-      expect((await r.getBlob(blobId))?.content).toEqual(Buffer.from('hello'));
+      expect(await r.getBlobBlocks(blobId)).toEqual(
+        await a.bs.getBlobBlocks(blobId),
+      );
 
       await r.close();
       expect(clientSides.map((s) => s.connected)).toEqual([false, false]);
@@ -1171,7 +1190,9 @@ describe('PeerReads', () => {
       const r = createReads();
 
       r.noteSource('a');
-      expect((await r.getBlob(blobId))?.content).toEqual(Buffer.from('hello'));
+      expect(await r.getBlobBlocks(blobId)).toEqual(
+        await a.bs.getBlobBlocks(blobId),
+      );
       const [ioClientSide, bsServerSide] = sockets;
       bsServerSide.disconnect();
 
@@ -1180,7 +1201,9 @@ describe('PeerReads', () => {
       expect(ioClientSide.connected).toBe(false);
       // … so the next read opens a fresh one instead of missing on a dead
       // socket until the link goes idle.
-      expect((await r.getBlob(blobId))?.content).toEqual(Buffer.from('hello'));
+      expect(await r.getBlobBlocks(blobId)).toEqual(
+        await a.bs.getBlobBlocks(blobId),
+      );
       expect(network.connects).toEqual(['a', 'a']);
       expect(r.stats.failures).toBe(0);
     });

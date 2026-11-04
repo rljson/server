@@ -4,16 +4,27 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import { Bs, BsMem, BsPeer, BsServer } from '@rljson/bs';
+import { BlobBlock, Bs, BsMem, BsPeer, BsServer } from '@rljson/bs';
 import { createSocketPair } from '@rljson/io';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { PeerBlobSource, PeerFirstBs, PeerReads } from '../src/index.ts';
+import { PeerFirstBs, PeerReads } from '../src/index.ts';
 
 // .............................................................................
 
-/** Ten bytes: three ranges of four, the last one short. */
+/** Ten bytes: one block. */
 const CONTENT = Buffer.from('0123456789');
+
+/** Bytes that do not repeat: several blocks. */
+const LARGE = (() => {
+  const bytes = Buffer.alloc(4 * 1024 * 1024);
+  let x = 1;
+  for (let i = 0; i < bytes.length; i++) {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+    bytes[i] = x >>> 24;
+  }
+  return bytes;
+})();
 
 /**
  * A blob store holding one blob.
@@ -51,39 +62,36 @@ const readAll = async (
 };
 
 /**
- * Peer reads whose one source is a hand-written blob source, for the cases a
+ * Peer reads whose one source is a hand-written block source, for the cases a
  * real peer cannot be made to show on cue: breaking off mid-blob, or
- * answering a range with nothing.
+ * answering with the blocks of another blob.
  */
-class OneBlobSource extends PeerReads {
-  /** Every range the source was asked for, in order. */
-  readonly asked: Array<[number, number]> = [];
+class OneBlockSource extends PeerReads {
+  /** Every block the source was asked for, in order. */
+  readonly asked: string[] = [];
 
   /**
    * Creates the peer reads.
-   * @param _size - The size the source reports.
-   * @param _answer - What the source answers for a range.
+   * @param _blocks - The blocks the source reports.
+   * @param _answer - What the source answers for a block.
    */
   constructor(
-    private readonly _size: number,
+    private readonly _blocks: BlobBlock[],
     private readonly _answer: (
-      start: number,
-      end: number,
+      blockId: string,
       call: number,
-    ) => Buffer | undefined,
+    ) => Promise<Buffer | undefined>,
   ) {
     super({ nodeId: 'me', connect: async () => undefined });
   }
 
-  override async blobSource(blobId: string): Promise<PeerBlobSource> {
-    return {
-      nodeId: 'peer-1',
-      properties: { blobId, size: this._size, createdAt: new Date() },
-      readRange: async (start, end) => {
-        this.asked.push([start, end]);
-        return this._answer(start, end, this.asked.length);
-      },
-    };
+  override async getBlobBlocks(): Promise<BlobBlock[]> {
+    return this._blocks;
+  }
+
+  override async getBlock(blockId: string): Promise<Buffer | undefined> {
+    this.asked.push(blockId);
+    return this._answer(blockId, this.asked.length);
   }
 }
 
@@ -193,7 +201,8 @@ describe('PeerFirstBs', () => {
       });
 
       expect(content).toEqual(Buffer.from('89'));
-      expect(peers!.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      // Properties, block list and block: each asked of the peer first.
+      expect(peers!.stats).toEqual({ hits: 0, misses: 3, failures: 0 });
     });
   });
 
@@ -245,36 +254,62 @@ describe('PeerFirstBs', () => {
   });
 
   // ...........................................................................
-  describe('getBlobStream(blobId)', () => {
-    it('streams the whole blob from a peer, range by range', async () => {
+  describe('block reads and writes', () => {
+    it('ask a peer that holds the block first, then the hub', async () => {
       const { bs: peerBs, blobId } = await storeWith(CONTENT);
+      const [block] = await peerBs.getBlobBlocks(blobId);
+      const hub = new BsMem();
+      const bs = new PeerFirstBs(hub, await peerHolding(peerBs));
+
+      expect(await bs.getBlobBlocks(blobId)).toEqual([block]);
+      expect(await bs.getBlock(block.blockId)).toEqual(CONTENT);
+      expect(await bs.blockExists(block.blockId)).toBe(true);
+      expect(await bs.blockExists('missing')).toBe(false);
+      await expect(bs.getBlock('missing')).rejects.toThrow(
+        'Block not found: missing',
+      );
+    });
+
+    it('write blocks and blobs to the hub', async () => {
+      const hub = new BsMem();
+      const bs = new PeerFirstBs(hub, noPeers());
+
+      const block = await bs.setBlock(CONTENT);
+      expect(await hub.blockExists(block.blockId)).toBe(true);
+      const blobId = await blobIdOf();
+      expect((await bs.setBlobBlocks(blobId, [block])).blobId).toBe(blobId);
+      expect(await hub.blobExists(blobId)).toBe(true);
+    });
+  });
+
+  // ...........................................................................
+  describe('getBlobStream(blobId)', () => {
+    it('streams the whole blob from a peer, block by block', async () => {
+      const { bs: peerBs, blobId } = await storeWith(LARGE);
       // The hub holds nothing: a single read from it would fail the stream.
-      const bs = new PeerFirstBs(new BsMem(), await peerHolding(peerBs), 4);
+      const bs = new PeerFirstBs(new BsMem(), await peerHolding(peerBs));
 
       const { bytes, chunks } = await readAll(await bs.getBlobStream(blobId));
 
-      expect(bytes).toEqual(CONTENT);
-      expect(chunks).toBe(3);
+      expect(bytes.equals(LARGE)).toBe(true);
+      expect(chunks).toBe((await peerBs.getBlobBlocks(blobId)).length);
+      expect(chunks).toBeGreaterThan(1);
     });
 
     it('finishes from the hub with the same bytes when the peer breaks off mid-blob', async () => {
-      const { bs: hub, blobId } = await storeWith(CONTENT);
-      // The peer serves the first range, then fails.
-      const breaking = new OneBlobSource(CONTENT.length, (start, end, call) =>
-        call === 1 ? CONTENT.subarray(start, end) : undefined,
+      const { bs: hub, blobId } = await storeWith(LARGE);
+      const blocks = await hub.getBlobBlocks(blobId);
+      // The peer serves the first block, then nothing.
+      const breaking = new OneBlockSource(blocks, async (blockId, call) =>
+        call === 1 ? hub.getBlock(blockId) : undefined,
       );
       peers = breaking;
-      const bs = new PeerFirstBs(hub, breaking, 4);
+      const bs = new PeerFirstBs(hub, breaking);
 
-      const { bytes, chunks } = await readAll(await bs.getBlobStream(blobId));
+      const { bytes } = await readAll(await bs.getBlobStream(blobId));
 
-      expect(bytes).toEqual(CONTENT);
-      expect(chunks).toBe(3);
-      // Once broken off, the peer is not asked again.
-      expect(breaking.asked).toEqual([
-        [0, 4],
-        [4, 8],
-      ]);
+      expect(bytes.equals(LARGE)).toBe(true);
+      expect(breaking.asked).toEqual(blocks.map((b) => b.blockId));
     });
 
     it('is the hub’s own stream when no peer holds the blob', async () => {
@@ -297,17 +332,19 @@ describe('PeerFirstBs', () => {
       expect(chunks).toBe(0);
     });
 
-    it('fails instead of spinning when a range comes back empty', async () => {
+    it('fails when the blocks do not make the blob', async () => {
       const blobId = await blobIdOf();
-      // The peer claims two bytes more than the blob has.
-      const overstating = new OneBlobSource(CONTENT.length + 2, (start, end) =>
-        CONTENT.subarray(start, end),
+      const other = await storeWith(Buffer.from('another blob'));
+      // The peer answers with the blocks of another blob.
+      const lying = new OneBlockSource(
+        await other.bs.getBlobBlocks(other.blobId),
+        (blockId) => other.bs.getBlock(blockId),
       );
-      peers = overstating;
-      const bs = new PeerFirstBs(new BsMem(), overstating, 4);
+      peers = lying;
+      const bs = new PeerFirstBs(new BsMem(), lying);
 
       await expect(readAll(await bs.getBlobStream(blobId))).rejects.toThrow(
-        `Blob '${blobId}' returned no bytes for range 10-12 of 12`,
+        `Blocks of blob '${blobId}' make '${other.blobId}'`,
       );
     });
   });

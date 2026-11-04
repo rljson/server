@@ -314,7 +314,8 @@ describe('WorkerRoute', () => {
       expect((rows.notes._data[0] as { a: string }).a).toBe('x');
       expect(Buffer.isBuffer(blob.content)).toBe(true);
       expect(blob.content.toString()).toBe('a blob');
-      expect(member.peerServer!.stats).toEqual({ rowReads: 1, blobReads: 1 });
+      // One blob read is three requests: properties, block list, one block.
+      expect(member.peerServer!.stats).toEqual({ rowReads: 1, blobReads: 3 });
     });
 
     it('gives up on a worker that does not answer within requestTimeoutMs', async () => {
