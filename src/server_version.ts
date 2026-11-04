@@ -2,4 +2,4 @@
 // Kept in sync by test/server_version.spec.ts.
 
 /** The version of the `@rljson/server` package. */
-export const serverVersion = '0.1.0';
+export const serverVersion = '0.2.0';
