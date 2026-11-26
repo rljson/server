@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### The rljson DNA without the prompts hook
+
+- `@rljson/dna-rljson` 0.4.0: the Claude Code hook that would keep every
+  prompt in a project management repo is gone, with `.claude/hooks` and
+  `.claude/settings.json`. New are the architecture guide, the
+  `/gg-review-architecture` skill and the gg guides and skills of dna-gg
+  1.9, and a `.pubignore`.
+
+## [0.2.0]
+
 ### Peer reads move blocks — breaking
 
 - **`PeerFirstBs` reads block by block:** each block from a peer that holds
