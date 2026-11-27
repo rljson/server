@@ -21,25 +21,25 @@ importers:
   .:
     dependencies:
       '@rljson/bs':
-        specifier: link:.gg\ts_links\@rljson\bs
+        specifier: link:.gg/ts_links/@rljson/bs
         version: link:.gg/ts_links/@rljson/bs
       '@rljson/db':
-        specifier: link:.gg\ts_links\@rljson\db
+        specifier: link:.gg/ts_links/@rljson/db
         version: link:.gg/ts_links/@rljson/db
       '@rljson/hash':
-        specifier: link:.gg\ts_links\@rljson\hash
+        specifier: link:.gg/ts_links/@rljson/hash
         version: link:.gg/ts_links/@rljson/hash
       '@rljson/io':
-        specifier: link:.gg\ts_links\@rljson\io
+        specifier: link:.gg/ts_links/@rljson/io
         version: link:.gg/ts_links/@rljson/io
       '@rljson/json':
         specifier: 0.0.23
         version: 0.0.23
       '@rljson/network':
-        specifier: link:.gg\ts_links\@rljson\network
+        specifier: link:.gg/ts_links/@rljson/network
         version: link:.gg/ts_links/@rljson/network
       '@rljson/rljson':
-        specifier: link:.gg\ts_links\@rljson\rljson
+        specifier: link:.gg/ts_links/@rljson/rljson
         version: link:.gg/ts_links/@rljson/rljson
     devDependencies:
       '@rljson/dna-rljson':
