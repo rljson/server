@@ -17,6 +17,7 @@ import {
 import { Readable } from 'node:stream';
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -532,15 +533,19 @@ describe('[Socket.IO namespaces] Bs Operations over BsMulti Integration', () => 
   let serverBs: BsMem;
 
   beforeAll(async () => {
-    harness = await createNamespaceHarness(clientCount);
     serverBs = new BsMem();
   });
 
-  afterAll(async () => {
+  // A fresh harness per test: the clients and servers of earlier tests are
+  // never torn down, so on shared sockets their bridges keep answering blob
+  // requests — and the first answer wins, whichever test it belongs to.
+  afterEach(async () => {
     await harness.close();
   });
 
   beforeEach(async () => {
+    harness = await createNamespaceHarness(clientCount);
+
     // Recreate serverIo for each test
     serverIo = new IoMem();
     await serverIo.init();
@@ -744,8 +749,8 @@ describe('[Socket.IO namespaces] Bs Operations over BsMulti Integration', () => 
       // Client A sees it locally
       expect(await clientA.bs!.blobExists(blobId)).toBe(true);
 
-      // Client B should not see it (not on server, only in A's local storage)
-      expect(await clientB.bs!.blobExists(blobId)).toBe(false);
+      // Client B can still resolve via server proxy pulling from Client A
+      expect(await clientB.bs!.blobExists(blobId)).toBe(true);
     });
   });
 

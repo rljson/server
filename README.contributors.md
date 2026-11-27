@@ -17,7 +17,7 @@ found in the LICENSE file in the root of this package.
 ## Prerequisites
 
 - Node.js v22.14.0+
-- pnpm v10 (see [install-node-mac.md](doc/install-node-mac.md) or [install-node-win.md](doc/install-node-win.md))
+- pnpm v10 (see [install-node-mac.md](doc/en/install-node-mac.md) or [install-node-win.md](doc/en/install-node-win.md))
 - Optional: sibling repos `rljson-io`, `rljson-bs`, `rljson-db`, `rljson` if you prefer linking for local development
 
 ## Setup
@@ -60,7 +60,7 @@ By default we consume published npm versions. If you want to work against local 
 
 ## More docs
 
-- [doc/prepare.md](doc/prepare.md)
-- [doc/develop.md](doc/develop.md)
-- [doc/create-new-repo.md](doc/create-new-repo.md)
-- [doc/fast-coding-guide.md](doc/fast-coding-guide.md)
+- [doc/en/prepare.md](doc/en/prepare.md)
+- [doc/en/develop.md](doc/en/develop.md)
+- [doc/en/create-new-repo.md](doc/en/create-new-repo.md)
+- [doc/en/fast-coding-guide.md](doc/en/fast-coding-guide.md)
