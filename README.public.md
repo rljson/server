@@ -403,6 +403,32 @@ const server = new Server(route, io, bs, {
 | `disableLocalCache`     | false      | When true, the server skips creating local IoMem/BsMem caches. The server acts as a pure relay, reading data only from connected client peers. Useful for memory-constrained deployments. |
 | `onRefArrived`          | undefined  | Hook awaited for every new ref before multicast. Receives `{ tenantId?, route, ref, sourceNodeId }`. If it throws, the ref is dropped (neither archived nor forwarded). See [EventHub archival hook](#eventhub-archival-hook--tenant-keyed-multicast). |
 | `stamp`                 | undefined  | `{ domain, hub, stateFile?, minEpoch? }`. Stamps every ref this server relays with a `RefStamp`, so the fleet shares one order that no clock decides. See [Stamps](#stamps-one-order-for-the-fleet-from-no-clock). |
+| `events`                | new `DbEvents` | The event model of `server.db`. Its hooks see every read and write a client makes on the hub's stores. See [Hooks on client reads and writes](#hooks-on-client-reads-and-writes). |
+
+### Hooks on client reads and writes
+
+Clients read and write the hub's stores through `server.db`, a `Db` of
+`@rljson/db` over the hub's `IoMulti`. Every request passes the hooks of its
+event model, `server.db.events`, with the context `{ peer: <client id> }`:
+
+```ts
+import { DbEvents } from '@rljson/db';
+
+const events = new DbEvents();
+events.beforeWrite(() => ({ refuse: 'read only' }), { tables: ['cars'] });
+events.beforeRead((event) => ({
+  filter: (row) => row.owner === event.context.peer,
+}));
+
+const server = new Server(route, io, bs, { events });
+```
+
+- A refused request reaches the client as an error; a filter removes rows
+  from what the client reads or writes.
+- Hooks can also be added later: `server.db.events.beforeRead(…)`.
+- The hub's own reads and writes through `server.io` and `server.ownIo` do not pass
+  the hooks. The network control — which ref goes to which client — stays
+  with the server.
 
 ## Client options
 

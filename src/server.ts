@@ -5,7 +5,7 @@
 // found in the LICENSE file in the root of this package.
 
 import { Bs, BsMem, BsMulti, BsMultiBs, BsPeer, BsServer } from '@rljson/bs';
-import { stateBeaconEvent } from '@rljson/db';
+import { Db, DbEvents, stateBeaconEvent } from '@rljson/db';
 import {
   Io,
   IoMem,
@@ -205,6 +205,14 @@ export interface ServerOptions {
    * relay forwards a ref to everybody but its sender.
    */
   stamp?: StampOptions;
+
+  /**
+   * The event model of {@link Server.db}. Every read and write a client makes
+   * on the hub's stores passes its hooks, with the context `{ peer }`, `peer`
+   * being the hub's id of that client. Default: a new event model without
+   * hooks, which lets everything pass.
+   */
+  events?: DbEvents;
 }
 
 // .............................................................................
@@ -263,8 +271,22 @@ export class Server extends BaseNode {
   private _ios: IoMultiIo[] = [];
   private _ioMulti: IoMulti;
 
-  // Storage => Let Clients read from Servers Io
-  private _ioServer: IoServer;
+  /**
+   * The hub's stores as a Db: clients read and write through it, so the hooks
+   * of its event model see every request. See {@link Server.db}.
+   */
+  private readonly _db: Db;
+
+  /**
+   * Lets clients read from the server's Io: one IoServer per client, so
+   * that the hooks learn which client asks, with the backpressure wrapper it
+   * serves on, so `removeSocket` unregisters the very handlers `addSocket`
+   * registered. Keyed by the client's raw `ioDown`.
+   */
+  private readonly _ioServers: Map<
+    Socket,
+    { ioServer: IoServer; gated: Socket }
+  > = new Map();
 
   private _bss: BsMultiBs[] = [];
   private _bsMulti: BsMulti;
@@ -275,12 +297,9 @@ export class Server extends BaseNode {
   // Two-generation ref dedup: refs in current or previous are considered seen.
   // On each eviction tick, previous is discarded and current becomes previous.
   /**
-   * The backpressure wrapper registered for each client's `ioDown`, so
-   * `removeSocket` unregisters the very handlers `addSocket` registered.
-   */
-  private _gatedIoDown: Map<Socket, Socket> = new Map();
-  /**
-   * The same, for the BLOB channel.
+   * The backpressure wrapper registered for each client's `bsDown`, so
+   * `removeSocket` unregisters the very handlers `addSocket` registered —
+   * the same as {@link _ioServers} keeps for the row channel.
    *
    * **Blob serving was the one channel with no bound at all**, which is the
    * channel that moves the largest payloads in the system. Rows were gated
@@ -524,8 +543,12 @@ export class Server extends BaseNode {
     // when a bridge asks for `ownIo`, and a view over `undefined` throws.
     this._ownIoMulti = new IoMulti(this._ios);
 
-    // Initialize IoServer
-    this._ioServer = new IoServer(this._ioMulti);
+    // Clients are served through a Db over the CURRENT multi: the view
+    // follows every rebuild, so the Db never has to be replaced.
+    this._db = new Db(
+      liveView<Io>(() => this._ioMulti),
+      { events: options?.events },
+    );
 
     if (!this._disableLocalCache && this._localBs !== undefined) {
       const bsMultiBsLocal = {
@@ -1191,6 +1214,19 @@ export class Server extends BaseNode {
    */
   get io(): Io {
     /* v8 ignore next -- @preserve */ return this._ioMulti;
+  }
+
+  /**
+   * The Db the clients read and write the hub's stores through.
+   *
+   * Hooks registered on `db.events` run before every read and write a client
+   * makes here and may allow, refuse or filter it; the context of each event
+   * names the client as `{ peer }`. The hub's own reads and writes through
+   * {@link io} do not pass them.
+   * @returns The Db over the hub's stores.
+   */
+  get db(): Db {
+    return this._db;
   }
 
   /**
@@ -2023,7 +2059,6 @@ export class Server extends BaseNode {
     });
 
     try {
-      (this._ioServer as any)._io = this._ioMulti;
       (this._bsServer as any)._bs = this._bsMulti;
 
       for (const pending of this._pendingSockets) {
@@ -2049,8 +2084,9 @@ export class Server extends BaseNode {
             this._backpressure.onThrottle?.(waitedMs, queuedBytes);
           },
         });
-        this._gatedIoDown.set(pending.ioDown, gated);
-        await this._ioServer.addSocket(gated);
+        const ioServer = new IoServer(this._db.ioFor({ peer: clientId }));
+        this._ioServers.set(pending.ioDown, { ioServer, gated });
+        await ioServer.addSocket(gated);
 
         // **The same gate, deliberately.** A separate gate per channel would
         // bound each and neither: the memory that kills a hub is the total of
@@ -2154,10 +2190,10 @@ export class Server extends BaseNode {
     // sockets registered here in the first place — io/bs is null for
     // those — so there is nothing to unregister.
     if (client.io) {
-      this._ioServer.removeSocket(
-        this._gatedIoDown.get(client.ioDown) ?? client.ioDown,
-      );
-      this._gatedIoDown.delete(client.ioDown);
+      // Absent when the client is rolled back before it was ever served
+      const served = this._ioServers.get(client.ioDown);
+      served?.ioServer.removeSocket(served.gated);
+      this._ioServers.delete(client.ioDown);
     }
     if (client.bs) {
       // The wrapper, not the raw socket: `removeSocket` has to unregister the
@@ -2239,6 +2275,7 @@ export class Server extends BaseNode {
     // Clear all client-related data
     this._clients.clear();
     this._pendingSockets = [];
+    this._ioServers.clear();
 
     // Close IoMulti
     /* v8 ignore else -- @preserve */

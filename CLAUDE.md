@@ -15,6 +15,17 @@ Server layer for the RLJSON ecosystem. Depends on `@rljson/rljson`, `@rljson/io`
 - **`stateBeaconEvent` comes from `@rljson/db`**, next to the Connector that
   deliberately ignores it. Never spell the event name out here.
 
+## Client requests pass the event model of `@rljson/db`
+
+- **Clients reach the hub's stores only through `server.db`.** Each client
+  gets its own `IoServer` on `server.db.ioFor({ peer: clientId })`. Never
+  serve a client from `_ioMulti` directly: its requests would skip every
+  hook of `server.db.events`.
+- **`server.db` sits on a live view of `_ioMulti`.** Rebuilding the multis
+  needs no re-pointing of the `Db` or the `IoServer`s.
+- **The hub's own reads and writes stay outside the hooks** (`io`, `ownIo`), and so
+  does the network control: which ref goes to which client.
+
 ## Peer reads (ONE-454)
 
 - **Peers stay inside the hub's slot.** `PeerFirstIo` / `PeerFirstBs` wrap the

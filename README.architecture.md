@@ -212,8 +212,8 @@ The `Server` class acts as a central coordination point that:
 │           │                                        │
 │           ▼                                        │
 │  ┌──────────────────────────────────────────────┐ │
-│  │          IoServer                            │ │
-│  │  (Exposes IoMulti to clients)                │ │
+│  │  server.db (Db over IoMulti, DbEvents hooks) │ │
+│  │  IoServer per client: db.ioFor({ peer })     │ │
 │  └──────────────────────────────────────────────┘ │
 │                                                    │
 │  Connected Clients:                                │
@@ -232,6 +232,7 @@ The `Server` class acts as a central coordination point that:
 - `tearDown()` stops the eviction timer, removes all listeners/disconnect handlers, clears clients, closes IoMulti, and resets all internal state.
 - Multicast uses `__origin` markers plus a **two-generation ref set** (`_multicastedRefsCurrent` / `_multicastedRefsPrevious`) to avoid echo loops and duplicate ref forwarding. Refs are evicted on a configurable interval (`refEvictionIntervalMs`, default 60 s) to prevent unbounded memory growth.
 - Pending sockets are refreshed together so multiple joins trigger a single multi rebuild.
+- Clients are served through `server.db`, a `Db` of `@rljson/db` over a live view of the current `IoMulti`. Each client gets its own `IoServer` on `db.ioFor({ peer: clientId })`, so the hooks of `server.db.events` (`ServerOptions.events`) see every read and write of a client and know which client it is. The view follows every multi rebuild, so the `Db` and the `IoServer`s are never re-pointed. The hub's own reads and writes (`server.io`, `server.ownIo`) bypass the hooks.
 - All lifecycle events, errors, and traffic are logged via the injected `ServerLogger` (defaults to `NoopLogger`).
 - Traffic logging captures inbound refs from clients and outbound multicasts with `from`/`to` client IDs.
 - Disconnected sockets are auto-detected: a `'disconnect'` listener triggers `removeSocket()`, cleaning up dead peers and rebuilding multis.
@@ -1223,7 +1224,8 @@ accurate on both sides.)
 
 **`removeSocket()` listener cleanup.** After filtering the departing
 client's peer out of `_ios`/`_bss`, `removeSocket()` now also calls
-`this._ioServer.removeSocket(client.ioDown)` and
+the `removeSocket()` of the client's own `IoServer` (with the backpressure
+wrapper it was registered on) and
 `this._bsServer.removeSocket(client.bsDown)`. Before `@rljson/io@0.0.73` /
 `@rljson/bs@0.0.25`, these calls only forgot the socket in `IoServer`'s /
 `BsServer`'s own bookkeeping — the CRUD listeners registered in

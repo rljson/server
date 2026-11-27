@@ -9,7 +9,7 @@
   "name": "@rljson/server",
 
   // 1-2 sentence summary about this repo.
-  "summary": "Network layer of Rljson. Node: one port in every role, a hub service for every route (HubRoutes, one Server each), route members that follow the elected hub (ClientRoute in process, WorkerRoute in a worker over ChannelSocket). Client keeps writes local and pulls by ref (local, peers, hub). Peer reads: read announced data from its sender first, hub as fallback.",
+  "summary": "Network layer of Rljson. Node: one port in every role, a hub service for every route (HubRoutes, one Server each), route members that follow the elected hub (ClientRoute in process, WorkerRoute in a worker over ChannelSocket). Client keeps writes local and pulls by ref (local, peers, hub). Peer reads: read announced data from its sender first, hub as fallback. Clients read and write the hub through server.db: DbEvents hooks see every request, context { peer }.",
 
   // 1-3 bullet points: the problem space.
   "domain": [
@@ -27,7 +27,7 @@
       "rljson": "ConnectorPayload (src), syncEvents, RefStamp, Route",
       "io": "Io, IoMulti, IoPeer, IoPeerBridge, IoServer, IoMem",
       "bs": "Bs, BsMulti, BsPeer, BsPeerBridge, BsServer, BsMem; readBlocks, streamBlocks for block-by-block peer reads",
-      "db": "Db, Connector, stateBeaconEvent",
+      "db": "Db, DbEvents (server.db, ioFor per client), Connector, stateBeaconEvent",
       "network": "NetworkManager: roles, topology, resolvePeerAddress"
     },
 

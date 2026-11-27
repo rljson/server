@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Client requests pass the event model of `@rljson/db`
+
+- **`server.db`:** clients read and write the hub's stores through a `Db`
+  over the hub's `IoMulti`, no longer through an `IoServer` directly on the
+  multi. Every request passes the hooks of `server.db.events` with the
+  context `{ peer: <client id> }`: a hook can refuse it or filter its rows.
+- **`ServerOptions.events`** hands in the event model; by default a new one
+  without hooks lets everything pass, as before.
+- One `IoServer` per client; the hub's own reads and writes (`io`, `ownIo`) and the
+  network control are unchanged.
+
 ### Peer reads move blocks — breaking
 
 - **`PeerFirstBs` reads block by block:** each block from a peer that holds
