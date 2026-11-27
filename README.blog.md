@@ -29,4 +29,4 @@ Add posts as Markdown entries in this file (newest last). Keep each post small a
 ## 2026-11-02 — Node becomes the base of every node
 
 - `Node`: one port in every role, a hub service for every route, members that follow the hub; peer reads from the source of a ref
-- Post: [doc/blog/2026/2026-11-02-node-becomes-the-base-of-every-node.md](doc/blog/2026/2026-11-02-node-becomes-the-base-of-every-node.md), German: [doc/de/blog/2026/2026-11-02-node-becomes-the-base-of-every-node.md](doc/de/blog/2026/2026-11-02-node-becomes-the-base-of-every-node.md)
+- Post: [pm/en/2026-Q4/blog/2026-11-02-node-becomes-the-base-of-every-node.md](pm/en/2026-Q4/blog/2026-11-02-node-becomes-the-base-of-every-node.md), German: [pm/de/2026-Q4/blog/2026-11-02-node-becomes-the-base-of-every-node.md](pm/de/2026-Q4/blog/2026-11-02-node-becomes-the-base-of-every-node.md)
