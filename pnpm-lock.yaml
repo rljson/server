@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
+  '@rljson/db': link:./.gg/ts_links/@rljson/db
   eslint-plugin-tsdoc>@typescript-eslint/utils: ^8.60.1
 
 importers:
@@ -15,8 +16,8 @@ importers:
         specifier: 0.1.1
         version: 0.1.1
       '@rljson/db':
-        specifier: 0.1.4
-        version: 0.1.4
+        specifier: link:.gg/ts_links/@rljson/db
+        version: link:.gg/ts_links/@rljson/db
       '@rljson/hash':
         specifier: 0.0.21
         version: 0.0.21
@@ -452,10 +453,6 @@ packages:
 
   '@rljson/bs@0.1.1':
     resolution: {integrity: sha512-bXQiHb63miObIN8HoZzbk7UmtRVRnPgR6kjtOkOyVHCnUOAy9KURocvjPzfRTQefDWZWebdwLESH08hVQTIPbw==}
-    engines: {node: '>=22.14.0'}
-
-  '@rljson/db@0.1.4':
-    resolution: {integrity: sha512-X7e1+dkmriI5hTqBXasI7pdKUvyYK2g93oyyWcZVpF3oRuuMUP/4rPS7vSCiyYEVIMU/JFXY57X3+dERXdrspg==}
     engines: {node: '>=22.14.0'}
 
   '@rljson/dna-rljson@0.3.2':
@@ -1200,9 +1197,6 @@ packages:
   file-entry-cache@11.1.5:
     resolution: {integrity: sha512-+PFTHITI08JIGhnNpGNI8T8inUpgZfk3GNEqfT9R2zZV2iFXg3CvqzSl/uEhs7TSGujYRELEANyDvS8Fj7+S7Q==}
 
-  filtrex@3.1.0:
-    resolution: {integrity: sha512-mHzZ2wUISETF1OaEcNRiGz1ljuIV8c/C9td9qyAZ+wTwigkAk5RO9YrCxQKk5H9v7joDRFIBik9U5RTK9eXZ/A==}
-
   find-up@5.0.0:
     resolution: {integrity: sha512-78/PXT1wlLLDgTzDs7sjq9hzz0vXD+zn+7wypEe4fXQxCmdmqfGsEPQxmiCSQI3ajFV91bVSsvNtrJRiW6nGng==}
     engines: {node: '>=10'}
@@ -1532,10 +1526,6 @@ packages:
 
   object-deep-merge@2.0.1:
     resolution: {integrity: sha512-aKttDKcU3pyZqKcCkDhsMn70WmZFG2JGDQLP9EcLyTSIFQRCPWLAmBZRLJnrVUrhPG1jETEEbfdgbNtJf1LyMg==}
-
-  object-traversal@1.0.1:
-    resolution: {integrity: sha512-aLXtM9kbcG/ePyZfB45B0FrIdu1yy3udQjIVmp2IVl2np52dBK5ZZBhdyUKFT6neCutwDhCW/kQ+e/0K5n/Jhw==}
-    engines: {node: '>=10'}
 
   obug@2.2.1:
     resolution: {integrity: sha512-XrsrhT5sybtKI6wakr2SPOlGZWWYbUXZ7a0jT8/QOeAPau+1X/bSegNe5YR75oJmEZQbKningirmGOEJCIk61Q==}
@@ -2339,16 +2329,6 @@ snapshots:
       '@rljson/json': 0.0.23
       '@rljson/rljson': 0.0.89
 
-  '@rljson/db@0.1.4':
-    dependencies:
-      '@rljson/hash': 0.0.21
-      '@rljson/io': 0.0.88
-      '@rljson/json': 0.0.23
-      '@rljson/rljson': 0.0.89
-      '@rljson/validate': 0.0.15
-      filtrex: 3.1.0
-      object-traversal: 1.0.1
-
   '@rljson/dna-rljson@0.3.2':
     dependencies:
       '@ggdna/dna-blog': 0.3.0
@@ -3078,8 +3058,6 @@ snapshots:
     dependencies:
       flat-cache: 6.1.23
 
-  filtrex@3.1.0: {}
-
   find-up@5.0.0:
     dependencies:
       locate-path: 6.0.0
@@ -3374,8 +3352,6 @@ snapshots:
   object-assign@4.1.1: {}
 
   object-deep-merge@2.0.1: {}
-
-  object-traversal@1.0.1: {}
 
   obug@2.2.1: {}
 
