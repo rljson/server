@@ -53,13 +53,13 @@
     "vitest-dom": "^0.1.1"
   },
   "dependencies": {
-    "@rljson/bs": "0.1.1",
-    "@rljson/db": "0.1.4",
-    "@rljson/hash": "0.0.21",
-    "@rljson/io": "0.0.88",
+    "@rljson/bs": "0.1.2",
+    "@rljson/db": "0.1.5",
+    "@rljson/hash": "0.0.22",
+    "@rljson/io": "0.0.89",
     "@rljson/json": "0.0.23",
-    "@rljson/network": "0.0.28",
-    "@rljson/rljson": "0.0.89"
+    "@rljson/network": "0.0.29",
+    "@rljson/rljson": "0.0.90"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
