@@ -5,9 +5,16 @@
 // found in the LICENSE file in the root of this package.
 
 import { Bs, BsMulti, BsMultiBs, BsPeer, BsPeerBridge } from '@rljson/bs';
-import { Connector, Db } from '@rljson/db';
+import { Connector, Db, MissingRows, stateBeaconEvent } from '@rljson/db';
 import { Io, IoMulti, IoMultiIo, IoPeer, IoPeerBridge } from '@rljson/io';
-import { ClientId, ConnectorPayload, Route, SyncConfig } from '@rljson/rljson';
+import {
+  ClientId,
+  ConnectorPayload,
+  HeldPayload,
+  Route,
+  SyncConfig,
+  syncEvents,
+} from '@rljson/rljson';
 
 import {
   BackpressureOptions,
@@ -15,6 +22,7 @@ import {
   withBackpressure,
 } from './backpressure.ts';
 import { BaseNode } from './base-node.ts';
+import { HeldReporter } from './held-reporter.ts';
 import { noopLogger, ServerLogger } from './logger.ts';
 import { PeerFirstBs } from './peer-first-bs.ts';
 import { PeerFirstIo } from './peer-first-io.ts';
@@ -106,6 +114,19 @@ export interface ClientOptions {
    * needs a route.
    */
   peerReads?: PeerReadsOptions;
+
+  /**
+   * When a received ref the local store does not hold completely yet is
+   * checked again, in ms after the last check. Default 1, 2, 5, 10, 30 and
+   * 60 seconds.
+   *
+   * A client with a node id tells its hub which refs its node holds: after
+   * each ref it receives — relayed, bootstrap or state beacon — it checks its
+   * local store for every row under it (`MissingRows`), and sends
+   * `syncEvents(route).held` once nothing is missing. The hub then names the
+   * node among the holders of the route.
+   */
+  heldRecheckMs?: readonly number[];
 }
 
 /**
@@ -177,6 +198,9 @@ export class Client extends BaseNode {
   /** The node this client belongs to, told to the hub. */
   private _nodeId?: string;
 
+  /** See {@link ClientOptions.heldRecheckMs}. */
+  private _heldRecheckMs?: readonly number[];
+
   // Connection state
   private _isConnected: boolean = true;
   private _disconnectCallbacks: Array<(reason: string) => void> = [];
@@ -213,6 +237,7 @@ export class Client extends BaseNode {
       options?.maxConcurrentServes ?? clientMaxServes(),
     );
     this._nodeId = options?.nodeId ?? options?.peerReads?.nodeId;
+    this._heldRecheckMs = options?.heldRecheckMs;
     if (options?.peerReads) {
       this._peerReadsRoute = options.peerReads.route;
       this._peerReads = new PeerReads({
@@ -496,8 +521,9 @@ export class Client extends BaseNode {
   }
 
   /**
-   * Tells the hub this client's node — now and after every reconnect — and,
-   * with peer reads on, records the source of every ref the hub relays.
+   * Tells the hub this client's node — now and after every reconnect — and
+   * which refs it holds; with peer reads on, records the source of every ref
+   * the hub relays and the holders the hub names.
    * @param sockets - The connection to the hub.
    * @returns Removes the handlers again.
    */
@@ -508,8 +534,24 @@ export class Client extends BaseNode {
     const peerReads = this._peerReads;
     const event = (this._peerReadsRoute ?? this._route)?.flat;
 
+    // Which refs this node holds: only a hub that knows the node can use it.
+    const missingRows = new MissingRows(this._localIo);
+    const held =
+      nodeId !== undefined && event !== undefined
+        ? new HeldReporter(
+            (ref) => missingRows.holds(ref),
+            (ref) => {
+              const payload: HeldPayload = { r: ref };
+              sockets.ioUp.emit(syncEvents(event).held, payload);
+            },
+            this._heldRecheckMs,
+            this._logger,
+          )
+        : undefined;
+
     const hello = () => {
       sockets.ioUp.emit(peerReadEvents.hello, { nodeId });
+      held?.again();
     };
     if (nodeId !== undefined) {
       sockets.ioUp.on('connect', hello);
@@ -517,17 +559,40 @@ export class Client extends BaseNode {
       hello();
     }
 
-    const onRef = (payload: ConnectorPayload) => {
-      const src: unknown = payload.src;
-      if (typeof src === 'string' && src.length > 0) peerReads?.noteSource(src);
+    // Every announcement of the route's state: the ref to check, the holders
+    // the hub names.
+    const onState = (payload: ConnectorPayload) => {
+      const ref: unknown = payload?.r;
+      if (typeof ref !== 'string' || ref.length === 0) return;
+      const holders: unknown = payload.holders;
+      if (holders !== null && typeof holders === 'object') {
+        peerReads?.setHolders(payload.holders!, ref);
+      }
+      held?.check(ref);
     };
-    const recordSources = peerReads !== undefined && event !== undefined;
-    if (recordSources) sockets.ioDown.on(event, onRef);
+    const onRef = (payload: ConnectorPayload) => {
+      const src: unknown = payload?.src;
+      if (typeof src === 'string' && src.length > 0) peerReads?.noteSource(src);
+      onState(payload);
+    };
+
+    const listened =
+      event === undefined || (peerReads === undefined && held === undefined)
+        ? []
+        : [
+            [event, onRef] as const,
+            [syncEvents(event).bootstrap, onState] as const,
+            [stateBeaconEvent(event), onState] as const,
+          ];
+    for (const [name, listener] of listened) sockets.ioDown.on(name, listener);
 
     return () => {
       sockets.ioUp.off('connect', hello);
       sockets.ioDown.off(peerReadEvents.who, hello);
-      if (recordSources) sockets.ioDown.off(event, onRef);
+      for (const [name, listener] of listened) {
+        sockets.ioDown.off(name, listener);
+      }
+      held?.stop();
     };
   }
 

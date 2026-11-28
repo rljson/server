@@ -140,7 +140,9 @@ export class PeerFirstIo implements Io {
    * @param request - Table and where clause.
    */
   async readRows(request: ReadRowsRequest): Promise<Rljson> {
-    return (await this._peers.readRows(request)) ?? this._hub.readRows(request);
+    const fromPeers = await this._peers.readRows(request);
+    if (fromPeers) return fromPeers;
+    return this._countedFromHub(request.table, await this._hub.readRows(request));
   }
 
   // ...........................................................................
@@ -150,6 +152,18 @@ export class PeerFirstIo implements Io {
    */
   rowCount(table: string): Promise<number> {
     return this._hub.rowCount(table);
+  }
+
+  // ...........................................................................
+  /**
+   * Counts what the hub answered, for the share the peers carried.
+   * @param table - The table read.
+   * @param answer - The hub's answer.
+   * @returns The answer.
+   */
+  private _countedFromHub(table: string, answer: Rljson): Rljson {
+    this._peers.creditHub(PeerReads.rowCount(answer, table));
+    return answer;
   }
 
   // ...........................................................................
@@ -164,7 +178,9 @@ export class PeerFirstIo implements Io {
     fromHub: (request: ReadByHashesRequest) => Promise<Rljson>,
   ): Promise<Rljson> {
     const fromPeers = await this._peers.readRowsByHashes(request);
-    if (!fromPeers) return fromHub(request);
+    if (!fromPeers) {
+      return this._countedFromHub(request.table, await fromHub(request));
+    }
 
     const peerTable = fromPeers[request.table] as {
       _data: { _hash?: string }[];
@@ -173,7 +189,10 @@ export class PeerFirstIo implements Io {
     const rest = request.hashes.filter((hash) => !found.has(hash));
     if (rest.length === 0) return fromPeers;
 
-    const hubAnswer = await fromHub({ table: request.table, hashes: rest });
+    const hubAnswer = this._countedFromHub(
+      request.table,
+      await fromHub({ table: request.table, hashes: rest }),
+    );
     const hubTable = hubAnswer[request.table] as {
       _data: unknown[];
       _type: ContentType;

@@ -324,7 +324,7 @@ describe('PeerReadServer', () => {
       await io.rawTableCfgs();
       await io.rowCount(TABLE);
       await bs.listBlobs();
-      expect(server.stats).toEqual({ rowReads: 0, blobReads: 0 });
+      expect(server.stats).toMatchObject({ rowReads: 0, blobReads: 0 });
 
       await io.readRows({ table: TABLE, where: { a: 'first' } });
       await io.readRowsByHashes({ table: TABLE, hashes: local.hashes });
@@ -333,14 +333,14 @@ describe('PeerReadServer', () => {
       await bs.getBlobProperties(local.blobId);
       await bs.blobExists(local.blobId);
       await bs.blockExists('a-block');
-      expect(server.stats).toEqual({ rowReads: 2, blobReads: 6 });
+      expect(server.stats).toMatchObject({ rowReads: 2, blobReads: 6 });
     });
 
     it('report stats as a copy', async () => {
       server = await serve();
       const stats = server.stats;
       stats.rowReads = 99;
-      expect(server.stats).toEqual({ rowReads: 0, blobReads: 0 });
+      expect(server.stats).toMatchObject({ rowReads: 0, blobReads: 0 });
     });
 
     it('offer readRowsByHashes only when the local Io has it', async () => {
@@ -358,12 +358,12 @@ describe('PeerReadServer', () => {
           ),
         ),
       ).rejects.toThrow('Method "readRowsByHashes" not found on Io instance');
-      expect(server.stats).toEqual({ rowReads: 0, blobReads: 0 });
+      expect(server.stats).toMatchObject({ rowReads: 0, blobReads: 0 });
 
       // A peer still gets its rows: IoPeer falls back to one read per hash.
       const answer = await io.readRowsByHashes({ table: TABLE, hashes });
       expect(rowsOf(answer)).toHaveLength(2);
-      expect(server.stats).toEqual({ rowReads: 2, blobReads: 0 });
+      expect(server.stats).toMatchObject({ rowReads: 2, blobReads: 0 });
     });
   });
 

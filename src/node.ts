@@ -899,10 +899,17 @@ export class Node {
       }
       return this._networkManager.resolvePeerAddress(nodeId) ?? undefined;
     };
+    const siteNodes = (): string[] => {
+      const topology = this._networkManager.getTopology();
+      return Object.keys(topology.nodes).filter(
+        (nodeId) => nodeId !== this._nodeId && nodeId !== topology.hubNodeId,
+      );
+    };
     return {
       peerReads: {
         bounds,
         resolve,
+        siteNodes,
         connect: async (nodeId, signal) => {
           const address = resolve(nodeId);
           if (address === undefined) return undefined;

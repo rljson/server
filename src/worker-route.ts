@@ -33,6 +33,12 @@ export const workerRouteEvents = {
    * is `ip:port` or null.
    */
   resolvePeer: '__worker:resolvePeer',
+
+  /**
+   * The worker asks for the other nodes of the site, `(ack)`; the answer is
+   * a list of node ids.
+   */
+  siteNodes: '__worker:siteNodes',
 } as const;
 
 // #############################################################################
@@ -265,6 +271,12 @@ export class WorkerRoute implements RouteMember {
         ack(context.peerReads?.resolve(nodeId) ?? null);
       },
     );
+    socket.on(
+      workerRouteEvents.siteNodes,
+      (ack: (nodeIds: string[]) => void) => {
+        ack([...(context.peerReads?.siteNodes() ?? [])]);
+      },
+    );
     const timeout = this._options.requestTimeoutMs ?? 30_000;
     const io = new IoPeer(socket, timeout);
     const bs = new BsPeer(socket, { requestTimeoutMs: timeout });
@@ -364,6 +376,9 @@ export interface ServeWorkerRouteOptions {
   /** Longest a peer address lookup waits for the parent. 3000 ms. */
   resolveTimeoutMs?: number;
 
+  /** How often the worker asks the parent for the site's other nodes. 10 000 ms. */
+  siteNodesRefreshMs?: number;
+
   /** Logger. */
   logger?: ServerLogger;
 }
@@ -389,6 +404,13 @@ export interface WorkerRouteServing {
   connectPeer(
     dial: (address: string, signal: AbortSignal) => Promise<SocketLike>,
   ): ConnectPeer;
+
+  /**
+   * The other nodes of the site, as the parent last named them: a copy the
+   * worker refreshes every {@link ServeWorkerRouteOptions.siteNodesRefreshMs},
+   * so peer reads can ask for it on every read.
+   */
+  siteNodes(): readonly string[];
 
   /** What the worker served to peers so far. */
   readonly stats: PeerReadServerStats;
@@ -417,6 +439,21 @@ export const serveWorkerRoute = async (
   await server.addSocket(socket);
   const resolveTimeoutMs = options.resolveTimeoutMs ?? 3000;
 
+  let siteNodes: readonly string[] = [];
+  const refreshSiteNodes = () => {
+    socket.emit(workerRouteEvents.siteNodes, (nodeIds: unknown) => {
+      if (Array.isArray(nodeIds)) {
+        siteNodes = nodeIds.filter((id): id is string => typeof id === 'string');
+      }
+    });
+  };
+  refreshSiteNodes();
+  const siteNodesTimer = setInterval(
+    refreshSiteNodes,
+    options.siteNodesRefreshMs ?? 10_000,
+  );
+  siteNodesTimer.unref?.();
+
   const resolvePeer = (nodeId: string): Promise<string | undefined> =>
     new Promise((resolve) => {
       const timer = setTimeout(() => resolve(undefined), resolveTimeoutMs);
@@ -436,6 +473,7 @@ export const serveWorkerRoute = async (
 
   return {
     resolvePeer,
+    siteNodes: () => siteNodes,
     get stats() {
       return server.stats;
     },
@@ -444,6 +482,7 @@ export const serveWorkerRoute = async (
       return address === undefined ? undefined : dial(address, signal);
     },
     close: async () => {
+      clearInterval(siteNodesTimer);
       await server.close();
       socket.disconnect();
     },

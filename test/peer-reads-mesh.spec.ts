@@ -161,7 +161,7 @@ describe('Peer reads over real Socket.IO', () => {
         expect(receiver.hubServed.rows).toBeGreaterThan(0);
         expect(receiver.hubServed.blobs).toBeGreaterThan(0);
       }
-      expect(a.peerServer.stats).toEqual({ rowReads: 0, blobReads: 0 });
+      expect(a.peerServer.stats).toMatchObject({ rowReads: 0, blobReads: 0 });
       expect(mesh.peerConnections.size).toBe(0);
     });
 

@@ -1077,6 +1077,7 @@ describe('Node', () => {
       expect(peerReads.resolve(a.nodeId!)).toBeUndefined();
       expect(peerReads.resolve('unknown')).toBeUndefined();
       expect(peerReads.resolve(b.nodeId!)).toBe(addressOf(b));
+      expect(peerReads.siteNodes()).toEqual([b.nodeId!]);
       expect(await peerReads.connect('unknown', signal)).toBeUndefined();
       expect(await peerReads.connect(b.nodeId!, signal)).toBeDefined();
       expect(ports.log.at(-1)!.handshake).toEqual({

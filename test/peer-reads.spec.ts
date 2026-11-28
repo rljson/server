@@ -218,7 +218,7 @@ describe('PeerReads', () => {
 
       reads.noteSource('a');
       expect(await reads.readRows(allRows)).toBeUndefined();
-      expect(reads.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(reads.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
       expect(reads.connectedPeers).toEqual([]);
     });
 
@@ -231,14 +231,14 @@ describe('PeerReads', () => {
   // ...........................................................................
   describe('stats', () => {
     it('starts at zero', () => {
-      expect(createReads().stats).toEqual(noStats);
+      expect(createReads().stats).toMatchObject(noStats);
     });
 
     it('returns a copy the caller cannot change', () => {
       const r = createReads();
       const stats = r.stats;
       stats.hits = 99;
-      expect(r.stats).toEqual(noStats);
+      expect(r.stats).toMatchObject(noStats);
     });
   });
 
@@ -309,7 +309,7 @@ describe('PeerReads', () => {
 
       expect(network.connects).toEqual([]);
       expect(await r.readRows(allRows)).toBeUndefined();
-      expect(r.stats).toEqual(noStats);
+      expect(r.stats).toMatchObject(noStats);
     });
 
     it('is ignored after close', async () => {
@@ -358,7 +358,7 @@ describe('PeerReads', () => {
     it('answers undefined, without counting, when no source is known', async () => {
       const r = createReads();
       expect(await r.readRows(allRows)).toBeUndefined();
-      expect(r.stats).toEqual(noStats);
+      expect(r.stats).toMatchObject(noStats);
     });
 
     it('answers the rows of a source that holds them', async () => {
@@ -371,7 +371,7 @@ describe('PeerReads', () => {
 
       expect(rows).toEqual(await a.io.readRows(allRows));
       expect(rows![TABLE]._data).toHaveLength(1);
-      expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 1, misses: 0, failures: 0 });
     });
 
     it('asks the newest sources, no more than maxSourcesPerRead', async () => {
@@ -391,7 +391,7 @@ describe('PeerReads', () => {
         ['readRows'],
         ['readRows'],
       ]);
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
     });
 
     it('takes the rows of a later source when the newest has none', async () => {
@@ -408,7 +408,7 @@ describe('PeerReads', () => {
 
       expect(empty.asked).toEqual(['readRows']);
       expect(full.asked).toEqual(['readRows']);
-      expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 1, misses: 0, failures: 0 });
     });
 
     it('forgets a source sourceTtlMs after its last ref', async () => {
@@ -422,11 +422,11 @@ describe('PeerReads', () => {
 
       vi.advanceTimersByTime(1);
       expect(await r.readRows(allRows)).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 1, misses: 0, failures: 0 });
 
       r.noteSource('a');
       expect(await r.readRows(allRows)).toBeDefined();
-      expect(r.stats).toEqual({ hits: 2, misses: 0, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 2, misses: 0, failures: 0 });
     });
 
     it('counts a miss when no source has a matching row', async () => {
@@ -437,7 +437,7 @@ describe('PeerReads', () => {
       expect(
         await r.readRows({ table: TABLE, where: { a: 'y' } }),
       ).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
     });
 
     it('counts a miss when the answer lacks the table', async () => {
@@ -449,7 +449,7 @@ describe('PeerReads', () => {
 
       r.noteSource('a');
       expect(await r.readRows(allRows)).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
     });
 
     it('counts a miss, not a failure, when the peer answers with an error', async () => {
@@ -461,7 +461,7 @@ describe('PeerReads', () => {
         await r.readRows({ table: 'unknownTable', where: {} }),
       ).toBeUndefined();
 
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
       expect(r.connectedPeers).toEqual(['a']);
     });
 
@@ -478,7 +478,7 @@ describe('PeerReads', () => {
       await vi.advanceTimersByTimeAsync(50);
 
       expect(await read).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 1 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 1 });
       expect(r.connectedPeers).toEqual([]);
       expect(a.clientSides[0].connected).toBe(false);
       expect(logger.byLevel('warn')).toEqual([
@@ -493,7 +493,7 @@ describe('PeerReads', () => {
 
       // Skipped: not even asked.
       expect(await r.readRows(allRows)).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 1 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 1 });
       expect(a.asked).toEqual(['readRows']);
     });
 
@@ -512,7 +512,7 @@ describe('PeerReads', () => {
 
       // No time has passed: the read did not wait for its bound.
       expect(await read).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 1 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 1 });
       expect(logger.byLevel('warn').map((e) => e.data)).toEqual([
         { nodeId: 'a', error: 'Peer connection lost' },
       ]);
@@ -536,7 +536,7 @@ describe('PeerReads', () => {
       await r.close();
 
       expect(await read).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
     });
 
     it('ends a read in flight at once, counting a miss, when a full pool evicts its link', async () => {
@@ -552,7 +552,7 @@ describe('PeerReads', () => {
       r.noteSource('b');
 
       expect(await read).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
       expect(r.connectedPeers).toEqual(['b']);
     });
 
@@ -568,7 +568,7 @@ describe('PeerReads', () => {
       await vi.advanceTimersByTimeAsync(50);
 
       expect(await read).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
 
       // Not down: the next read connects again.
       a.silent = false;
@@ -596,7 +596,7 @@ describe('PeerReads', () => {
       vi.advanceTimersByTime(1);
       expect(await r.readRows(allRows)).toEqual(await a.io.readRows(allRows));
       expect(network.connects).toEqual(['a', 'a']);
-      expect(r.stats).toEqual({ hits: 1, misses: 1, failures: 1 });
+      expect(r.stats).toMatchObject({ hits: 1, misses: 1, failures: 1 });
     });
 
     it('marks a node it cannot reach down, without counting a failure', async () => {
@@ -605,11 +605,11 @@ describe('PeerReads', () => {
       r.noteSource('unreachable');
       await flush();
       expect(await r.readRows(allRows)).toBeUndefined();
-      expect(r.stats).toEqual(noStats);
+      expect(r.stats).toMatchObject(noStats);
 
       vi.advanceTimersByTime(1000);
       expect(await r.readRows(allRows)).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
       expect(network.connects).toEqual(['unreachable', 'unreachable']);
     });
 
@@ -624,12 +624,12 @@ describe('PeerReads', () => {
         r.noteSource('a');
         await flush();
 
-        expect(r.stats).toEqual({ hits: 0, misses: 0, failures: 1 });
+        expect(r.stats).toMatchObject({ hits: 0, misses: 0, failures: 1 });
         expect(logger.byLevel('warn').map((e) => e.data)).toEqual([
           { nodeId: 'a', error: 'refused' },
         ]);
         expect(await r.readRows(allRows)).toBeUndefined();
-        expect(r.stats).toEqual({ hits: 0, misses: 0, failures: 1 });
+        expect(r.stats).toMatchObject({ hits: 0, misses: 0, failures: 1 });
       }
     });
 
@@ -643,7 +643,7 @@ describe('PeerReads', () => {
 
       r.noteSource('a');
       await vi.advanceTimersByTimeAsync(50);
-      expect(r.stats).toEqual({ hits: 0, misses: 0, failures: 1 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 0, failures: 1 });
       expect(network.signals[0].aborted).toBe(true);
 
       await vi.advanceTimersByTimeAsync(50);
@@ -664,7 +664,7 @@ describe('PeerReads', () => {
       r.noteSource('a');
       await vi.advanceTimersByTimeAsync(100);
 
-      expect(r.stats).toEqual({ hits: 0, misses: 0, failures: 1 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 0, failures: 1 });
       expect(r.connectedPeers).toEqual([]);
     });
 
@@ -688,7 +688,7 @@ describe('PeerReads', () => {
       r.noteSource('a');
       await vi.advanceTimersByTimeAsync(50);
 
-      expect(r.stats).toEqual({ hits: 0, misses: 0, failures: 1 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 0, failures: 1 });
       expect(disconnects).toBe(1);
     });
 
@@ -701,10 +701,10 @@ describe('PeerReads', () => {
       await vi.advanceTimersByTimeAsync(50);
 
       expect(await read).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
 
       await vi.advanceTimersByTimeAsync(950);
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 1 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 1 });
     });
 
     it('answers undefined after close', async () => {
@@ -716,7 +716,7 @@ describe('PeerReads', () => {
       await r.close();
 
       expect(await r.readRows(allRows)).toBeUndefined();
-      expect(r.stats).toEqual(noStats);
+      expect(r.stats).toMatchObject(noStats);
     });
   });
 
@@ -737,7 +737,7 @@ describe('PeerReads', () => {
       expect(
         await r.readRowsByHashes({ table: TABLE, hashes: [row._hash] }),
       ).toEqual({ [TABLE]: { _data: [row], _type: 'components' } });
-      expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 1, misses: 0, failures: 0 });
     });
 
     it('counts a miss when no source holds the hashes', async () => {
@@ -748,7 +748,7 @@ describe('PeerReads', () => {
       expect(
         await r.readRowsByHashes({ table: TABLE, hashes: ['unknownHash'] }),
       ).toBeUndefined();
-      expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
     });
   });
 
@@ -772,7 +772,7 @@ describe('PeerReads', () => {
         expect(await r.getBlobBlocks(properties.blobId)).toEqual(
           await a.bs.getBlobBlocks(properties.blobId),
         );
-        expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
+        expect(r.stats).toMatchObject({ hits: 1, misses: 0, failures: 0 });
       });
 
       it('counts a miss when no source holds the blob', async () => {
@@ -780,7 +780,7 @@ describe('PeerReads', () => {
 
         r.noteSource('a');
         expect(await r.getBlobBlocks('unknownBlob')).toBeUndefined();
-        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+        expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
       });
     });
 
@@ -797,7 +797,7 @@ describe('PeerReads', () => {
 
         r.noteSource('a');
         expect(await r.getBlock(blockId)).toEqual(Buffer.from('hello world'));
-        expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
+        expect(r.stats).toMatchObject({ hits: 1, misses: 0, failures: 0 });
         expect(a.asked).toEqual(['getBlock']);
       });
 
@@ -806,7 +806,7 @@ describe('PeerReads', () => {
 
         r.noteSource('a');
         expect(await r.getBlock('unknownBlock')).toBeUndefined();
-        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+        expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
       });
 
       it('answers undefined when the block does not arrive within blobTimeoutMs', async () => {
@@ -834,7 +834,7 @@ describe('PeerReads', () => {
         await vi.advanceTimersByTimeAsync(200);
 
         expect(await read).toBeUndefined();
-        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 1 });
+        expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 1 });
         expect(r.connectedPeers).toEqual([]);
       });
 
@@ -847,7 +847,7 @@ describe('PeerReads', () => {
 
         r.noteSource('b');
         expect(await r.getBlock(blockId)).toBeUndefined();
-        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 1 });
+        expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 1 });
         expect(r.connectedPeers).toEqual([]);
         expect(peer.clientSides[0].connected).toBe(false);
       });
@@ -865,7 +865,7 @@ describe('PeerReads', () => {
 
         r.noteSource('b');
         expect(await r.getBlock(blockId)).toBeUndefined();
-        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 1 });
+        expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 1 });
         expect(r.connectedPeers).toEqual([]);
       });
 
@@ -880,7 +880,7 @@ describe('PeerReads', () => {
 
         r.noteSource('b');
         expect(await r.getBlock(blockId)).toBeUndefined();
-        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+        expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
       });
 
       it('holds no block it read once the read is answered, while the link stays open', async () => {
@@ -931,7 +931,7 @@ describe('PeerReads', () => {
         await r.close();
 
         expect(await r.getBlock(blockId)).toBeUndefined();
-        expect(r.stats).toEqual(noStats);
+        expect(r.stats).toMatchObject(noStats);
       });
     });
 
@@ -962,7 +962,7 @@ describe('PeerReads', () => {
         expect(await r.getBlobProperties(properties.blobId)).toEqual(
           properties,
         );
-        expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
+        expect(r.stats).toMatchObject({ hits: 1, misses: 0, failures: 0 });
       });
 
       it('counts a miss when no source holds the blob', async () => {
@@ -970,7 +970,7 @@ describe('PeerReads', () => {
 
         r.noteSource('a');
         expect(await r.getBlobProperties('unknownBlob')).toBeUndefined();
-        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+        expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
       });
     });
 
@@ -981,7 +981,7 @@ describe('PeerReads', () => {
 
         r.noteSource('a');
         expect(await r.blobExists(properties.blobId)).toBe(true);
-        expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
+        expect(r.stats).toMatchObject({ hits: 1, misses: 0, failures: 0 });
       });
 
       it('is false when no source holds the blob', async () => {
@@ -989,7 +989,7 @@ describe('PeerReads', () => {
 
         r.noteSource('a');
         expect(await r.blobExists('unknownBlob')).toBe(false);
-        expect(r.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+        expect(r.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
       });
 
       it('is false after close', async () => {
@@ -1036,7 +1036,7 @@ describe('PeerReads', () => {
 
       expect(await r.readRows(allRows)).toEqual(await a.io.readRows(allRows));
       expect(network.connects).toEqual(['a', 'a']);
-      expect(r.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
+      expect(r.stats).toMatchObject({ hits: 1, misses: 0, failures: 0 });
     });
 
     it('keeps a new link when the idle timer of a dropped one fires', async () => {
@@ -1065,7 +1065,7 @@ describe('PeerReads', () => {
       expect(r.connectedPeers).toEqual(['a']);
       expect(a.clientSides.map((s) => s.connected)).toEqual([false, true]);
       // One break-off, two reads in flight on it: one failed peer.
-      expect(r.stats).toEqual({ hits: 1, misses: 2, failures: 1 });
+      expect(r.stats).toMatchObject({ hits: 1, misses: 2, failures: 1 });
     });
 
     it('closes the oldest link when the pool is full', async () => {
@@ -1130,7 +1130,7 @@ describe('PeerReads', () => {
 
       expect(r.connectedPeers).toEqual([]);
       expect(a.clientSides[0].connected).toBe(false);
-      expect(r.stats).toEqual(noStats);
+      expect(r.stats).toMatchObject(noStats);
     });
 
     it('serves reads over a namespace bundle and disconnects each of its sockets on close', async () => {

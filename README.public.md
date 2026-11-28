@@ -952,9 +952,29 @@ B reads the ref's rows/blobs:
   its node id on connect (`peerReadEvents.hello`). The hub names that node as
   `src` on every ref it relays from the connection, and removes a `src` a
   sender set itself.
-- **Sources are hints.** A read carries no ref, so a client asks the nodes that
-  recently sent it refs (`maxSourcesPerRead`, newest first, within
-  `sourceTtlMs`). A wrong hint costs a quick "don't have it".
+- **The hub names the holders.** Per route it knows which node holds which
+  ref: the sender of every relayed ref, and every node whose client says it
+  holds one (`syncEvents(route).held`). It sends each client the holders of
+  its own tenant as `holders` on relayed refs, the bootstrap, the heartbeat
+  and the state beacon, and forgets a node with its last connection
+  (`server.holders`). A late joiner so has its sources from the first read.
+- **A client says what it holds.** A client with a node id checks its local
+  store after each ref it receives — every row under the ref, through
+  `MissingRows` of `@rljson/db` — and tells the hub `held` once nothing is
+  missing, checking again while the data is still arriving
+  (`heldRecheckMs`). No agent code is involved; blobs are not checked, a
+  holder that lacks one answers "don't have it".
+- **Sources are hints, in order.** A read carries no ref, so a client asks the
+  nodes that recently sent it refs (within `sourceTtlMs`), then the holders
+  of the current ref, the holders of older refs, and the other nodes of its
+  site (`siteNodes`); the hub last. A wrong hint costs a quick "don't have
+  it". `client.peerReads.sources` shows the order.
+- **Small reads race, bulk reads spread.** A row read by a where clause, a
+  blob's block list or properties ask the first `maxSourcesPerRead` at once.
+  Rows by their hashes and blocks ask one peer — the least busy — and the next
+  on a miss, so a catch-up is spread over the peers and each block is sent
+  once. At most `maxBusyPeers` peers are busy and `maxReadsPerPeer` reads run
+  on one; a read without room waits for it within its own timeout.
 - **The peers sit inside the hub's slot.** `PeerFirstIo` / `PeerFirstBs` wrap
   the client's Io/Bs to the hub: peers first, then the hub, whose answer —
   rows, nothing, or an error — is returned unchanged. To the client's multi
@@ -997,7 +1017,9 @@ const client = new Client(socket, io, bs, route, {
   },
 });
 await client.init();
-client.peerReads?.stats; // { hits, misses, failures }
+client.peerReads?.stats; // { hits, waits, misses, failures, bySource, hub }
+// bySource: per node { reads, rows, bytes } it answered
+// hub: { reads, rows, bytes } the hub answered because no peer could
 ```
 
 ### Options
@@ -1008,7 +1030,10 @@ client.peerReads?.stats; // { hits, misses, failures }
 | `blobTimeoutMs`     | 10 000   | Longest one block (up to 4 MB) may take on a peer           |
 | `connectTimeoutMs`  | 3 000    | Longest opening a peer connection may take                  |
 | `sourceTtlMs`       | 60 000   | How long a node stays a source after its last ref           |
-| `maxSourcesPerRead` | 2        | Sources one read asks at once, newest first                 |
+| `maxSourcesPerRead` | 2        | Sources a small read asks at once                           |
+| `maxBusyPeers`      | 4        | Peers bulk reads keep busy at once                          |
+| `maxReadsPerPeer`   | 2        | Bulk reads one peer serves at once                          |
+| `siteNodes`         | none     | The site's other nodes, asked after the holders; a `Node` passes its topology |
 | `maxConnections`    | 8        | Peer connections kept open; the least recently used goes    |
 | `idleMs`            | 60 000   | A peer connection unused this long is closed                |
 | `downMs`            | 30 000   | A failed peer is skipped this long                          |

@@ -19,11 +19,12 @@ import { normalizeSocketBundle, SocketLike } from './socket-bundle.ts';
 
 // #############################################################################
 /**
- * The bounds of peer reads, without who reads and how peers are reached.
+ * The bounds of peer reads, without who reads, how peers are reached and which
+ * nodes the site has: plain data, so they can travel to a worker.
  */
 export type PeerReadBounds = Omit<
   PeerReadsOptions,
-  'nodeId' | 'connect' | 'logger' | 'route'
+  'nodeId' | 'connect' | 'logger' | 'route' | 'siteNodes'
 >;
 
 // #############################################################################
@@ -43,6 +44,12 @@ export interface RoutePeerReads {
 
   /** Opens a connection to a source, for a member running in this process. */
   readonly connect: ConnectPeer;
+
+  /**
+   * The other nodes of the site, to read from after the holders: neither
+   * this node nor the hub, which is asked anyway. Asked on every read.
+   */
+  siteNodes(): readonly string[];
 }
 
 // #############################################################################
@@ -341,6 +348,7 @@ export class ClientRoute implements RouteMember {
                 nodeId: context.nodeId,
                 route: context.route,
                 connect: peerReads.connect,
+                siteNodes: () => peerReads.siteNodes(),
               },
             }
           : {}),

@@ -202,7 +202,13 @@ describe('PeerFirstBs', () => {
 
       expect(content).toEqual(Buffer.from('89'));
       // Properties, block list and block: each asked of the peer first.
-      expect(peers!.stats).toEqual({ hits: 0, misses: 3, failures: 0 });
+      expect(peers!.stats).toMatchObject({ hits: 0, misses: 3, failures: 0 });
+      // The block the hub sent is counted, for the share the peers carried.
+      expect(peers!.stats.hub).toEqual({
+        reads: 1,
+        rows: 0,
+        bytes: CONTENT.length,
+      });
     });
   });
 

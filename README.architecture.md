@@ -280,7 +280,9 @@ reads a client asks the node that sent the ref first.
 | ---------------- | ---------- | ------------------------------------------------------------------------ |
 | hello            | Client→hub | `peerReadEvents.hello` with the node id, on connect and every reconnect  |
 | `src`            | hub        | set on every relayed ref from a known connection; a sender's own is removed |
-| `PeerReads`      | client     | recent sources, a pool of peer connections, bounded reads that never throw |
+| `holders`        | hub        | per route and tenant: node → newest ref it holds; on relays, bootstrap, beacon |
+| `held`           | Client→hub | sent once `MissingRows` finds every row under a received ref locally (`HeldReporter`) |
+| `PeerReads`      | client     | sources in order (senders, holders, site), small reads race, bulk reads spread within bounds |
 | `PeerFirstIo/Bs` | client     | wrap the hub's Io/Bs inside its multi slot: peers first, then the hub     |
 | `PeerReadServer` | every node | serves the local Io/Bs read-only via `IoServer`/`BsServer`, gated          |
 | `Node`           | every node | `servePeer` in every role; resolves a source to an address via network   |
@@ -297,7 +299,13 @@ Three rules carry the design:
    question travel on from peer to peer; serving the local stores makes every
    request one hop, so nothing cascades and nothing floods.
 3. **Only the hub names the source.** It knows which node a connection belongs
-   to (the hello); a `src` in an incoming payload is overwritten or removed.
+   to (the hello); a `src` or `holders` in an incoming payload is overwritten
+   or removed.
+4. **A block is sent once.** A bulk read — rows by hashes, a block — asks one
+   peer at a time, the least busy, and waits for room rather than racing a
+   second peer: racing a 4 MB block across two sources sends it twice. The
+   hub's ref log keeps no `holders`: a gap-fill replays old payloads, and
+   their holders would be stale.
 
 Bounds: a read waits at most `timeoutMs` for the peers (blob chunks
 `blobTimeoutMs`); a peer that times out, refuses or breaks off is skipped for

@@ -190,7 +190,7 @@ describe('PeerFirstIo', () => {
       });
 
       expect(rowsOf(answer)).toEqual([await rowOf(peerIo, 'on the peer')]);
-      expect(peers!.stats).toEqual({ hits: 1, misses: 0, failures: 0 });
+      expect(peers!.stats).toMatchObject({ hits: 1, misses: 0, failures: 0 });
     });
 
     it('returns the hub’s rows when no peer is known', async () => {
@@ -203,6 +203,8 @@ describe('PeerFirstIo', () => {
       });
 
       expect(rowsOf(answer)).toEqual([await rowOf(hub, 'on the hub')]);
+      // What the hub answered is counted, for the share the peers carried.
+      expect(peers!.stats.hub).toEqual({ reads: 1, rows: 1, bytes: 0 });
     });
 
     it('returns the hub’s empty answer unchanged when nobody holds the rows', async () => {
@@ -214,7 +216,7 @@ describe('PeerFirstIo', () => {
 
       expect(answer).toEqual(await hub.readRows(request));
       expect(rowsOf(answer)).toEqual([]);
-      expect(peers!.stats).toEqual({ hits: 0, misses: 1, failures: 0 });
+      expect(peers!.stats).toMatchObject({ hits: 0, misses: 1, failures: 0 });
     });
 
     it('rejects with the hub’s own error when nobody knows the table', async () => {
@@ -265,6 +267,7 @@ describe('PeerFirstIo', () => {
         expect.arrayContaining([first, second]),
       );
       expect(rowsOf(answer)).toHaveLength(2);
+      expect(peers!.stats.hub).toEqual({ reads: 1, rows: 2, bytes: 0 });
     });
 
     it('takes every row from the peers, without asking the hub, when they hold them all', async () => {
@@ -301,6 +304,10 @@ describe('PeerFirstIo', () => {
       expect(answer).toEqual({
         [TABLE]: { _type: 'components', _data: [first, second] },
       });
+      expect(peers!.stats.hub).toEqual({ reads: 1, rows: 1, bytes: 0 });
+      expect(Object.values(peers!.stats.bySource)).toEqual([
+        { reads: 1, rows: 1, bytes: 0 },
+      ]);
     });
   });
 });

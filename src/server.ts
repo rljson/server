@@ -21,9 +21,11 @@ import {
   ConnectorPayload,
   GapFillRequest,
   GapFillResponse,
+  HeldPayload,
   isRefStamp,
   RefStamp,
   Route,
+  RouteHolders,
   SyncConfig,
   SyncEventNames,
   syncEvents,
@@ -321,10 +323,31 @@ export class Server extends BaseNode {
    * connection, so a receiver can read the data from that node directly.
    */
   private readonly _sourceNodes = new Map<string, string>();
-  /** The hello listener of each connection, to unregister it on removal. */
+  /**
+   * The hello and held listeners of each connection, to unregister them on
+   * removal.
+   */
   private readonly _helloListeners = new Map<
     string,
-    { socket: Socket; listener: (payload: unknown) => void }
+    {
+      socket: Socket;
+      listener: (payload: unknown) => void;
+      held: (payload: unknown) => void;
+    }
+  >();
+  /**
+   * Which node holds which ref of this route: per node, the newest ref it
+   * holds completely, and the tenant of the connection that said so.
+   *
+   * A node enters as the sender of a relayed ref — it produced the state, so
+   * its store holds it — or by a held payload on `syncEvents(route).held`,
+   * and leaves when its last connection ends. Every client is sent the
+   * holders of its own tenant as `holders`, so a reader knows which nodes it
+   * can read a ref's data from besides this hub.
+   */
+  private readonly _holders = new Map<
+    string,
+    { ref: string; tenantId?: string }
   >();
   private _refEvictionTimer?: ReturnType<typeof setInterval>;
 
@@ -702,7 +725,7 @@ export class Server extends BaseNode {
 
     // Bootstrap: send latest ref to the new client, then a few more times in
     // case it arrived before the client was listening.
-    this._sendBootstrap(ioDown);
+    this._sendBootstrap(ioDown, clientId);
     this._scheduleBootstrapRetries(clientId, ioDown);
 
     // Start heartbeat timer if configured and not already running
@@ -875,7 +898,7 @@ export class Server extends BaseNode {
 
     this._registerDisconnectHandler(clientId, ioUp);
 
-    this._sendBootstrap(ioDown);
+    this._sendBootstrap(ioDown, clientId);
     this._scheduleBootstrapRetries(clientId, ioDown);
     this._startBootstrapHeartbeat();
     this._startStateBeacon();
@@ -911,25 +934,117 @@ export class Server extends BaseNode {
     const listener = (payload: unknown) => {
       const nodeId = (payload as { nodeId?: unknown } | undefined)?.nodeId;
       if (typeof nodeId !== 'string' || nodeId.length === 0) return;
+      const previous = this._sourceNodes.get(clientId);
       this._sourceNodes.set(clientId, nodeId);
+      if (previous !== undefined && previous !== nodeId) {
+        this._dropHolderIfGone(previous);
+      }
       this._logger.info('Server', 'Client named its node', { clientId, nodeId });
     };
+    const held = (payload: unknown) => {
+      const ref = (payload as Partial<HeldPayload> | undefined)?.r;
+      if (typeof ref !== 'string' || ref.length === 0) return;
+      this._noteHolder(clientId, ref, Server._tenantOf(ioUp));
+    };
     ioUp.on(peerReadEvents.hello, listener);
-    this._helloListeners.set(clientId, { socket: ioUp, listener });
+    ioUp.on(this._events.held, held);
+    this._helloListeners.set(clientId, { socket: ioUp, listener, held });
   }
 
   // ...........................................................................
   /**
-   * Forgets the node of a connection and stops listening for its hello.
+   * Forgets the node of a connection and stops listening for its hello. The
+   * node stops being a holder unless another connection belongs to it.
    * @param clientId - The connection.
    */
   private _forgetHello(clientId: string) {
     const hello = this._helloListeners.get(clientId);
     if (hello) {
       hello.socket.off(peerReadEvents.hello, hello.listener);
+      hello.socket.off(this._events.held, hello.held);
       this._helloListeners.delete(clientId);
     }
+    const nodeId = this._sourceNodes.get(clientId);
     this._sourceNodes.delete(clientId);
+    if (nodeId !== undefined) this._dropHolderIfGone(nodeId);
+  }
+
+  // ...........................................................................
+  /**
+   * Records that the node of a connection holds a ref. Nothing happens while
+   * the connection has not said which node it is.
+   * @param clientId - The connection.
+   * @param ref - The ref the node holds completely.
+   * @param tenantId - The tenant pinned on the connection, if any.
+   */
+  private _noteHolder(clientId: string, ref: string, tenantId?: string) {
+    const nodeId = this._sourceNodes.get(clientId);
+    if (nodeId === undefined) return;
+    this._holders.set(nodeId, {
+      ref,
+      ...(tenantId === undefined ? {} : { tenantId }),
+    });
+  }
+
+  // ...........................................................................
+  /**
+   * Removes a node from the holders once no connection belongs to it.
+   * @param nodeId - The node.
+   */
+  private _dropHolderIfGone(nodeId: string) {
+    for (const other of this._sourceNodes.values()) {
+      if (other === nodeId) return;
+    }
+    this._holders.delete(nodeId);
+  }
+
+  // ...........................................................................
+  /**
+   * A payload as one client is sent it: with the holders of its tenant, or
+   * without any `holders` when none are known — also one a sender put there.
+   * @param payload - The payload.
+   * @param clientId - The receiving connection.
+   * @returns The payload to emit.
+   */
+  private _withHolders(
+    payload: ConnectorPayload,
+    clientId: string,
+  ): ConnectorPayload {
+    const tenantId = Server._tenantOf(this._clients.get(clientId)?.ioUp);
+    const holders: RouteHolders = {};
+    let any = false;
+    for (const [nodeId, entry] of this._holders) {
+      if (entry.tenantId !== tenantId) continue;
+      holders[nodeId] = entry.ref;
+      any = true;
+    }
+    return any
+      ? { ...payload, holders }
+      : Server._withoutHolders(payload);
+  }
+
+  // ...........................................................................
+  /**
+   * A payload without `holders`: only this hub may name them.
+   * @param payload - The payload.
+   * @returns It unchanged when it has none, else a copy without them.
+   */
+  private static _withoutHolders(payload: ConnectorPayload): ConnectorPayload {
+    if (payload.holders === undefined) return payload;
+    const withoutHolders = { ...payload };
+    delete withoutHolders.holders;
+    return withoutHolders;
+  }
+
+  // ...........................................................................
+  /**
+   * The tenant pinned on a socket (`socket.data.tenantId`), if any.
+   * @param socket - The socket, if there is one.
+   * @returns The tenant id.
+   */
+  private static _tenantOf(socket?: Socket): string | undefined {
+    return (socket as { data?: { tenantId?: string } } | undefined)?.data
+      ?.tenantId;
   }
 
   // ...........................................................................
@@ -974,6 +1089,12 @@ export class Server extends BaseNode {
           from: clientIdA,
           tenantId: senderTenantId,
         });
+
+        // The sender produced this state, so its node holds it — also when
+        // the ref is a re-announcement this hub does not relay again.
+        if (!(payload as { __origin?: string }).__origin) {
+          this._noteHolder(clientIdA, ref, senderTenantId);
+        }
 
         // Avoid rebroadcasting the same ref multiple times (two-generation check)
         // A ref is a content hash: it names a STATE, not an event. The same
@@ -1076,7 +1197,9 @@ export class Server extends BaseNode {
           : isRefStamp(payload.stamp)
             ? payload.stamp
             : undefined;
-        const sourced = this._withSource(payload, clientIdA);
+        const sourced = Server._withoutHolders(
+          this._withSource(payload, clientIdA),
+        );
         const relayed: ConnectorPayload = stamp
           ? { ...sourced, stamp }
           : sourced;
@@ -1138,9 +1261,14 @@ export class Server extends BaseNode {
           if (receiverTenantId !== senderTenantId) continue;
 
           // clone and mark the forwarded payload with the origin to prevent loops
-          const forwarded = Object.assign({}, relayed, {
-            __origin: clientIdA,
-          });
+          // Holders per receiver: each is sent its own tenant's. The ref log
+          // keeps `relayed` without them, since they would be stale by the
+          // time a gap-fill replays it.
+          const forwarded = Object.assign(
+            {},
+            this._withHolders(relayed, clientIdB),
+            { __origin: clientIdA },
+          );
 
           this._logger.traffic('out', 'Server.Multicast', this._route.flat, {
             ref,
@@ -1177,6 +1305,17 @@ export class Server extends BaseNode {
    */
   get connectedNodes(): string[] {
     return [...new Set(this._sourceNodes.values())];
+  }
+
+  /**
+   * Which node holds which ref of this route, over every tenant: per node,
+   * the newest ref it holds completely. Each client is sent only its own
+   * tenant's, as `holders` on what this server sends it.
+   */
+  get holders(): RouteHolders {
+    const holders: RouteHolders = {};
+    for (const [nodeId, { ref }] of this._holders) holders[nodeId] = ref;
+    return holders;
   }
 
   /**
@@ -1398,7 +1537,7 @@ export class Server extends BaseNode {
       const t = setTimeout(() => {
         // Re-read _latestRef at fire time: by now it may have advanced, and
         // the newer state is the more useful thing to announce.
-        this._sendBootstrap(ioDown);
+        this._sendBootstrap(ioDown, clientId);
       }, ms);
       t.unref?.();
       return t;
@@ -1452,7 +1591,7 @@ export class Server extends BaseNode {
     return payload;
   }
 
-  private _sendBootstrap(ioDown: SocketWithClientId) {
+  private _sendBootstrap(ioDown: SocketWithClientId, clientId: string) {
     if (!this._latestRef) return;
 
     const payload = this._bootstrapPayload(this._latestRef);
@@ -1462,7 +1601,10 @@ export class Server extends BaseNode {
       to: ioDown.__clientId,
     });
 
-    ioDown.emit(this._events.bootstrap, payload);
+    ioDown.emit(
+      this._events.bootstrap,
+      this._withHolders(payload, clientId),
+    );
   }
 
   /**
@@ -1480,8 +1622,8 @@ export class Server extends BaseNode {
       clientCount: this._clients.size,
     });
 
-    for (const { ioDown } of this._clients.values()) {
-      ioDown.emit(this._events.bootstrap, payload);
+    for (const [clientId, { ioDown }] of this._clients) {
+      ioDown.emit(this._events.bootstrap, this._withHolders(payload, clientId));
     }
   }
 
@@ -1621,8 +1763,8 @@ export class Server extends BaseNode {
     this._stateBeaconTimer = setInterval(() => {
       if (!this._latestRef) return;
       const payload = this._bootstrapPayload(this._latestRef);
-      for (const { ioDown } of this._clients.values()) {
-        ioDown.emit(event, payload);
+      for (const [clientId, { ioDown }] of this._clients) {
+        ioDown.emit(event, this._withHolders(payload, clientId));
       }
     }, this._stateBeaconMs);
     this._stateBeaconTimer.unref();

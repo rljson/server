@@ -6,7 +6,7 @@
 
 import { BlobBlock, BlobProperties, BsPeer } from '@rljson/bs';
 import { Io, IoPeer } from '@rljson/io';
-import { Rljson, Route } from '@rljson/rljson';
+import { Rljson, Route, RouteHolders } from '@rljson/rljson';
 
 import { noopLogger, ServerLogger } from './logger.ts';
 import { normalizeSocketBundle, SocketLike } from './socket-bundle.ts';
@@ -90,8 +90,26 @@ export interface PeerReadsOptions {
    */
   sourceTtlMs?: number;
 
-  /** How many sources one read asks at once, newest first. Default 2. */
+  /**
+   * How many sources a small read asks at once — rows by a where clause, a
+   * blob's block list or properties, an existence check. Default 2.
+   */
   maxSourcesPerRead?: number;
+
+  /**
+   * How many peers bulk reads — rows by their hashes, blocks — keep busy at
+   * once. Default 4.
+   */
+  maxBusyPeers?: number;
+
+  /** How many bulk reads one peer serves at once. Default 2. */
+  maxReadsPerPeer?: number;
+
+  /**
+   * The other nodes of this node's site, asked after the holders and before
+   * the hub. Called on every read, so it may change. None when omitted.
+   */
+  siteNodes?: () => readonly string[];
 
   /** How many peer connections stay open at once. Default 8. */
   maxConnections?: number;
@@ -124,6 +142,22 @@ export interface PeerReadStats {
   /** Reads a peer answered. */
   hits: number;
 
+  /**
+   * Bulk reads that waited for a peer, because every peer that could answer
+   * was serving as many as it may.
+   */
+  waits: number;
+
+  /** Per node, what it answered. */
+  bySource: Record<string, PeerReadSourceStats>;
+
+  /**
+   * What the hub answered because no peer could, as the reads that fall back
+   * to it count it ({@link PeerReads.creditHub}). With `bySource` it says how
+   * much of a catch-up the peers carried.
+   */
+  hub: PeerReadSourceStats;
+
   /** Reads at least one source was asked for, and none answered. */
   misses: number;
 
@@ -132,6 +166,19 @@ export interface PeerReadStats {
    * aside for `downMs`. Reads in flight on it when it failed count once.
    */
   failures: number;
+}
+
+// .............................................................................
+/** What one peer answered. */
+export interface PeerReadSourceStats {
+  /** Reads it answered. */
+  reads: number;
+
+  /** Rows it sent. */
+  rows: number;
+
+  /** Bytes of blocks it sent. */
+  bytes: number;
 }
 
 // .............................................................................
@@ -179,15 +226,28 @@ type Attempt<T> =
  * A peer answers from its own local store only and never forwards the
  * question, so a request costs one hop.
  *
- * Which peers are asked: the nodes that recently sent refs to this client
- * ({@link noteSource}), newest first. A read carries no ref, so the sources are
- * a hint. A wrong hint costs a quick "don't have it"; a peer that fails is
+ * Which peers are asked, in this order: the nodes that recently sent refs to
+ * this client ({@link noteSource}), newest first; the holders of the route's
+ * current ref, then those of older refs, as the hub names them
+ * ({@link setHolders}); the other nodes of the site
+ * ({@link PeerReadsOptions.siteNodes}). A read carries no ref, so the sources
+ * are a hint. A wrong hint costs a quick "don't have it"; a peer that fails is
  * skipped for {@link PeerReadsOptions.downMs}.
+ *
+ * How they are asked: a small read asks the first few at once and takes the
+ * first answer. A bulk read — rows by their hashes, a block — asks one peer,
+ * the least busy in that order, and the next one on a miss, so a catch-up is
+ * spread over the peers and each block is sent once. A bulk read waits for
+ * room while each peer it may ask serves
+ * {@link PeerReadsOptions.maxReadsPerPeer} already, or
+ * {@link PeerReadsOptions.maxBusyPeers} peers are busy; the hub is asked when
+ * every peer missed or the read's time is over.
  */
 export class PeerReads {
   private readonly _options: Required<
-    Omit<PeerReadsOptions, 'logger' | 'route'>
+    Omit<PeerReadsOptions, 'logger' | 'route' | 'siteNodes'>
   >;
+  private readonly _siteNodes: () => readonly string[];
   private readonly _logger: ServerLogger;
 
   /** Source node → when it last sent a ref. Insertion order is recency. */
@@ -196,9 +256,32 @@ export class PeerReads {
   /** Node → until when it is skipped. */
   private readonly _down = new Map<string, number>();
 
+  /** Per node, the newest ref it holds, as the hub last named them. */
+  private _holders: RouteHolders = {};
+
+  /** The ref the hub last named the holders with: the route's current state. */
+  private _currentRef?: string;
+
+  /** Bulk reads in flight per node. */
+  private readonly _inFlight = new Map<string, number>();
+
+  /** Bulk reads waiting for room, woken when a read ends. */
+  private _waiting: Array<() => void> = [];
+
   private readonly _links = new Map<string, PeerLink>();
   private readonly _opening = new Map<string, Promise<PeerLink | undefined>>();
-  private readonly _stats: PeerReadStats = { hits: 0, misses: 0, failures: 0 };
+  private readonly _hubStats: PeerReadSourceStats = {
+    reads: 0,
+    rows: 0,
+    bytes: 0,
+  };
+  private readonly _stats: Omit<PeerReadStats, 'bySource' | 'hub'> = {
+    hits: 0,
+    waits: 0,
+    misses: 0,
+    failures: 0,
+  };
+  private readonly _bySource = new Map<string, PeerReadSourceStats>();
   private _closed = false;
 
   // ...........................................................................
@@ -208,6 +291,7 @@ export class PeerReads {
    */
   constructor(options: PeerReadsOptions) {
     this._logger = options.logger ?? noopLogger;
+    this._siteNodes = options.siteNodes ?? (() => []);
     this._options = {
       nodeId: options.nodeId,
       connect: options.connect,
@@ -216,6 +300,8 @@ export class PeerReads {
       connectTimeoutMs: options.connectTimeoutMs ?? 3000,
       sourceTtlMs: options.sourceTtlMs ?? 60_000,
       maxSourcesPerRead: options.maxSourcesPerRead ?? 2,
+      maxBusyPeers: options.maxBusyPeers ?? 4,
+      maxReadsPerPeer: options.maxReadsPerPeer ?? 2,
       maxConnections: options.maxConnections ?? 8,
       idleMs: options.idleMs ?? 60_000,
       downMs: options.downMs ?? 30_000,
@@ -245,7 +331,27 @@ export class PeerReads {
   // ...........................................................................
   /** What peer reads achieved so far. */
   get stats(): PeerReadStats {
-    return { ...this._stats };
+    const bySource: Record<string, PeerReadSourceStats> = {};
+    for (const [nodeId, source] of this._bySource) {
+      bySource[nodeId] = { ...source };
+    }
+    return { ...this._stats, bySource, hub: { ...this._hubStats } };
+  }
+
+  // ...........................................................................
+  /**
+   * The nodes a read would ask right now, in the order it asks them: recent
+   * senders, holders of the current ref, holders of older refs, the other
+   * nodes of the site. Without this node and the peers that are down.
+   */
+  get sources(): string[] {
+    return this._rankedSources();
+  }
+
+  // ...........................................................................
+  /** The holders as the hub last named them. */
+  get holders(): RouteHolders {
+    return { ...this._holders };
   }
 
   // ...........................................................................
@@ -275,6 +381,46 @@ export class PeerReads {
 
   // ...........................................................................
   /**
+   * Counts a read the hub answered because no peer could. Called by the
+   * reads that fall back to the hub, so the stats can say how much the peers
+   * carried.
+   * @param rows - Rows the hub sent.
+   * @param bytes - Bytes of blocks the hub sent.
+   */
+  creditHub(rows = 0, bytes = 0): void {
+    this._hubStats.reads++;
+    this._hubStats.rows += rows;
+    this._hubStats.bytes += bytes;
+  }
+
+  // ...........................................................................
+  /**
+   * Takes the holders of the route as the hub named them: per node, the
+   * newest ref it holds. Replaces what was known, and opens connections to
+   * the holders of the current ref ahead of the reads.
+   * @param holders - The holders, from a payload's `holders`.
+   * @param ref - The ref the payload announced: the route's current state.
+   */
+  setHolders(holders: RouteHolders, ref?: string): void {
+    if (this._closed) return;
+    const valid: RouteHolders = {};
+    for (const [nodeId, held] of Object.entries(holders)) {
+      if (typeof held === 'string' && held.length > 0) valid[nodeId] = held;
+    }
+    this._holders = valid;
+    this._currentRef = ref;
+
+    let opened = 0;
+    for (const nodeId of this._rankedSources()) {
+      if (opened === this._options.maxBusyPeers) break;
+      if (valid[nodeId] !== ref) continue;
+      void this._link(nodeId);
+      opened++;
+    }
+  }
+
+  // ...........................................................................
+  /**
    * Reads rows from the sources.
    * @param request - Table and where clause, as for `Io.readRows`.
    * @returns The first answer with rows, or undefined.
@@ -282,15 +428,18 @@ export class PeerReads {
   async readRows(request: ReadRowsRequest): Promise<Rljson | undefined> {
     const hit = await this._first(
       (link) => link.io.readRows(request),
-      (result) => PeerReads._rowCount(result, request.table) > 0,
+      (result) => PeerReads.rowCount(result, request.table) > 0,
       this._options.timeoutMs,
     );
+    if (hit) {
+      this._credit(hit.nodeId, PeerReads.rowCount(hit.value, request.table));
+    }
     return hit?.value;
   }
 
   // ...........................................................................
   /**
-   * Reads rows by their hashes from the sources.
+   * Reads rows by their hashes from one source at a time: a bulk read.
    * @param request - Table and hashes, as for `Io.readRowsByHashes`.
    * @returns The first answer with rows — possibly not all of them — or
    *   undefined.
@@ -298,11 +447,14 @@ export class PeerReads {
   async readRowsByHashes(
     request: ReadByHashesRequest,
   ): Promise<Rljson | undefined> {
-    const hit = await this._first(
+    const hit = await this._spread(
       (link) => link.io.readRowsByHashes(request),
-      (result) => PeerReads._rowCount(result, request.table) > 0,
+      (result) => PeerReads.rowCount(result, request.table) > 0,
       this._options.timeoutMs,
     );
+    if (hit) {
+      this._credit(hit.nodeId, PeerReads.rowCount(hit.value, request.table));
+    }
     return hit?.value;
   }
 
@@ -318,22 +470,25 @@ export class PeerReads {
       () => true,
       this._options.timeoutMs,
     );
+    if (hit) this._credit(hit.nodeId);
     return hit?.value;
   }
 
   // ...........................................................................
   /**
-   * Reads one block from the sources. Any source holding it serves it,
-   * whichever blob it was sent with: blocks are content-addressed.
+   * Reads one block from one source at a time: a bulk read. Any source
+   * holding it serves it, whichever blob it was sent with: blocks are
+   * content-addressed.
    * @param blockId - The block.
    * @returns Its bytes, checked against its id, or undefined.
    */
   async getBlock(blockId: string): Promise<Buffer | undefined> {
-    const hit = await this._first(
+    const hit = await this._spread(
       (link) => link.bs.getBlock(blockId),
       () => true,
       this._options.blobTimeoutMs,
     );
+    if (hit) this._credit(hit.nodeId, 0, hit.value.length);
     return hit?.value;
   }
 
@@ -364,6 +519,7 @@ export class PeerReads {
       () => true,
       this._options.timeoutMs,
     );
+    if (hit) this._credit(hit.nodeId);
     return hit?.value;
   }
 
@@ -392,6 +548,9 @@ export class PeerReads {
       this._drop(link);
     }
     this._sources.clear();
+    this._holders = {};
+    this._currentRef = undefined;
+    this._wakeWaiting();
   }
 
   // ######################
@@ -483,23 +642,180 @@ export class PeerReads {
 
   // ...........................................................................
   /**
-   * The sources a read asks: recent, not down, newest first.
+   * Asks one source at a time, the least busy in {@link sources} order, the
+   * next one after a miss or a failure, until one answers or `timeoutMs` is
+   * over. Waits for room while every source not asked yet has none.
+   * @param read - The request to one peer.
+   * @param isHit - Whether an answer helps the caller.
+   * @param timeoutMs - The bound of the whole read.
+   * @returns The hit, or undefined.
+   */
+  private async _spread<T>(
+    read: (link: PeerLink) => Promise<T>,
+    isHit: (value: T) => boolean,
+    timeoutMs: number,
+  ): Promise<{ nodeId: string; value: T } | undefined> {
+    const deadline = Date.now() + timeoutMs;
+    const tried = new Set<string>();
+    let waited = false;
+
+    for (;;) {
+      const nodeId = this._withRoom(tried);
+      if (nodeId === undefined) {
+        const untried = this._rankedSources().some((n) => !tried.has(n));
+        if (!untried) {
+          if (tried.size > 0) this._stats.misses++;
+          return undefined;
+        }
+        if (!waited) {
+          waited = true;
+          this._stats.waits++;
+        }
+        if (!(await this._roomOrTimeout(deadline))) {
+          this._stats.misses++;
+          return undefined;
+        }
+        continue;
+      }
+      tried.add(nodeId);
+
+      this._inFlight.set(nodeId, (this._inFlight.get(nodeId) ?? 0) + 1);
+      const outcome = await this._attempt(
+        nodeId,
+        read,
+        isHit,
+        Math.max(1, deadline - Date.now()),
+      ).finally(() => {
+        const left = this._inFlight.get(nodeId)! - 1;
+        if (left > 0) this._inFlight.set(nodeId, left);
+        else this._inFlight.delete(nodeId);
+        this._wakeWaiting();
+      });
+
+      if (outcome.kind === 'hit') {
+        this._stats.hits++;
+        return { nodeId: outcome.nodeId, value: outcome.value };
+      }
+      if (Date.now() >= deadline) {
+        this._stats.misses++;
+        return undefined;
+      }
+    }
+  }
+
+  // ...........................................................................
+  /**
+   * Waits until a bulk read ends, or until the deadline.
+   * @param deadline - When to give up, in ms since the epoch.
+   * @returns True when a read ended, false when the time is over.
+   */
+  private _roomOrTimeout(deadline: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this._waiting = this._waiting.filter((w) => w !== wake);
+        resolve(false);
+      }, Math.max(0, deadline - Date.now()));
+      const wake = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      this._waiting.push(wake);
+    });
+  }
+
+  // ...........................................................................
+  /** Wakes every bulk read waiting for room. */
+  private _wakeWaiting(): void {
+    const waiting = this._waiting;
+    this._waiting = [];
+    for (const wake of waiting) wake();
+  }
+
+  // ...........................................................................
+  /**
+   * The least busy source not tried yet that may take one more bulk read,
+   * earlier in {@link sources} order on a tie.
+   * @param tried - The sources this read asked already.
+   * @returns The node, or undefined when none has room.
+   */
+  private _withRoom(tried: ReadonlySet<string>): string | undefined {
+    const busyPeers = this._inFlight.size;
+    let best: string | undefined;
+    let bestLoad = Infinity;
+    for (const nodeId of this._rankedSources()) {
+      if (tried.has(nodeId)) continue;
+      const load = this._inFlight.get(nodeId) ?? 0;
+      if (load >= this._options.maxReadsPerPeer) continue;
+      if (load === 0 && busyPeers >= this._options.maxBusyPeers) continue;
+      if (load < bestLoad) {
+        best = nodeId;
+        bestLoad = load;
+      }
+    }
+    return best;
+  }
+
+  // ...........................................................................
+  /**
+   * The sources a small read asks at once: the first few of {@link sources}.
    * @returns Node ids.
    */
   private _currentSources(): string[] {
+    return this._rankedSources().slice(0, this._options.maxSourcesPerRead);
+  }
+
+  // ...........................................................................
+  /**
+   * Every source a read may ask, in order: recent senders newest first,
+   * holders of the current ref, holders of older refs, the other nodes of
+   * the site. Without this node, without duplicates, without peers that are
+   * down.
+   * @returns Node ids.
+   */
+  private _rankedSources(): string[] {
     if (this._closed) return [];
     const now = Date.now();
     const result: string[] = [];
+    const seen = new Set<string>([this._options.nodeId]);
+    const add = (nodeId: string) => {
+      if (seen.has(nodeId)) return;
+      seen.add(nodeId);
+      if (!this._isDown(nodeId)) result.push(nodeId);
+    };
+
     for (const [nodeId, at] of [...this._sources.entries()].reverse()) {
       if (now - at > this._options.sourceTtlMs) {
         this._sources.delete(nodeId);
         continue;
       }
-      if (this._isDown(nodeId)) continue;
-      result.push(nodeId);
-      if (result.length === this._options.maxSourcesPerRead) break;
+      add(nodeId);
     }
+    const holders = Object.entries(this._holders);
+    for (const [nodeId, ref] of holders) {
+      if (ref === this._currentRef) add(nodeId);
+    }
+    for (const [nodeId] of holders) add(nodeId);
+    for (const nodeId of this._siteNodes()) add(nodeId);
     return result;
+  }
+
+  // ...........................................................................
+  /**
+   * Counts what a peer answered.
+   * @param nodeId - The peer.
+   * @param rows - Rows it sent.
+   * @param bytes - Bytes of blocks it sent.
+   */
+  private _credit(nodeId: string, rows = 0, bytes = 0): void {
+    const source = this._bySource.get(nodeId) ?? {
+      reads: 0,
+      rows: 0,
+      bytes: 0,
+    };
+    source.reads++;
+    source.rows += rows;
+    source.bytes += bytes;
+    this._bySource.set(nodeId, source);
   }
 
   // ...........................................................................
@@ -712,7 +1028,7 @@ export class PeerReads {
    * @param table - The table.
    * @returns The number of rows.
    */
-  private static _rowCount(result: Rljson, table: string): number {
+  static rowCount(result: Rljson, table: string): number {
     const data = (result?.[table] as { _data?: unknown[] } | undefined)?._data;
     return Array.isArray(data) ? data.length : 0;
   }

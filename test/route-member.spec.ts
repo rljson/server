@@ -509,7 +509,7 @@ describe('ClientRoute', () => {
       expect((rows.notes._data[0] as { a: string }).a).toBe('x');
       expect(blob.content.toString()).toBe('a blob');
       // One blob read is three requests: properties, block list, one block.
-      expect(member.peerServer!.stats).toEqual({ rowReads: 1, blobReads: 3 });
+      expect(member.peerServer!.stats).toMatchObject({ rowReads: 1, blobReads: 3 });
       expect(openStores).toHaveBeenCalledTimes(1);
     });
 

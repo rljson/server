@@ -168,6 +168,7 @@ describe('WorkerRoute', () => {
       nodeId === 'nodeB' ? '10.0.0.2:4000' : undefined,
     ),
     connect: async () => undefined,
+    siteNodes: () => ['nodeB', 'nodeD'],
   });
 
   /** The log entries of the member. */
@@ -315,7 +316,7 @@ describe('WorkerRoute', () => {
       expect(Buffer.isBuffer(blob.content)).toBe(true);
       expect(blob.content.toString()).toBe('a blob');
       // One blob read is three requests: properties, block list, one block.
-      expect(member.peerServer!.stats).toEqual({ rowReads: 1, blobReads: 3 });
+      expect(member.peerServer!.stats).toMatchObject({ rowReads: 1, blobReads: 3 });
     });
 
     it('gives up on a worker that does not answer within requestTimeoutMs', async () => {
@@ -365,6 +366,26 @@ describe('WorkerRoute', () => {
         false,
         false,
       ]);
+    });
+  });
+
+  // ...........................................................................
+  describe('site nodes for the worker', () => {
+    it('answers with the site nodes of the node', async () => {
+      const { member } = createMember();
+      await member.start(context({ peerReads: peerReads() }));
+
+      await vi.waitFor(() =>
+        expect(workers[0].serving.siteNodes()).toEqual(['nodeB', 'nodeD']),
+      );
+    });
+
+    it('answers with none while peer reads are off', async () => {
+      const { member } = createMember();
+      await member.start(context());
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(workers[0].serving.siteNodes()).toEqual([]);
     });
   });
 
@@ -660,7 +681,7 @@ describe('serveWorkerRoute(options)', () => {
 
     it('counts what it served, for the worker to report', async () => {
       const { serving, parent, stores } = await serve();
-      expect(serving.stats).toEqual({ rowReads: 0, blobReads: 0 });
+      expect(serving.stats).toMatchObject({ rowReads: 0, blobReads: 0 });
       const io = new IoPeer(parent, 1000);
       const bs = new BsPeer(parent, { requestTimeoutMs: 1000 });
       await io.init();
@@ -671,6 +692,46 @@ describe('serveWorkerRoute(options)', () => {
 
       expect(serving.stats.rowReads).toBe(1);
       expect(serving.stats.blobReads).toBeGreaterThan(0);
+    });
+  });
+
+  // ...........................................................................
+  describe('siteNodes()', () => {
+    it('asks the parent at once and again every siteNodesRefreshMs', async () => {
+      let answer: unknown = ['nodeB'];
+      let asked = 0;
+      const { serving, parent } = await serve({ siteNodesRefreshMs: 20 });
+      parent.on(workerRouteEvents.siteNodes, (ack: (ids: unknown) => void) => {
+        asked++;
+        ack(answer);
+      });
+
+      await vi.waitFor(() => expect(serving.siteNodes()).toEqual(['nodeB']));
+      answer = ['nodeC', 42, 'nodeD'];
+      await vi.waitFor(() =>
+        expect(serving.siteNodes()).toEqual(['nodeC', 'nodeD']),
+      );
+      answer = 'not a list';
+      const before = asked;
+      await vi.waitFor(() => expect(asked).toBeGreaterThan(before));
+      expect(serving.siteNodes()).toEqual(['nodeC', 'nodeD']);
+    });
+
+    it('stops asking once closed', async () => {
+      let asked = 0;
+      const { serving, parent } = await serve({ siteNodesRefreshMs: 10 });
+      parent.on(workerRouteEvents.siteNodes, (ack: (ids: unknown) => void) => {
+        asked++;
+        ack([]);
+      });
+      await vi.waitFor(() => expect(asked).toBeGreaterThan(0));
+      await serving.close();
+      // An ask already on its way when the worker closed still arrives.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const after = asked;
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(asked).toBe(after);
     });
   });
 

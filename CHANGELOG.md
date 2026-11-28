@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Peer reads from every node of the site
+
+- **The hub names the holders of its route:** per node, the newest ref it
+  holds — the sender of every relayed ref, and every node whose client sends
+  `syncEvents(route).held`. It sends each client its own tenant's holders as
+  `holders` on relayed refs, the bootstrap, the heartbeat and the state beacon,
+  keeps them out of the ref log, and forgets a node with its last connection.
+  `server.holders` shows them.
+- **A client says which refs its node holds:** with a node id, it checks its
+  local store after each ref it receives (`MissingRows` of `@rljson/db`) and
+  sends `held` once every row is there, checking again while data arrives
+  (`heldRecheckMs`, default 1, 2, 5, 10, 30, 60 s) and once more after a
+  reconnect.
+- **`PeerReads` asks the holders and the site:** recent senders, holders of
+  the current ref, holders of older refs, then `siteNodes`; `setHolders`,
+  `sources`, `holders`. A `Node` gives its members the other nodes of its
+  topology (`RoutePeerReads.siteNodes`, neither itself nor the hub); a
+  worker keeps a copy it asks its parent for (`__worker:siteNodes`,
+  `siteNodesRefreshMs`). `PeerReadBounds` leaves `siteNodes` out: bounds stay
+  plain data.
+- **Bulk reads spread instead of racing:** rows by their hashes and blocks go
+  to one peer at a time, the least busy, the next on a miss, so each block is
+  sent once; `maxBusyPeers` (4) and `maxReadsPerPeer` (2) bound them, and a
+  read without room waits within its timeout. Small reads still race.
+- **Stats per source and for the hub:** `stats` adds `waits`, `bySource`
+  (per node `reads`, `rows`, `bytes`) and `hub`: what the hub answered because
+  no peer could, counted by `PeerFirstIo` and `PeerFirstBs` through
+  `creditHub`. `PeerReads.rowCount` counts the rows of an answer.
+
+## [0.2.1]
+
 ### The rljson DNA 0.4.0: docs language first, no prompts hook
 
 - `@rljson/dna-rljson` 0.4.0, on dna-gg 2.0: the guides and templates of the

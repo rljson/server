@@ -110,7 +110,11 @@ export class PeerFirstBs implements Bs {
    * @param blockId - The block.
    */
   async getBlock(blockId: string): Promise<Buffer> {
-    return (await this._peers.getBlock(blockId)) ?? this._hub.getBlock(blockId);
+    const fromPeer = await this._peers.getBlock(blockId);
+    if (fromPeer) return fromPeer;
+    const fromHub = await this._hub.getBlock(blockId);
+    this._peers.creditHub(0, fromHub.length);
+    return fromHub;
   }
 
   // ...........................................................................
